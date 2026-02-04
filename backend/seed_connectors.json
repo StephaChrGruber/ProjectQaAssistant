@@ -1,0 +1,35 @@
+{
+  "connectors": [
+    {
+      "type": "confluence",
+      "isEnabled": true,
+      "config": {
+        "baseUrl": "https://YOURDOMAIN.atlassian.net/wiki",
+        "spaceKey": "POC",
+        "email": "svc@company.com",
+        "apiToken": "ATATT..."
+      }
+    },
+    {
+      "type": "jira",
+      "isEnabled": true,
+      "config": {
+        "baseUrl": "https://YOURDOMAIN.atlassian.net",
+        "email": "svc@company.com",
+        "apiToken": "ATATT...",
+        "jql": "project = POC ORDER BY updated DESC"
+      }
+    },
+    {
+      "type": "github",
+      "isEnabled": true,
+      "config": {
+        "token": "ghp_xxx",
+        "owner": "your-org",
+        "repo": "your-repo",
+        "branch": "main",
+        "paths": ["README.md", "docs/", "src/"]
+      }
+    }
+  ]
+}

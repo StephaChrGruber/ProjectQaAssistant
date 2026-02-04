@@ -1,0 +1,71 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    depends_on:
+      - ollama
+    environment:
+      - OLLAMA_HOST=http://ollama:11434   # ✅ critical
+      - OLLAMA_MODEL=${OLLAMA_MODEL}
+    volumes:
+      - ollama_data:/root/.ollama
+    entrypoint: ["sh", "-lc"]
+    command: ["ollama pull ${OLLAMA_MODEL}"]
+    restart: "no"
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      - MONGODB_URI=${MONGODB_URI}
+      - MONGODB_DB=${MONGODB_DB}
+      - AUTH_MODE=${AUTH_MODE}
+      - CHROMA_ROOT=${CHROMA_ROOT}
+      - WEB_ORIGIN=${WEB_ORIGIN}
+      - LLM_BASE_URL=${LLM_BASE_URL}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_MODEL=${LLM_MODEL}
+      - ANONYMIZED_TELEMETRY=${ANONYMIZED_TELEMETRY}
+    volumes:
+      - chroma_data:/data/chroma_projects
+      # if you use seed connectors file:
+      # - ./backend/seed_connectors.json:/app/seed_connectors.json:ro
+    depends_on:
+      - mongo
+      - ollama
+    ports:
+      - "8080:8080"
+
+  web:
+    build: ./web
+    restart: unless-stopped
+    environment:
+      - BACKEND_BASE_URL=${BACKEND_BASE_URL}
+      - NEXT_PUBLIC_BACKEND_BASE_URL=${NEXT_PUBLIC_BACKEND_BASE_URL}
+      - POC_DEV_USER=${POC_DEV_USER}
+      - POC_DEV_ADMIN=${POC_DEV_ADMIN}
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      - "3000:3000"
+
+volumes:
+  mongo_data:
+  chroma_data:
+  ollama_data:
