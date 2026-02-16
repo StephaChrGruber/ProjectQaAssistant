@@ -24,8 +24,8 @@ import { backendJson } from "@/lib/backend"
 import {
     browserLocalRepoPath,
     isBrowserLocalRepoPath,
-    pickLocalRepoSnapshotFromBrowser,
-    setLocalRepoSnapshot,
+    pickLocalRepoSessionFromBrowser,
+    setLocalRepoSession,
 } from "@/lib/local-repo-bridge"
 
 type DirectoryItem = {
@@ -107,11 +107,11 @@ export default function PathPickerDialog({
         setLocalPicking(true)
         setError(null)
         try {
-            const snapshot = await pickLocalRepoSnapshotFromBrowser()
+            const session = await pickLocalRepoSessionFromBrowser()
             if (localRepoKey?.trim()) {
-                setLocalRepoSnapshot(localRepoKey.trim(), snapshot)
+                setLocalRepoSession(localRepoKey.trim(), session)
             }
-            setCurrentPath(browserLocalRepoPath(snapshot.rootName))
+            setCurrentPath(browserLocalRepoPath(session.snapshot.rootName))
             setDirectories([])
             setRoots([])
             setParentPath(null)

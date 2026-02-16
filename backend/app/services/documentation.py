@@ -478,6 +478,57 @@ def _ensure_mandatory_docs(files: list[dict[str, str]], fallback: list[dict[str,
     return out
 
 
+def _generate_docs_with_llm_from_context(
+    *,
+    project_name: str,
+    branch: str,
+    context: str,
+    llm_base: str,
+    llm_key: str | None,
+    llm_model: str,
+) -> tuple[list[dict[str, str]], str]:
+    if not context.strip():
+        return [], ""
+
+    system = (
+        "You are a senior software architect and technical writer. "
+        "Generate repository documentation as JSON only."
+    )
+    user = (
+        f"Project: {project_name}\n"
+        f"Branch: {branch}\n\n"
+        "Create high-quality markdown documentation files under the 'documentation/' folder.\n"
+        "Requirements:\n"
+        "- Create a useful structure (subfolders by related topics).\n"
+        "- Explain overall architecture and major modules.\n"
+        "- Provide practical technical setup guide for developers.\n"
+        "- Use comments/annotations/docstrings from code where available.\n"
+        "- Keep content concise but actionable.\n\n"
+        "Return EXACTLY one JSON object in this schema:\n"
+        "{\n"
+        '  "summary": "short summary",\n'
+        '  "files": [\n'
+        '    {"path":"documentation/README.md","content":"# ..."},\n'
+        '    {"path":"documentation/architecture/overview.md","content":"# ..."},\n'
+        '    {"path":"documentation/setup/getting-started.md","content":"# ..."}\n'
+        "  ]\n"
+        "}\n\n"
+        "Repository evidence follows:\n\n"
+        f"{context}"
+    )
+
+    raw = _llm_chat(
+        [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        base_url=llm_base,
+        api_key=llm_key,
+        model=llm_model,
+    )
+    obj = _extract_json_obj(raw)
+    files = _sanitize_generated_files(obj.get("files"))
+    summary = str(obj.get("summary") or "").strip()
+    return files, summary
+
+
 def _safe_target(repo_path: str, rel_path: str) -> Path:
     root = Path(repo_path).resolve()
     target = (root / rel_path).resolve()
@@ -563,43 +614,15 @@ async def generate_project_documentation(project_id: str, branch: Optional[str] 
     summary = ""
     mode = "fallback"
     if context:
-        system = (
-            "You are a senior software architect and technical writer. "
-            "Generate repository documentation as JSON only."
-        )
-        user = (
-            f"Project: {project_name}\n"
-            f"Branch: {chosen_branch}\n\n"
-            "Create high-quality markdown documentation files under the 'documentation/' folder.\n"
-            "Requirements:\n"
-            "- Create a useful structure (subfolders by related topics).\n"
-            "- Explain overall architecture and major modules.\n"
-            "- Provide practical technical setup guide for developers.\n"
-            "- Use comments/annotations/docstrings from code where available.\n"
-            "- Keep content concise but actionable.\n\n"
-            "Return EXACTLY one JSON object in this schema:\n"
-            "{\n"
-            '  "summary": "short summary",\n'
-            '  "files": [\n'
-            '    {"path":"documentation/README.md","content":"# ..."},\n'
-            '    {"path":"documentation/architecture/overview.md","content":"# ..."},\n'
-            '    {"path":"documentation/setup/getting-started.md","content":"# ..."}\n'
-            "  ]\n"
-            "}\n\n"
-            "Repository evidence follows:\n\n"
-            f"{context}"
-        )
-
         try:
-            raw = _llm_chat(
-                [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                base_url=llm_base,
-                api_key=llm_key,
-                model=llm_model,
+            generated_files, summary = _generate_docs_with_llm_from_context(
+                project_name=project_name,
+                branch=chosen_branch,
+                context=context,
+                llm_base=llm_base,
+                llm_key=llm_key,
+                llm_model=llm_model,
             )
-            obj = _extract_json_obj(raw)
-            generated_files = _sanitize_generated_files(obj.get("files"))
-            summary = str(obj.get("summary") or "").strip()
             if generated_files:
                 mode = "llm"
         except Exception:
@@ -622,6 +645,69 @@ async def generate_project_documentation(project_id: str, branch: Optional[str] 
         "summary": summary or "Documentation generated.",
         "files_written": written_paths,
         "context_files_used": len(selected_paths),
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+
+async def generate_project_documentation_from_local_context(
+    *,
+    project_id: str,
+    branch: Optional[str],
+    local_repo_root: str,
+    local_repo_file_paths: list[str],
+    local_repo_context: str,
+) -> dict[str, Any]:
+    project = await _load_project(project_id)
+    chosen_branch = (branch or project.get("default_branch") or "main").strip() or "main"
+
+    all_paths = [p.strip().replace("\\", "/") for p in (local_repo_file_paths or []) if str(p).strip()]
+    if not all_paths:
+        all_paths = ["README.md"]
+    selected_paths = all_paths[:MAX_CONTEXT_FILES]
+
+    project_name = str(project.get("name") or project.get("key") or project_id)
+    fallback = _fallback_docs(project_name, chosen_branch, all_paths, selected_paths)
+
+    provider = (project.get("llm_provider") or "").strip().lower() or "ollama"
+    llm_base = _normalize_llm_base(project.get("llm_base_url"), provider)
+    llm_key = _llm_key(provider, project.get("llm_api_key"))
+    llm_model = _llm_model(provider, project.get("llm_model"))
+
+    generated_files: list[dict[str, str]] = []
+    summary = ""
+    mode = "fallback"
+
+    if local_repo_context and local_repo_context.strip():
+        try:
+            generated_files, summary = _generate_docs_with_llm_from_context(
+                project_name=project_name,
+                branch=chosen_branch,
+                context=local_repo_context.strip(),
+                llm_base=llm_base,
+                llm_key=llm_key,
+                llm_model=llm_model,
+            )
+            if generated_files:
+                mode = "llm"
+        except Exception:
+            generated_files = []
+
+    if not generated_files:
+        generated_files = fallback
+        if not summary:
+            summary = "Generated baseline documentation from local repository context."
+
+    generated_files = _ensure_mandatory_docs(generated_files, fallback)
+
+    return {
+        "project_id": str(project.get("_id") or project_id),
+        "project_key": str(project.get("key") or ""),
+        "branch": chosen_branch,
+        "mode": mode,
+        "summary": summary or "Documentation generated from local context.",
+        "files": generated_files,
+        "context_files_used": len(selected_paths),
+        "local_repo_root": local_repo_root or "",
         "generated_at": datetime.utcnow().isoformat() + "Z",
     }
 

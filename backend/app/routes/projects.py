@@ -9,6 +9,7 @@ from ..db import get_db  # however you access Mongo (Motor/PyMongo)
 from ..services.documentation import (
     DocumentationError,
     generate_project_documentation,
+    generate_project_documentation_from_local_context,
     list_project_documentation,
     read_project_documentation_file,
 )
@@ -18,6 +19,13 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 
 class GenerateDocumentationReq(BaseModel):
     branch: str | None = None
+
+
+class GenerateLocalDocumentationReq(BaseModel):
+    branch: str | None = None
+    local_repo_root: str | None = None
+    local_repo_file_paths: list[str] = []
+    local_repo_context: str
 
 def oid(x: Any) -> ObjectId:
     try:
@@ -134,6 +142,27 @@ async def generate_documentation(
 
     try:
         return await generate_project_documentation(project_id=project_id, branch=req.branch)
+    except DocumentationError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@router.post("/{project_id}/documentation/generate-local")
+async def generate_documentation_local(
+    project_id: str,
+    req: GenerateLocalDocumentationReq,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+
+    try:
+        return await generate_project_documentation_from_local_context(
+            project_id=project_id,
+            branch=req.branch,
+            local_repo_root=req.local_repo_root or "",
+            local_repo_file_paths=req.local_repo_file_paths or [],
+            local_repo_context=req.local_repo_context or "",
+        )
     except DocumentationError as err:
         raise HTTPException(status_code=400, detail=str(err))
 
