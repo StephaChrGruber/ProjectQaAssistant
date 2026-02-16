@@ -17,8 +17,9 @@ from ..settings import settings
 
 DOC_ROOT = "documentation"
 MAX_CONTEXT_FILES = 90
-MAX_TOTAL_CONTEXT_CHARS = 260_000
+MAX_TOTAL_CONTEXT_CHARS = 140_000
 MAX_FILE_CHARS = 8_000
+MAX_LLM_CONTEXT_CHARS = 120_000
 
 TEXT_EXTENSIONS = {
     ".py",
@@ -158,7 +159,15 @@ def _llm_model(provider: str, project_model: str | None) -> str:
     return settings.LLM_MODEL or "llama3.2:3b"
 
 
-def _llm_chat(messages: list[dict[str, str]], *, base_url: str, api_key: str | None, model: str) -> str:
+def _llm_chat(
+    messages: list[dict[str, str]],
+    *,
+    base_url: str,
+    api_key: str | None,
+    model: str,
+    timeout_sec: int = 90,
+    max_attempts: int = 1,
+) -> str:
     endpoint = urljoin(base_url, "chat/completions")
     payload = {
         "model": model,
@@ -171,10 +180,10 @@ def _llm_chat(messages: list[dict[str, str]], *, base_url: str, api_key: str | N
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    attempts = 3
+    attempts = max(1, max_attempts)
     for idx in range(1, attempts + 1):
         try:
-            res = requests.post(endpoint, json=payload, headers=headers, timeout=240)
+            res = requests.post(endpoint, json=payload, headers=headers, timeout=timeout_sec)
         except requests.RequestException as err:
             if idx < attempts:
                 continue
@@ -489,6 +498,9 @@ def _generate_docs_with_llm_from_context(
 ) -> tuple[list[dict[str, str]], str]:
     if not context.strip():
         return [], ""
+    bounded_context = context.strip()
+    if len(bounded_context) > MAX_LLM_CONTEXT_CHARS:
+        bounded_context = bounded_context[:MAX_LLM_CONTEXT_CHARS] + "\n... (truncated context)\n"
 
     system = (
         "You are a senior software architect and technical writer. "
@@ -514,7 +526,7 @@ def _generate_docs_with_llm_from_context(
         "  ]\n"
         "}\n\n"
         "Repository evidence follows:\n\n"
-        f"{context}"
+        f"{bounded_context}"
     )
 
     raw = _llm_chat(
@@ -522,6 +534,8 @@ def _generate_docs_with_llm_from_context(
         base_url=llm_base,
         api_key=llm_key,
         model=llm_model,
+        timeout_sec=75,
+        max_attempts=1,
     )
     obj = _extract_json_obj(raw)
     files = _sanitize_generated_files(obj.get("files"))

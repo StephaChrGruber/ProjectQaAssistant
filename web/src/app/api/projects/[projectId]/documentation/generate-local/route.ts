@@ -10,15 +10,29 @@ export async function POST(
     const { projectId } = await ctx.params
     const body = await req.text()
 
-    const res = await fetch(`${BACKEND}/projects/${encodeURIComponent(projectId)}/documentation/generate-local`, {
-        method: "POST",
-        headers: {
-            "Content-Type": req.headers.get("content-type") || "application/json",
-            "X-Dev-User": DEV_USER,
-        },
-        body,
-        cache: "no-store",
-    })
+    let res: Response
+    try {
+        res = await fetch(`${BACKEND}/projects/${encodeURIComponent(projectId)}/documentation/generate-local`, {
+            method: "POST",
+            headers: {
+                "Content-Type": req.headers.get("content-type") || "application/json",
+                "X-Dev-User": DEV_USER,
+            },
+            body,
+            cache: "no-store",
+            signal: AbortSignal.timeout(180_000),
+        })
+    } catch (err) {
+        return NextResponse.json(
+            {
+                detail:
+                    "Documentation generation timed out while waiting for backend response. " +
+                    "Try again; if it keeps happening, reduce repository context or switch to a faster model.",
+                error: String(err),
+            },
+            { status: 504 }
+        )
+    }
 
     const text = await res.text()
     return new NextResponse(text, {
