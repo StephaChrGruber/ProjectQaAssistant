@@ -4,6 +4,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import time
 from urllib.parse import urljoin
 
 import requests
@@ -23,6 +24,10 @@ from typing import Any, Dict, List, Optional, Union, get_args, get_origin, get_t
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
+
+
+class LLMUpstreamError(RuntimeError):
+    pass
 
 #import pydevd_pycharm
 #pydevd_pycharm.settrace(
@@ -454,15 +459,65 @@ def _llm_chat_nostream(
     if llm_api_key:
         headers["Authorization"] = f"Bearer {llm_api_key}"
 
-    r = requests.post(
-        endpoint,
-        json=payload,
-        headers=headers,
-        timeout=300,
-    )
-    r.raise_for_status()
-    data = r.json()
-    return (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            r = requests.post(
+                endpoint,
+                json=payload,
+                headers=headers,
+                timeout=300,
+            )
+        except requests.RequestException as err:
+            if attempt < max_attempts:
+                time.sleep(1.5 * attempt)
+                continue
+            raise LLMUpstreamError(f"Could not reach LLM endpoint: {err}") from err
+
+        if r.status_code == 429:
+            retry_after_raw = r.headers.get("retry-after")
+            retry_after = 0.0
+            if retry_after_raw:
+                try:
+                    retry_after = float(retry_after_raw)
+                except ValueError:
+                    retry_after = 0.0
+
+            if attempt < max_attempts:
+                time.sleep(max(retry_after, 1.5 * attempt))
+                continue
+
+            detail = ""
+            try:
+                body = r.json()
+                detail = (body.get("error") or {}).get("message") or ""
+            except Exception:
+                detail = r.text[:500]
+            raise LLMUpstreamError(
+                f"LLM provider rate limited (429). {detail}".strip()
+            )
+
+        if r.status_code >= 500 and attempt < max_attempts:
+            time.sleep(1.5 * attempt)
+            continue
+
+        try:
+            r.raise_for_status()
+        except requests.HTTPError as err:
+            detail = ""
+            try:
+                body = r.json()
+                detail = (body.get("error") or {}).get("message") or ""
+            except Exception:
+                detail = r.text[:500]
+            raise LLMUpstreamError(
+                f"LLM request failed ({r.status_code}). {detail}".strip()
+            ) from err
+
+        data = r.json()
+        return (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+
+    raise LLMUpstreamError("LLM request failed after retries.")
 
 
 def _filter_kwargs_for_callable(fn, kwargs: Dict[str, Any]) -> Dict[str, Any]:

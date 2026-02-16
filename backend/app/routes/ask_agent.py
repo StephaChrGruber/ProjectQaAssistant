@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 from ..db import get_db
@@ -5,9 +7,10 @@ from datetime import datetime
 from bson import ObjectId
 from ..settings import settings
 
-from ..rag.agent2 import answer_with_agent
+from ..rag.agent2 import LLMUpstreamError, answer_with_agent
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 class AskReq(BaseModel):
     project_id: str
@@ -91,17 +94,42 @@ async def ask_agent(req: AskReq):
         },
     )
 
-    # run your existing retrieval + llm
+    # run retrieval + llm
     defaults = await _project_llm_defaults(req.project_id)
-    answer = await answer_with_agent(
-        project_id=req.project_id,
-        branch=req.branch,
-        user_id=req.user,
-        question=req.question,
-        llm_base_url=req.llm_base_url or defaults["llm_base_url"],
-        llm_api_key=req.llm_api_key or defaults["llm_api_key"],
-        llm_model=req.llm_model or defaults["llm_model"],
-    )
+    try:
+        answer = await answer_with_agent(
+            project_id=req.project_id,
+            branch=req.branch,
+            user_id=req.user,
+            question=req.question,
+            llm_base_url=req.llm_base_url or defaults["llm_base_url"],
+            llm_api_key=req.llm_api_key or defaults["llm_api_key"],
+            llm_model=req.llm_model or defaults["llm_model"],
+        )
+    except LLMUpstreamError as err:
+        logger.warning(
+            "LLM upstream error for project=%s branch=%s user=%s: %s",
+            req.project_id,
+            req.branch,
+            req.user,
+            err,
+        )
+        answer = (
+            "The configured LLM provider is temporarily unavailable or rate limited. "
+            "Please try again shortly, or switch model/provider in Project Settings.\n\n"
+            f"Details: {err}"
+        )
+    except Exception:
+        logger.exception(
+            "Unexpected ask_agent failure for project=%s branch=%s user=%s",
+            req.project_id,
+            req.branch,
+            req.user,
+        )
+        answer = (
+            "I hit an internal error while generating the answer. "
+            "Please try again in a moment."
+        )
 
     # append assistant message
     done = datetime.utcnow()
