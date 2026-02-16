@@ -13,6 +13,8 @@ import {
     Divider,
     FormControl,
     FormControlLabel,
+    IconButton,
+    InputAdornment,
     InputLabel,
     MenuItem,
     Select,
@@ -25,6 +27,7 @@ import OpenInNewRounded from "@mui/icons-material/OpenInNewRounded"
 import SaveRounded from "@mui/icons-material/SaveRounded"
 import CloudUploadRounded from "@mui/icons-material/CloudUploadRounded"
 import RefreshRounded from "@mui/icons-material/RefreshRounded"
+import FolderOpenRounded from "@mui/icons-material/FolderOpenRounded"
 import { backendJson } from "@/lib/backend"
 import { ProjectDrawerLayout, type DrawerChat, type DrawerUser } from "@/components/ProjectDrawerLayout"
 import { buildChatPath, saveLastChat } from "@/lib/last-chat"
@@ -692,12 +695,20 @@ export default function ProjectSettingsPage() {
                                             onChange={(e) => setEditForm((f) => ({ ...f, repo_path: e.target.value }))}
                                             fullWidth
                                             sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}
+                                            InputProps={{
+                                                endAdornment: (
+                                                    <InputAdornment position="end">
+                                                        <IconButton
+                                                            edge="end"
+                                                            size="small"
+                                                            onClick={() => setPathPickerOpen(true)}
+                                                        >
+                                                            <FolderOpenRounded fontSize="small" />
+                                                        </IconButton>
+                                                    </InputAdornment>
+                                                ),
+                                            }}
                                         />
-                                        <Box sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}>
-                                            <Button variant="outlined" onClick={() => setPathPickerOpen(true)}>
-                                                Browse Path
-                                            </Button>
-                                        </Box>
 
                                         <FormControl fullWidth size="small">
                                             <InputLabel id="project-settings-llm-provider">LLM Provider</InputLabel>

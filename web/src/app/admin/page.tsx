@@ -18,6 +18,8 @@ import {
     DialogTitle,
     FormControl,
     FormControlLabel,
+    IconButton,
+    InputAdornment,
     InputLabel,
     LinearProgress,
     MenuItem,
@@ -39,6 +41,7 @@ import CloudUploadRounded from "@mui/icons-material/CloudUploadRounded"
 import RefreshRounded from "@mui/icons-material/RefreshRounded"
 import ArrowBackRounded from "@mui/icons-material/ArrowBackRounded"
 import DeleteForeverRounded from "@mui/icons-material/DeleteForeverRounded"
+import FolderOpenRounded from "@mui/icons-material/FolderOpenRounded"
 import { backendJson } from "@/lib/backend"
 import PathPickerDialog from "@/components/PathPickerDialog"
 
@@ -813,13 +816,20 @@ export default function AdminPage() {
                                                 placeholder="/workspace/repo"
                                                 fullWidth
                                                 size="small"
+                                                InputProps={{
+                                                    endAdornment: (
+                                                        <InputAdornment position="end">
+                                                            <IconButton
+                                                                edge="end"
+                                                                size="small"
+                                                                onClick={() => setPathPickerTarget("createRepoPath")}
+                                                            >
+                                                                <FolderOpenRounded fontSize="small" />
+                                                            </IconButton>
+                                                        </InputAdornment>
+                                                    ),
+                                                }}
                                             />
-                                            <Button
-                                                variant="outlined"
-                                                onClick={() => setPathPickerTarget("createRepoPath")}
-                                            >
-                                                Browse Path
-                                            </Button>
                                             <TextField
                                                 label="Default Branch"
                                                 value={createForm.default_branch}
@@ -1323,15 +1333,20 @@ export default function AdminPage() {
                                                         size="small"
                                                         fullWidth
                                                         sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}
+                                                        InputProps={{
+                                                            endAdornment: (
+                                                                <InputAdornment position="end">
+                                                                    <IconButton
+                                                                        edge="end"
+                                                                        size="small"
+                                                                        onClick={() => setPathPickerTarget("editRepoPath")}
+                                                                    >
+                                                                        <FolderOpenRounded fontSize="small" />
+                                                                    </IconButton>
+                                                                </InputAdornment>
+                                                            ),
+                                                        }}
                                                     />
-                                                    <Box sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}>
-                                                        <Button
-                                                            variant="outlined"
-                                                            onClick={() => setPathPickerTarget("editRepoPath")}
-                                                        >
-                                                            Browse Path
-                                                        </Button>
-                                                    </Box>
                                                     <TextField
                                                         label="Default Branch"
                                                         value={editForm.default_branch}
