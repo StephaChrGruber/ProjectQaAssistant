@@ -7,6 +7,16 @@ router = APIRouter(prefix="/chats", tags=["chats"])
 
 COLL = "chats"
 
+
+async def _ensure_chat_doc(payload: ChatDoc):
+    # Upsert: create if missing.
+    await get_db()[COLL].update_one(
+        {"chat_id": payload.chat_id},
+        {"$setOnInsert": payload.model_dump()},
+        upsert=True,
+    )
+    return await get_db()[COLL].find_one({"chat_id": payload.chat_id}, {"_id": 0})
+
 @router.get("/by-project/{project_id}")
 async def list_chats_by_project(
     project_id: str,
@@ -42,15 +52,13 @@ async def get_chat(chat_id: str):
 
 @router.post("/ensure", response_model=ChatResponse)
 async def ensure_chat(payload: ChatDoc):
-    now = datetime.utcnow()
-    # Upsert: create if missing
-    await get_db()[COLL].update_one(
-        {"chat_id": payload.chat_id},
-        {"$setOnInsert": payload.model_dump()},
-        upsert=True,
-    )
-    doc = await get_db()[COLL].find_one({"chat_id": payload.chat_id}, {"_id": 0})
-    return doc
+    return await _ensure_chat_doc(payload)
+
+
+# Dedicated path used by web to avoid collision with legacy /chats/ensure route.
+@router.post("/ensure-doc", response_model=ChatResponse)
+async def ensure_chat_doc(payload: ChatDoc):
+    return await _ensure_chat_doc(payload)
 
 @router.post("/{chat_id}/append", response_model=ChatResponse)
 async def append_message(chat_id: str, req: AppendReq):

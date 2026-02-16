@@ -5,7 +5,7 @@ const DEV_USER = process.env.POC_DEV_USER || "dev"
 
 export async function POST(req: Request) {
     const body = await req.text()
-    const res = await fetch(`${BACKEND}/chats/ensure`, {
+    const res = await fetch(`${BACKEND}/chats/ensure-doc`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Dev-User": DEV_USER },
         body,
