@@ -134,6 +134,8 @@ type LlmOptionsResponse = {
     ollama_models: string[]
     openai_models: string[]
     discovery_error?: string | null
+    openai_discovery_error?: string | null
+    ollama_discovery_error?: string | null
 }
 
 type DeleteProjectResponse = {
@@ -352,10 +354,18 @@ export default function AdminPage() {
         })
     }
 
-    async function loadLlmOptions() {
+    async function loadLlmOptions(opts?: { openaiApiKey?: string; openaiBaseUrl?: string }) {
         setLoadingLlmOptions(true)
         try {
-            const options = await backendJson<LlmOptionsResponse>("/api/admin/llm/options")
+            const params = new URLSearchParams()
+            if (opts?.openaiApiKey?.trim()) {
+                params.set("openai_api_key", opts.openaiApiKey.trim())
+            }
+            if (opts?.openaiBaseUrl?.trim()) {
+                params.set("openai_base_url", opts.openaiBaseUrl.trim())
+            }
+            const path = params.toString() ? `/api/admin/llm/options?${params.toString()}` : "/api/admin/llm/options"
+            const options = await backendJson<LlmOptionsResponse>(path)
             setLlmOptions(options)
             setLlmOptionsError(options.discovery_error || null)
         } catch (err) {
@@ -880,7 +890,16 @@ export default function AdminPage() {
                                                 <Button
                                                     variant="text"
                                                     size="small"
-                                                    onClick={() => void loadLlmOptions()}
+                                                    onClick={() =>
+                                                        void loadLlmOptions(
+                                                            createForm.llm_provider === "openai"
+                                                                ? {
+                                                                    openaiApiKey: createForm.llm_api_key,
+                                                                    openaiBaseUrl: createForm.llm_base_url,
+                                                                }
+                                                                : undefined
+                                                        )
+                                                    }
                                                     disabled={loadingLlmOptions}
                                                 >
                                                     {loadingLlmOptions ? "Refreshing..." : "Refresh models"}

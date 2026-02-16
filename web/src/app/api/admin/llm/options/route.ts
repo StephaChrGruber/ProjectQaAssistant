@@ -17,8 +17,16 @@ function adminHeaders(contentType?: string): Record<string, string> {
     return headers
 }
 
-export async function GET() {
-    const res = await fetch(`${BACKEND}/admin/llm/options`, {
+export async function GET(req: Request) {
+    const url = new URL(req.url)
+    const openaiApiKey = url.searchParams.get("openai_api_key")
+    const openaiBaseUrl = url.searchParams.get("openai_base_url")
+
+    const upstream = new URL(`${BACKEND}/admin/llm/options`)
+    if (openaiApiKey) upstream.searchParams.set("openai_api_key", openaiApiKey)
+    if (openaiBaseUrl) upstream.searchParams.set("openai_base_url", openaiBaseUrl)
+
+    const res = await fetch(upstream.toString(), {
         headers: adminHeaders(),
         cache: "no-store",
     })

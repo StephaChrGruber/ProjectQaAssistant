@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import requests
 import shutil
+from urllib.parse import urljoin
 from pathlib import Path
 from ..deps import current_user
 from ..models.base_mongo_models import Project, Membership, Connector
@@ -98,6 +99,69 @@ def _discover_ollama_models(base_url: str | None) -> tuple[list[str], str | None
         return FALLBACK_OLLAMA_MODELS, str(err)
 
     return FALLBACK_OLLAMA_MODELS, None
+
+
+def _normalize_openai_base(base_url: str | None) -> str:
+    base = (base_url or OPENAI_DEFAULT_BASE_URL).rstrip("/")
+    if not base.endswith("/v1"):
+        base = base + "/v1"
+    return base + "/"
+
+
+def _looks_like_chat_model(model_id: str) -> bool:
+    mid = (model_id or "").strip().lower()
+    if not mid:
+        return False
+
+    # Keep likely chat/completions-capable models and drop obviously unrelated families.
+    allow_prefixes = ("gpt-", "chatgpt-", "o1", "o3", "o4", "omni-")
+    deny_contains = (
+        "embedding",
+        "whisper",
+        "tts",
+        "transcribe",
+        "moderation",
+        "realtime",
+        "audio",
+        "image",
+        "vision",
+    )
+    if any(part in mid for part in deny_contains):
+        return False
+    return mid.startswith(allow_prefixes)
+
+
+def _discover_openai_models(base_url: str | None, api_key: str | None) -> tuple[list[str], str | None]:
+    key = (api_key or "").strip()
+    if not key:
+        return FALLBACK_OPENAI_MODELS, None
+
+    endpoint = urljoin(_normalize_openai_base(base_url), "models")
+    try:
+        res = requests.get(
+            endpoint,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            timeout=6,
+        )
+        res.raise_for_status()
+        data = res.json() or {}
+        raw = data.get("data") or []
+        models: list[str] = []
+        for item in raw:
+            mid = (item or {}).get("id")
+            if isinstance(mid, str) and _looks_like_chat_model(mid):
+                models.append(mid.strip())
+
+        if models:
+            # Sorted for stable UX; dedupe while preserving sorted order.
+            deduped = list(dict.fromkeys(sorted(models)))
+            return deduped, None
+        return FALLBACK_OPENAI_MODELS, "OpenAI returned no chat-capable models for this key."
+    except Exception as err:
+        return FALLBACK_OPENAI_MODELS, str(err)
 
 
 def _path_picker_roots() -> list[Path]:
@@ -329,11 +393,27 @@ async def upsert_connector(
 
 
 @router.get("/admin/llm/options")
-async def llm_options(user=Depends(current_user)):
+async def llm_options(
+    openai_api_key: str | None = None,
+    openai_base_url: str | None = None,
+    user=Depends(current_user),
+):
     if not user.isGlobalAdmin:
         raise HTTPException(403, "Global admin required")
 
-    ollama_models, discovery_error = _discover_ollama_models(OLLAMA_DEFAULT_BASE_URL)
+    ollama_models, ollama_error = _discover_ollama_models(OLLAMA_DEFAULT_BASE_URL)
+    resolved_openai_key = (
+        (openai_api_key or "").strip()
+        or (settings.OPENAI_API_KEY or "").strip()
+        or (settings.LLM_API_KEY or "").strip()
+    )
+    openai_models, openai_error = _discover_openai_models(openai_base_url, resolved_openai_key)
+
+    errors: list[str] = []
+    if ollama_error:
+        errors.append(f"Ollama: {ollama_error}")
+    if openai_error:
+        errors.append(f"OpenAI: {openai_error}")
 
     return {
         "providers": [
@@ -351,8 +431,10 @@ async def llm_options(user=Depends(current_user)):
             },
         ],
         "ollama_models": ollama_models,
-        "openai_models": FALLBACK_OPENAI_MODELS,
-        "discovery_error": discovery_error,
+        "openai_models": openai_models,
+        "discovery_error": " | ".join(errors) if errors else None,
+        "ollama_discovery_error": ollama_error,
+        "openai_discovery_error": openai_error,
     }
 
 

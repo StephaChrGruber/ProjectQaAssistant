@@ -488,11 +488,17 @@ def _llm_chat_nostream(
                 continue
 
             detail = ""
+            err_code = ""
             try:
                 body = r.json()
-                detail = (body.get("error") or {}).get("message") or ""
+                err = body.get("error") or {}
+                detail = err.get("message") or ""
+                err_code = err.get("code") or err.get("type") or ""
             except Exception:
                 detail = r.text[:500]
+                err_code = ""
+            if err_code:
+                detail = f"{detail} (code={err_code})".strip()
             raise LLMUpstreamError(
                 f"LLM provider rate limited (429). {detail}".strip()
             )

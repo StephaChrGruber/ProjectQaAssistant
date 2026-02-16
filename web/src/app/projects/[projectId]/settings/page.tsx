@@ -112,6 +112,8 @@ type LlmOptionsResponse = {
     ollama_models: string[]
     openai_models: string[]
     discovery_error?: string | null
+    openai_discovery_error?: string | null
+    ollama_discovery_error?: string | null
 }
 
 const FALLBACK_OLLAMA_MODELS = ["llama3.2:3b", "llama3.1:8b", "mistral:7b", "qwen2.5:7b"]
@@ -312,10 +314,18 @@ export default function ProjectSettingsPage() {
         }
     }, [branch, projectId])
 
-    async function loadLlmOptions() {
+    async function loadLlmOptions(opts?: { openaiApiKey?: string; openaiBaseUrl?: string }) {
         setLoadingLlmOptions(true)
         try {
-            const options = await backendJson<LlmOptionsResponse>("/api/admin/llm/options")
+            const params = new URLSearchParams()
+            if (opts?.openaiApiKey?.trim()) {
+                params.set("openai_api_key", opts.openaiApiKey.trim())
+            }
+            if (opts?.openaiBaseUrl?.trim()) {
+                params.set("openai_base_url", opts.openaiBaseUrl.trim())
+            }
+            const path = params.toString() ? `/api/admin/llm/options?${params.toString()}` : "/api/admin/llm/options"
+            const options = await backendJson<LlmOptionsResponse>(path)
             setLlmOptions(options)
             setLlmOptionsError(options.discovery_error || null)
         } catch (err) {
@@ -796,7 +806,16 @@ export default function ProjectSettingsPage() {
                                         <Button
                                             variant="outlined"
                                             startIcon={<RefreshRounded />}
-                                            onClick={() => void loadLlmOptions()}
+                                            onClick={() =>
+                                                void loadLlmOptions(
+                                                    editForm.llm_provider === "openai"
+                                                        ? {
+                                                            openaiApiKey: editForm.llm_api_key,
+                                                            openaiBaseUrl: editForm.llm_base_url,
+                                                        }
+                                                        : undefined
+                                                )
+                                            }
                                             disabled={loadingLlmOptions || savingProject || savingConnector || ingesting}
                                         >
                                             {loadingLlmOptions ? "Refreshing Models..." : "Refresh Models"}

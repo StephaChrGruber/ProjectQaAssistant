@@ -117,6 +117,8 @@ async def ask_agent(req: AskReq):
             llm_model=req.llm_model or defaults["llm_model"],
         )
     except LLMUpstreamError as err:
+        detail = str(err)
+        detail_lc = detail.lower()
         logger.warning(
             "LLM upstream error for project=%s branch=%s user=%s: %s",
             req.project_id,
@@ -124,11 +126,18 @@ async def ask_agent(req: AskReq):
             req.user,
             err,
         )
-        answer = (
-            "The configured LLM provider is temporarily unavailable or rate limited. "
-            "Please try again shortly, or switch model/provider in Project Settings.\n\n"
-            f"Details: {err}"
-        )
+        if "quota" in detail_lc or "insufficient_quota" in detail_lc:
+            answer = (
+                "The configured OpenAI API key has no remaining quota or billing is not active. "
+                "Update billing/quota for that key, use another OpenAI key, or switch provider/model in Project Settings.\n\n"
+                f"Details: {detail}"
+            )
+        else:
+            answer = (
+                "The configured LLM provider is temporarily unavailable or rate limited. "
+                "Please try again shortly, or switch model/provider in Project Settings.\n\n"
+                f"Details: {detail}"
+            )
     except Exception:
         logger.exception(
             "Unexpected ask_agent failure for project=%s branch=%s user=%s",
