@@ -11,6 +11,7 @@ export async function GET(
     const url = new URL(req.url)
     const branch = url.searchParams.get("branch")
     const limit = url.searchParams.get("limit")
+    const user = url.searchParams.get("user")
 
     const upstream = new URL(`${BACKEND}/chats/by-project/${encodeURIComponent(projectId)}`)
     if (branch) {
@@ -18,6 +19,9 @@ export async function GET(
     }
     if (limit) {
         upstream.searchParams.set("limit", limit)
+    }
+    if (user) {
+        upstream.searchParams.set("user", user)
     }
 
     const res = await fetch(upstream.toString(), {
@@ -31,4 +35,3 @@ export async function GET(
         headers: { "Content-Type": res.headers.get("content-type") || "application/json" },
     })
 }
-

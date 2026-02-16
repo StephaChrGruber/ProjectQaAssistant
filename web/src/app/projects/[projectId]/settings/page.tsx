@@ -313,13 +313,13 @@ export default function ProjectSettingsPage() {
         setLoadingChats(true)
         try {
             const docs = await backendJson<DrawerChat[]>(
-                `/api/projects/${projectId}/chats?branch=${encodeURIComponent(branch)}&limit=100`
+                `/api/projects/${projectId}/chats?branch=${encodeURIComponent(branch)}&limit=100&user=${encodeURIComponent(userId)}`
             )
             setChats(docs)
         } finally {
             setLoadingChats(false)
         }
-    }, [branch, projectId])
+    }, [branch, projectId, userId])
 
     async function loadLlmOptions(opts?: { openaiApiKey?: string; openaiBaseUrl?: string }) {
         setLoadingLlmOptions(true)

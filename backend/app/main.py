@@ -2,6 +2,7 @@ import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sympy import false
 
 from .db import init_db
 from .settings import settings
@@ -31,7 +32,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEBUG = os.getenv()
+DEBUG = os.getenv("DEBUG", False)
 if DEBUG:
     import pydevd_pycharm
     pydevd_pycharm.settrace(

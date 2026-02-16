@@ -228,25 +228,26 @@ export default function ProjectChatPage() {
             setLoadingChats(true)
             try {
                 const docs = await backendJson<DrawerChat[]>(
-                    `/api/projects/${projectId}/chats?branch=${encodeURIComponent(activeBranch)}&limit=100`
+                    `/api/projects/${projectId}/chats?branch=${encodeURIComponent(activeBranch)}&limit=100&user=${encodeURIComponent(userId)}`
                 )
 
-                if (preferredChatId && !docs.some((c) => c.chat_id === preferredChatId)) {
-                    await ensureChat(preferredChatId, activeBranch)
+                const current = preferredChatId || selectedChatIdRef.current
+                if (current && !docs.some((c) => c.chat_id === current)) {
+                    await ensureChat(current, activeBranch)
                     const now = new Date().toISOString()
                     const merged: DrawerChat[] = [
                         {
-                            chat_id: preferredChatId,
+                            chat_id: current,
                             title: `${projectLabel} / ${activeBranch}`,
                             branch: activeBranch,
                             updated_at: now,
                             created_at: now,
                         },
-                        ...docs,
+                        ...docs.filter((c) => c.chat_id !== current),
                     ]
                     setChats(merged)
-                    setSelectedChatId(preferredChatId)
-                    return preferredChatId
+                    setSelectedChatId(current)
+                    return current
                 }
 
                 if (!docs.length) {
@@ -266,7 +267,6 @@ export default function ProjectChatPage() {
                 }
 
                 setChats(docs)
-                const current = preferredChatId || selectedChatIdRef.current
                 const next = (current && docs.some((c) => c.chat_id === current) && current) || docs[0]?.chat_id || null
                 setSelectedChatId(next)
                 return next
