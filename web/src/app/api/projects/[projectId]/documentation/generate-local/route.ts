@@ -20,7 +20,7 @@ export async function POST(
             },
             body,
             cache: "no-store",
-            signal: AbortSignal.timeout(180_000),
+            signal: AbortSignal.timeout(900_000),
         })
     } catch (err) {
         return NextResponse.json(

@@ -867,6 +867,29 @@ async function ensureDirectoryPath(
     return current
 }
 
+async function clearDirectoryEntries(dirHandle: FileSystemDirectoryHandle): Promise<void> {
+    const mutableHandle = dirHandle as any
+    if (typeof mutableHandle.removeEntry !== "function") return
+
+    const entries: Array<{ name: string; kind: "file" | "directory" }> = []
+    for await (const [name, child] of (dirHandle as any).entries() as AsyncIterable<[string, FileSystemHandle]>) {
+        entries.push({ name, kind: child.kind })
+    }
+
+    for (const entry of entries) {
+        await mutableHandle.removeEntry(entry.name, { recursive: entry.kind === "directory" })
+    }
+}
+
+async function clearDocumentationFolder(rootHandle: FileSystemDirectoryHandle): Promise<void> {
+    try {
+        const docsDir = await rootHandle.getDirectoryHandle("documentation")
+        await clearDirectoryEntries(docsDir)
+    } catch {
+        // documentation/ does not exist yet
+    }
+}
+
 export async function writeLocalDocumentationFiles(
     projectId: string,
     files: Array<{ path: string; content: string }>
@@ -886,7 +909,9 @@ export async function writeLocalDocumentationFiles(
         throw new Error("Write permission was not granted for the selected local repository folder.")
     }
 
-    const nextFiles = [...snapshot.files]
+    await clearDocumentationFolder(rootHandle)
+
+    const nextFiles = snapshot.files.filter((f) => !f.path.toLowerCase().startsWith("documentation/"))
     const written: string[] = []
 
     for (const item of files) {

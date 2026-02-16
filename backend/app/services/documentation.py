@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +21,8 @@ MAX_CONTEXT_FILES = 90
 MAX_TOTAL_CONTEXT_CHARS = 140_000
 MAX_FILE_CHARS = 8_000
 MAX_LLM_CONTEXT_CHARS = 120_000
+MAX_LLM_FILE_CONTEXT_CHARS = 50_000
+MAX_DOC_PLAN_FILES = 14
 
 TEXT_EXTENSIONS = {
     ".py",
@@ -275,6 +278,34 @@ def _sanitize_generated_files(files_raw: Any) -> list[dict[str, str]]:
     return out
 
 
+def _sanitize_doc_plan(files_raw: Any) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    if not isinstance(files_raw, list):
+        return out
+
+    seen: set[str] = set()
+    for item in files_raw:
+        path = ""
+        purpose = ""
+        if isinstance(item, str):
+            path = item
+        elif isinstance(item, dict):
+            path = str(item.get("path") or "")
+            purpose = str(item.get("purpose") or item.get("description") or "").strip()
+        else:
+            continue
+
+        norm = _normalize_doc_path(path)
+        if not norm or norm in seen:
+            continue
+
+        seen.add(norm)
+        out.append({"path": norm, "purpose": purpose})
+        if len(out) >= MAX_DOC_PLAN_FILES:
+            break
+    return out
+
+
 def _is_text_candidate(path: str) -> bool:
     norm = path.replace("\\", "/")
     low = norm.lower()
@@ -487,6 +518,125 @@ def _ensure_mandatory_docs(files: list[dict[str, str]], fallback: list[dict[str,
     return out
 
 
+def _bounded_context(context: str, max_chars: int) -> str:
+    text = context.strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n... (truncated context)\n"
+
+
+def _default_doc_purpose(path: str) -> str:
+    low = path.lower()
+    if low.endswith("/readme.md"):
+        return "Project documentation index with links and scope."
+    if "architecture" in low:
+        return "High-level architecture, components, and request/data flows."
+    if "setup" in low or "getting-started" in low:
+        return "Developer setup guide with prerequisites and local run steps."
+    if "structure" in low:
+        return "Repository structure and responsibilities per area."
+    return "Technical documentation for this area."
+
+
+def _generate_doc_plan_with_llm_from_context(
+    *,
+    project_name: str,
+    branch: str,
+    context: str,
+    llm_base: str,
+    llm_key: str | None,
+    llm_model: str,
+) -> tuple[list[dict[str, str]], str]:
+    bounded_context = _bounded_context(context, MAX_LLM_CONTEXT_CHARS)
+    system = (
+        "You are a senior software architect and technical writer. "
+        "First create a documentation file plan and return JSON only."
+    )
+    user = (
+        f"Project: {project_name}\n"
+        f"Branch: {branch}\n\n"
+        "Inspect the repository evidence and design a useful documentation folder structure.\n"
+        "Requirements:\n"
+        "- All files must be markdown and under 'documentation/'.\n"
+        "- Group related topics in subfolders.\n"
+        "- Include architecture and setup topics.\n"
+        "- Prefer quality over quantity.\n\n"
+        "Return EXACTLY one JSON object in this schema:\n"
+        "{\n"
+        '  "summary": "short summary of planned documentation",\n'
+        '  "files": [\n'
+        '    {"path":"documentation/README.md","purpose":"what this file covers"},\n'
+        '    {"path":"documentation/architecture/overview.md","purpose":"..."},\n'
+        '    {"path":"documentation/setup/getting-started.md","purpose":"..."}\n'
+        "  ]\n"
+        "}\n\n"
+        "Repository evidence follows:\n\n"
+        f"{bounded_context}"
+    )
+    raw = _llm_chat(
+        [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        base_url=llm_base,
+        api_key=llm_key,
+        model=llm_model,
+        timeout_sec=75,
+        max_attempts=1,
+    )
+    obj = _extract_json_obj(raw)
+    plan = _sanitize_doc_plan(obj.get("files"))
+    summary = str(obj.get("summary") or "").strip()
+    return plan, summary
+
+
+def _generate_single_doc_with_llm_from_context(
+    *,
+    project_name: str,
+    branch: str,
+    context: str,
+    llm_base: str,
+    llm_key: str | None,
+    llm_model: str,
+    target_path: str,
+    purpose: str,
+    planned_paths: list[str],
+) -> str:
+    bounded_context = _bounded_context(context, MAX_LLM_FILE_CONTEXT_CHARS)
+    plan_lines = "\n".join(f"- {p}" for p in planned_paths[:MAX_DOC_PLAN_FILES])
+    effective_purpose = purpose.strip() or _default_doc_purpose(target_path)
+    system = (
+        "You are a principal software engineer writing exactly one markdown documentation file. "
+        "Return markdown only, no JSON."
+    )
+    user = (
+        f"Project: {project_name}\n"
+        f"Branch: {branch}\n"
+        f"Target file path: {target_path}\n"
+        f"Purpose: {effective_purpose}\n\n"
+        "Planned documentation files:\n"
+        f"{plan_lines}\n\n"
+        "Requirements:\n"
+        "- Write only the content for the target file.\n"
+        "- Start with a top-level heading.\n"
+        "- Be specific and practical for developers.\n"
+        "- Use concrete module/file names from evidence where possible.\n"
+        "- Include setup/operational details when relevant.\n"
+        "- Do not wrap the whole response in code fences.\n\n"
+        "Repository evidence follows:\n\n"
+        f"{bounded_context}"
+    )
+    raw = _llm_chat(
+        [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        base_url=llm_base,
+        api_key=llm_key,
+        model=llm_model,
+        timeout_sec=60,
+        max_attempts=1,
+    )
+    content = _strip_fences(raw).strip()
+    if not content:
+        raise DocumentationError(f"LLM returned empty content for {target_path}")
+    return content + "\n"
+
+
 def _generate_docs_with_llm_from_context(
     *,
     project_name: str,
@@ -498,48 +648,38 @@ def _generate_docs_with_llm_from_context(
 ) -> tuple[list[dict[str, str]], str]:
     if not context.strip():
         return [], ""
-    bounded_context = context.strip()
-    if len(bounded_context) > MAX_LLM_CONTEXT_CHARS:
-        bounded_context = bounded_context[:MAX_LLM_CONTEXT_CHARS] + "\n... (truncated context)\n"
 
-    system = (
-        "You are a senior software architect and technical writer. "
-        "Generate repository documentation as JSON only."
+    plan, summary = _generate_doc_plan_with_llm_from_context(
+        project_name=project_name,
+        branch=branch,
+        context=context,
+        llm_base=llm_base,
+        llm_key=llm_key,
+        llm_model=llm_model,
     )
-    user = (
-        f"Project: {project_name}\n"
-        f"Branch: {branch}\n\n"
-        "Create high-quality markdown documentation files under the 'documentation/' folder.\n"
-        "Requirements:\n"
-        "- Create a useful structure (subfolders by related topics).\n"
-        "- Explain overall architecture and major modules.\n"
-        "- Provide practical technical setup guide for developers.\n"
-        "- Use comments/annotations/docstrings from code where available.\n"
-        "- Keep content concise but actionable.\n\n"
-        "Return EXACTLY one JSON object in this schema:\n"
-        "{\n"
-        '  "summary": "short summary",\n'
-        '  "files": [\n'
-        '    {"path":"documentation/README.md","content":"# ..."},\n'
-        '    {"path":"documentation/architecture/overview.md","content":"# ..."},\n'
-        '    {"path":"documentation/setup/getting-started.md","content":"# ..."}\n'
-        "  ]\n"
-        "}\n\n"
-        "Repository evidence follows:\n\n"
-        f"{bounded_context}"
-    )
+    if not plan:
+        return [], summary
 
-    raw = _llm_chat(
-        [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        base_url=llm_base,
-        api_key=llm_key,
-        model=llm_model,
-        timeout_sec=75,
-        max_attempts=1,
-    )
-    obj = _extract_json_obj(raw)
-    files = _sanitize_generated_files(obj.get("files"))
-    summary = str(obj.get("summary") or "").strip()
+    planned_paths = [item["path"] for item in plan]
+    files: list[dict[str, str]] = []
+    for item in plan:
+        path = item["path"]
+        purpose = item.get("purpose", "")
+        try:
+            content = _generate_single_doc_with_llm_from_context(
+                project_name=project_name,
+                branch=branch,
+                context=context,
+                llm_base=llm_base,
+                llm_key=llm_key,
+                llm_model=llm_model,
+                target_path=path,
+                purpose=purpose,
+                planned_paths=planned_paths,
+            )
+        except Exception:
+            continue
+        files.append({"path": path, "content": content})
     return files, summary
 
 
@@ -560,6 +700,25 @@ def _write_docs(repo_path: str, files: list[dict[str, str]]) -> list[str]:
         target.write_text(item["content"], encoding="utf-8")
         written.append(item["path"])
     return written
+
+
+def _clear_docs(repo_path: str) -> None:
+    repo_root = Path(repo_path).resolve()
+    doc_root = (repo_root / DOC_ROOT).resolve()
+    if repo_root not in doc_root.parents:
+        raise DocumentationError("Invalid documentation root path.")
+    if not doc_root.exists():
+        return
+    if not doc_root.is_dir():
+        doc_root.unlink(missing_ok=True)
+        doc_root.mkdir(parents=True, exist_ok=True)
+        return
+
+    for child in doc_root.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
 
 
 async def _load_project(project_id: str) -> dict[str, Any]:
@@ -608,16 +767,22 @@ async def generate_project_documentation(project_id: str, branch: Optional[str] 
             "Switch the repo checkout branch on the backend host first."
         )
 
+    _clear_docs(repo_path)
+
     files_out = _git_stdout(repo_path, ["ls-tree", "-r", "--name-only", chosen_branch], timeout=30)
     all_paths = [line.strip() for line in files_out.splitlines() if line.strip()]
     if not all_paths:
         raise DocumentationError("Repository appears empty for selected branch.")
 
-    selected_paths = _select_context_files(all_paths)
+    source_paths = [p for p in all_paths if not p.replace("\\", "/").startswith(f"{DOC_ROOT}/")]
+    if not source_paths:
+        source_paths = all_paths
+
+    selected_paths = _select_context_files(source_paths)
     context = _build_repo_context(repo_path, chosen_branch, selected_paths)
 
     project_name = str(project.get("name") or project.get("key") or project_id)
-    fallback = _fallback_docs(project_name, chosen_branch, all_paths, selected_paths)
+    fallback = _fallback_docs(project_name, chosen_branch, source_paths, selected_paths)
 
     provider = (project.get("llm_provider") or "").strip().lower() or "ollama"
     llm_base = _normalize_llm_base(project.get("llm_base_url"), provider)
