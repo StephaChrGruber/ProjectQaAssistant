@@ -310,9 +310,10 @@ export function ProjectDrawerLayout(props: Props) {
                     sx={{
                         display: "block",
                         "& .MuiDrawer-paper": {
-                            width: DRAWER_WIDTH,
+                            width: { xs: "min(92vw, 380px)", md: DRAWER_WIDTH },
                             boxSizing: "border-box",
                             backgroundColor: "rgba(15, 20, 34, 0.88)",
+                            borderRightColor: "rgba(255,255,255,0.14)",
                         },
                     }}
                 >
@@ -331,7 +332,7 @@ export function ProjectDrawerLayout(props: Props) {
                             backgroundColor: "rgba(10, 12, 22, 0.68)",
                         }}
                     >
-                        <Toolbar sx={{ minHeight: 58 }}>
+                        <Toolbar sx={{ minHeight: 62 }}>
                             <IconButton
                                 color="inherit"
                                 edge="start"

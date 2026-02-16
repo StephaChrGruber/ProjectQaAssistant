@@ -2,6 +2,18 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useParams, useRouter, useSearchParams } from "next/navigation"
+import {
+    Alert,
+    Box,
+    Button,
+    CircularProgress,
+    Paper,
+    Stack,
+    TextField,
+    Typography,
+} from "@mui/material"
+import SendRounded from "@mui/icons-material/SendRounded"
+import ClearAllRounded from "@mui/icons-material/ClearAllRounded"
 import { backendJson } from "@/lib/backend"
 import { ProjectDrawerLayout, type DrawerChat, type DrawerUser } from "@/components/ProjectDrawerLayout"
 import { buildChatPath, saveLastChat } from "@/lib/last-chat"
@@ -180,10 +192,7 @@ export default function ProjectChatPage() {
 
                 setChats(docs)
                 const current = preferredChatId || selectedChatIdRef.current
-                const next =
-                    (current && docs.some((c) => c.chat_id === current) && current) ||
-                    docs[0]?.chat_id ||
-                    null
+                const next = (current && docs.some((c) => c.chat_id === current) && current) || docs[0]?.chat_id || null
                 setSelectedChatId(next)
                 return next
             } finally {
@@ -400,85 +409,134 @@ export default function ProjectChatPage() {
             loadingChats={loadingChats}
             activeSection="chat"
         >
-            <main className="flex min-h-0 flex-1 flex-col">
-                <div className="border-b border-white/10 bg-slate-950/55 px-5 py-4 backdrop-blur-xl">
-                    <div className="text-[11px] uppercase tracking-[0.18em] text-slate-400">RAG Conversation</div>
-                    <div className="mt-1 text-sm text-white">
-                        {projectLabel} · <span className="text-cyan-200">{branch}</span>
-                    </div>
-                    <div className="text-xs text-slate-400">
-                        {(project?.llm_provider || "default LLM").toUpperCase()}
+            <Stack sx={{ minHeight: 0, flex: 1 }}>
+                <Paper
+                    square
+                    elevation={0}
+                    sx={{
+                        borderBottom: "1px solid",
+                        borderColor: "divider",
+                        px: { xs: 1.5, md: 3 },
+                        py: { xs: 1.25, md: 1.8 },
+                    }}
+                >
+                    <Typography variant="overline" color="text.secondary" sx={{ letterSpacing: "0.15em" }}>
+                        RAG Conversation
+                    </Typography>
+                    <Typography variant="h6" sx={{ mt: 0.2, fontWeight: 700, fontSize: { xs: "1.02rem", sm: "1.2rem" } }}>
+                        {projectLabel}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                        Branch: {branch} · {(project?.llm_provider || "default LLM").toUpperCase()}
                         {project?.llm_model ? ` · ${project.llm_model}` : ""}
-                    </div>
-                </div>
+                    </Typography>
+                </Paper>
 
                 {error && (
-                    <div className="border-b border-rose-500/30 bg-rose-500/10 px-5 py-2 text-sm text-rose-200">
-                        {error}
-                    </div>
+                    <Box sx={{ px: { xs: 1.5, md: 3 }, pt: 1.25 }}>
+                        <Alert severity="error">{error}</Alert>
+                    </Box>
                 )}
 
-                <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-6">
-                    <div className="mx-auto max-w-4xl space-y-4">
+                <Box
+                    ref={scrollRef}
+                    sx={{ minHeight: 0, flex: 1, overflowY: "auto", px: { xs: 1.25, md: 4 }, py: { xs: 1.6, md: 2.5 } }}
+                >
+                    <Stack spacing={1.5} sx={{ maxWidth: 980, mx: "auto" }}>
                         {booting && (
-                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm text-slate-300">
-                                Loading workspace...
-                            </div>
+                            <Paper variant="outlined" sx={{ p: 2, display: "flex", alignItems: "center", gap: 1.2 }}>
+                                <CircularProgress size={18} />
+                                <Typography variant="body2">Loading workspace...</Typography>
+                            </Paper>
                         )}
 
                         {!booting && !loadingMessages && messages.length === 0 && (
-                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm text-slate-300">
-                                Start with a question about this project. I can pull context from Git, Confluence, and Jira.
-                            </div>
+                            <Paper variant="outlined" sx={{ p: 2 }}>
+                                <Typography variant="body2" color="text.secondary">
+                                    Start with a question about this project. The assistant can use Git, Confluence, and Jira context.
+                                </Typography>
+                            </Paper>
                         )}
 
                         {messages.map((m, idx) => {
                             const isUser = m.role === "user"
                             return (
-                                <div key={`${m.ts || idx}-${idx}`} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-                                    <div
-                                        className={[
-                                            "max-w-[88%] rounded-2xl border px-4 py-3 text-sm leading-relaxed",
-                                            isUser
-                                                ? "border-cyan-300/30 bg-gradient-to-br from-cyan-300/20 to-emerald-300/10 text-cyan-100"
-                                                : "border-white/10 bg-white/[0.03] text-slate-100",
-                                        ].join(" ")}
+                                <Box key={`${m.ts || idx}-${idx}`} sx={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start" }}>
+                                    <Paper
+                                        variant={isUser ? "elevation" : "outlined"}
+                                        elevation={isUser ? 3 : 0}
+                                        sx={{
+                                            maxWidth: { xs: "96%", sm: "92%" },
+                                            px: { xs: 1.5, sm: 2 },
+                                            py: { xs: 1.1, sm: 1.4 },
+                                            borderRadius: 3,
+                                            bgcolor: isUser ? "primary.main" : "background.paper",
+                                            color: isUser ? "primary.contrastText" : "text.primary",
+                                        }}
                                     >
-                                        {splitChartBlocks(m.content || "").map((part, i) => {
-                                            if (part.type === "chart") {
+                                        <Stack spacing={1}>
+                                            {splitChartBlocks(m.content || "").map((part, i) => {
+                                                if (part.type === "chart") {
+                                                    return (
+                                                        <Paper key={i} variant="outlined" sx={{ p: 1.2, bgcolor: "rgba(0,0,0,0.24)" }}>
+                                                            <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.12em" }}>
+                                                                CHART BLOCK
+                                                            </Typography>
+                                                            <Box
+                                                                component="pre"
+                                                                sx={{
+                                                                    mt: 0.8,
+                                                                    mb: 0,
+                                                                    overflowX: "auto",
+                                                                    whiteSpace: "pre",
+                                                                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                                                                    fontSize: 12,
+                                                                }}
+                                                            >
+                                                                {part.value}
+                                                            </Box>
+                                                        </Paper>
+                                                    )
+                                                }
+
                                                 return (
-                                                    <div key={i} className="mt-3 rounded-xl border border-white/10 bg-black/20 p-3">
-                                                        <div className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
-                                                            Chart Block
-                                                        </div>
-                                                        <pre className="overflow-x-auto text-xs text-slate-200">{part.value}</pre>
-                                                    </div>
+                                                    <Typography key={i} variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+                                                        {part.value}
+                                                    </Typography>
                                                 )
-                                            }
-                                            return (
-                                                <p key={i} className="whitespace-pre-wrap">
-                                                    {part.value}
-                                                </p>
-                                            )
-                                        })}
-                                    </div>
-                                </div>
+                                            })}
+                                        </Stack>
+                                    </Paper>
+                                </Box>
                             )
                         })}
 
                         {(sending || loadingMessages) && (
-                            <div className="flex justify-start">
-                                <div className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2 text-sm text-slate-300">
-                                    Thinking...
-                                </div>
-                            </div>
+                            <Box sx={{ display: "flex", justifyContent: "flex-start" }}>
+                                <Paper variant="outlined" sx={{ px: 1.6, py: 1, display: "flex", alignItems: "center", gap: 1 }}>
+                                    <CircularProgress size={16} />
+                                    <Typography variant="body2" color="text.secondary">
+                                        Thinking...
+                                    </Typography>
+                                </Paper>
+                            </Box>
                         )}
-                    </div>
-                </div>
+                    </Stack>
+                </Box>
 
-                <div className="border-t border-white/10 bg-slate-950/65 px-4 py-4 backdrop-blur-xl">
-                    <div className="mx-auto flex max-w-4xl items-end gap-2">
-                        <textarea
+                <Paper
+                    square
+                    elevation={0}
+                    sx={{
+                        borderTop: "1px solid",
+                        borderColor: "divider",
+                        px: { xs: 1.25, md: 3 },
+                        pt: { xs: 1.25, md: 1.8 },
+                        pb: "calc(10px + env(safe-area-inset-bottom, 0px))",
+                    }}
+                >
+                    <Stack sx={{ maxWidth: 980, mx: "auto" }} spacing={1.2}>
+                        <TextField
                             value={input}
                             onChange={(e) => setInput(e.target.value)}
                             onKeyDown={(e) => {
@@ -487,26 +545,42 @@ export default function ProjectChatPage() {
                                     void send()
                                 }
                             }}
+                            multiline
+                            minRows={1}
+                            maxRows={6}
+                            fullWidth
                             placeholder="Ask a project question (Enter to send, Shift+Enter for newline)"
-                            className="min-h-[48px] max-h-44 flex-1 resize-none rounded-2xl border border-white/15 bg-white/[0.03] px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-300/40 placeholder:text-slate-500 focus:ring-2"
-                        />
-                        <button
-                            onClick={() => void clearChat()}
                             disabled={!selectedChatId || sending}
-                            className="rounded-xl border border-white/15 bg-white/[0.03] px-3 py-2 text-sm text-slate-200 hover:bg-white/[0.06] disabled:opacity-50"
-                        >
-                            Clear
-                        </button>
-                        <button
-                            onClick={() => void send()}
-                            disabled={sending || !input.trim() || !selectedChatId}
-                            className="rounded-xl bg-gradient-to-r from-cyan-300 to-emerald-300 px-4 py-2 text-sm font-semibold text-slate-900 hover:from-cyan-200 hover:to-emerald-200 disabled:opacity-50"
-                        >
-                            Send
-                        </button>
-                    </div>
-                </div>
-            </main>
+                            InputProps={{
+                                sx: {
+                                    fontSize: { xs: 14, sm: 15 },
+                                },
+                            }}
+                        />
+
+                        <Stack direction="row" spacing={1} justifyContent="flex-end">
+                            <Button
+                                variant="outlined"
+                                startIcon={<ClearAllRounded />}
+                                onClick={() => void clearChat()}
+                                disabled={!selectedChatId || sending}
+                                sx={{ flex: { xs: 1, sm: "0 0 auto" } }}
+                            >
+                                Clear
+                            </Button>
+                            <Button
+                                variant="contained"
+                                endIcon={<SendRounded />}
+                                onClick={() => void send()}
+                                disabled={sending || !input.trim() || !selectedChatId}
+                                sx={{ flex: { xs: 1, sm: "0 0 auto" } }}
+                            >
+                                Send
+                            </Button>
+                        </Stack>
+                    </Stack>
+                </Paper>
+            </Stack>
         </ProjectDrawerLayout>
     )
 }

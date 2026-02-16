@@ -2,6 +2,38 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
+import {
+    Alert,
+    Box,
+    Button,
+    Card,
+    CardContent,
+    Checkbox,
+    Chip,
+    Container,
+    Divider,
+    FormControl,
+    FormControlLabel,
+    InputLabel,
+    LinearProgress,
+    MenuItem,
+    Paper,
+    Select,
+    Stack,
+    Step,
+    StepButton,
+    Stepper,
+    Switch,
+    TextField,
+    Typography,
+    useMediaQuery,
+    useTheme,
+} from "@mui/material"
+import AddRounded from "@mui/icons-material/AddRounded"
+import SaveRounded from "@mui/icons-material/SaveRounded"
+import CloudUploadRounded from "@mui/icons-material/CloudUploadRounded"
+import RefreshRounded from "@mui/icons-material/RefreshRounded"
+import ArrowBackRounded from "@mui/icons-material/ArrowBackRounded"
 import { backendJson } from "@/lib/backend"
 
 type MeUser = {
@@ -73,6 +105,8 @@ type JiraForm = {
     jql: string
 }
 
+const CREATE_STEPS = ["Project", "LLM", "Sources", "Review"] as const
+
 function emptyProjectForm(): ProjectForm {
     return {
         key: "",
@@ -119,22 +153,61 @@ function getConnector(project: AdminProject | undefined, type: ConnectorDoc["typ
     return project?.connectors?.find((c) => c.type === type)
 }
 
-function inputClassName() {
-    return "mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-300/35 placeholder:text-slate-500 focus:ring-2"
+function connectorPayloads(git: GitForm, confluence: ConfluenceForm, jira: JiraForm) {
+    return {
+        git: {
+            isEnabled: git.isEnabled,
+            config: {
+                owner: git.owner.trim(),
+                repo: git.repo.trim(),
+                branch: git.branch.trim() || "main",
+                token: git.token.trim(),
+                paths: csvToList(git.paths),
+            },
+        },
+        confluence: {
+            isEnabled: confluence.isEnabled,
+            config: {
+                baseUrl: confluence.baseUrl.trim(),
+                spaceKey: confluence.spaceKey.trim(),
+                email: confluence.email.trim(),
+                apiToken: confluence.apiToken.trim(),
+            },
+        },
+        jira: {
+            isEnabled: jira.isEnabled,
+            config: {
+                baseUrl: jira.baseUrl.trim(),
+                email: jira.email.trim(),
+                apiToken: jira.apiToken.trim(),
+                jql: jira.jql.trim(),
+            },
+        },
+    }
 }
 
 export default function AdminPage() {
+    const theme = useTheme()
+    const compactWizard = useMediaQuery(theme.breakpoints.down("sm"))
+
     const [me, setMe] = useState<MeUser | null>(null)
     const [projects, setProjects] = useState<AdminProject[]>([])
     const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
+
     const [loading, setLoading] = useState(true)
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [notice, setNotice] = useState<string | null>(null)
 
-    const [createForm, setCreateForm] = useState<ProjectForm>(emptyProjectForm())
-    const [editForm, setEditForm] = useState<ProjectForm>(emptyProjectForm())
+    const [wizardStep, setWizardStep] = useState(0)
+    const [ingestOnCreate, setIngestOnCreate] = useState(false)
 
+    const [createForm, setCreateForm] = useState<ProjectForm>(emptyProjectForm())
+    const [createGitForm, setCreateGitForm] = useState<GitForm>(emptyGit())
+    const [createConfluenceForm, setCreateConfluenceForm] = useState<ConfluenceForm>(emptyConfluence())
+    const [createJiraForm, setCreateJiraForm] = useState<JiraForm>(emptyJira())
+
+    const [editForm, setEditForm] = useState<ProjectForm>(emptyProjectForm())
     const [gitForm, setGitForm] = useState<GitForm>(emptyGit())
     const [confluenceForm, setConfluenceForm] = useState<ConfluenceForm>(emptyConfluence())
     const [jiraForm, setJiraForm] = useState<JiraForm>(emptyJira())
@@ -142,6 +215,21 @@ export default function AdminPage() {
     const selectedProject = useMemo(
         () => projects.find((p) => p.id === selectedProjectId),
         [projects, selectedProjectId]
+    )
+
+    const basicsValid = useMemo(
+        () => Boolean(createForm.key.trim() && createForm.name.trim()),
+        [createForm.key, createForm.name]
+    )
+
+    const llmValid = useMemo(
+        () => Boolean(createForm.llm_provider.trim() && createForm.llm_model.trim()),
+        [createForm.llm_provider, createForm.llm_model]
+    )
+
+    const stepStatus = useMemo(
+        () => [true, basicsValid, basicsValid && llmValid, basicsValid && llmValid],
+        [basicsValid, llmValid]
     )
 
     async function refreshProjects(preferredProjectId?: string) {
@@ -154,8 +242,20 @@ export default function AdminPage() {
         })
     }
 
+    async function putConnector(
+        projectId: string,
+        type: "git" | "confluence" | "jira",
+        payload: Record<string, unknown>
+    ) {
+        await backendJson(`/api/admin/projects/${projectId}/connectors/${type}`, {
+            method: "PUT",
+            body: JSON.stringify(payload),
+        })
+    }
+
     useEffect(() => {
         let cancelled = false
+
         async function boot() {
             setLoading(true)
             setError(null)
@@ -171,7 +271,7 @@ export default function AdminPage() {
             }
         }
 
-        boot()
+        void boot()
         return () => {
             cancelled = true
         }
@@ -211,6 +311,7 @@ export default function AdminPage() {
             token: asStr(g?.config?.token),
             paths: Array.isArray(g?.config?.paths) ? (g?.config?.paths as string[]).join(", ") : "",
         })
+
         setConfluenceForm({
             isEnabled: c?.isEnabled ?? false,
             baseUrl: asStr(c?.config?.baseUrl),
@@ -218,6 +319,7 @@ export default function AdminPage() {
             email: asStr(c?.config?.email),
             apiToken: asStr(c?.config?.apiToken),
         })
+
         setJiraForm({
             isEnabled: j?.isEnabled ?? false,
             baseUrl: asStr(j?.config?.baseUrl),
@@ -227,11 +329,32 @@ export default function AdminPage() {
         })
     }, [selectedProject])
 
-    async function onCreateProject(e: FormEvent<HTMLFormElement>) {
-        e.preventDefault()
+    function resetCreateWorkflow() {
+        setCreateForm(emptyProjectForm())
+        setCreateGitForm(emptyGit())
+        setCreateConfluenceForm(emptyConfluence())
+        setCreateJiraForm(emptyJira())
+        setWizardStep(0)
+        setIngestOnCreate(false)
+    }
+
+    function canOpenStep(target: number): boolean {
+        if (target <= 0) return true
+        if (target === 1) return basicsValid
+        if (target === 2) return basicsValid && llmValid
+        return basicsValid && llmValid
+    }
+
+    async function createProjectFromWizard() {
+        if (!basicsValid || !llmValid) {
+            setError("Please complete project and LLM details before creating the project.")
+            return
+        }
+
         setBusy(true)
         setError(null)
         setNotice(null)
+
         try {
             const created = await backendJson<AdminProject>("/api/admin/projects", {
                 method: "POST",
@@ -247,9 +370,26 @@ export default function AdminPage() {
                     llm_api_key: createForm.llm_api_key.trim() || null,
                 }),
             })
-            setCreateForm(emptyProjectForm())
+
+            const payloads = connectorPayloads(createGitForm, createConfluenceForm, createJiraForm)
+            await Promise.all([
+                putConnector(created.id, "git", payloads.git),
+                putConnector(created.id, "confluence", payloads.confluence),
+                putConnector(created.id, "jira", payloads.jira),
+            ])
+
+            if (ingestOnCreate) {
+                await backendJson(`/api/admin/projects/${created.id}/ingest`, { method: "POST" })
+            }
+
             await refreshProjects(created.id)
-            setNotice(`Project ${created.key} created.`)
+            resetCreateWorkflow()
+
+            setNotice(
+                ingestOnCreate
+                    ? `Project ${created.key} created, sources configured, and ingestion started.`
+                    : `Project ${created.key} created and sources configured.`
+            )
         } catch (err) {
             setError(errText(err))
         } finally {
@@ -260,9 +400,11 @@ export default function AdminPage() {
     async function onSaveProject(e: FormEvent<HTMLFormElement>) {
         e.preventDefault()
         if (!selectedProjectId) return
+
         setBusy(true)
         setError(null)
         setNotice(null)
+
         try {
             await backendJson<AdminProject>(`/api/admin/projects/${selectedProjectId}`, {
                 method: "PATCH",
@@ -288,50 +430,22 @@ export default function AdminPage() {
 
     async function saveConnector(type: "git" | "confluence" | "jira") {
         if (!selectedProjectId) return
+
         setBusy(true)
         setError(null)
         setNotice(null)
+
         try {
+            const payloads = connectorPayloads(gitForm, confluenceForm, jiraForm)
+
             if (type === "git") {
-                await backendJson(`/api/admin/projects/${selectedProjectId}/connectors/git`, {
-                    method: "PUT",
-                    body: JSON.stringify({
-                        isEnabled: gitForm.isEnabled,
-                        config: {
-                            owner: gitForm.owner.trim(),
-                            repo: gitForm.repo.trim(),
-                            branch: gitForm.branch.trim() || "main",
-                            token: gitForm.token.trim(),
-                            paths: csvToList(gitForm.paths),
-                        },
-                    }),
-                })
-            } else if (type === "confluence") {
-                await backendJson(`/api/admin/projects/${selectedProjectId}/connectors/confluence`, {
-                    method: "PUT",
-                    body: JSON.stringify({
-                        isEnabled: confluenceForm.isEnabled,
-                        config: {
-                            baseUrl: confluenceForm.baseUrl.trim(),
-                            spaceKey: confluenceForm.spaceKey.trim(),
-                            email: confluenceForm.email.trim(),
-                            apiToken: confluenceForm.apiToken.trim(),
-                        },
-                    }),
-                })
-            } else {
-                await backendJson(`/api/admin/projects/${selectedProjectId}/connectors/jira`, {
-                    method: "PUT",
-                    body: JSON.stringify({
-                        isEnabled: jiraForm.isEnabled,
-                        config: {
-                            baseUrl: jiraForm.baseUrl.trim(),
-                            email: jiraForm.email.trim(),
-                            apiToken: jiraForm.apiToken.trim(),
-                            jql: jiraForm.jql.trim(),
-                        },
-                    }),
-                })
+                await putConnector(selectedProjectId, "git", payloads.git)
+            }
+            if (type === "confluence") {
+                await putConnector(selectedProjectId, "confluence", payloads.confluence)
+            }
+            if (type === "jira") {
+                await putConnector(selectedProjectId, "jira", payloads.jira)
             }
 
             await refreshProjects(selectedProjectId)
@@ -343,14 +457,14 @@ export default function AdminPage() {
         }
     }
 
-    async function runIngest() {
-        if (!selectedProjectId) return
+    async function runIngest(projectId: string) {
         setBusy(true)
         setError(null)
         setNotice(null)
+
         try {
             const out = await backendJson<{ totalDocs?: number; totalChunks?: number; errors?: Record<string, string> }>(
-                `/api/admin/projects/${selectedProjectId}/ingest`,
+                `/api/admin/projects/${projectId}/ingest`,
                 { method: "POST" }
             )
             const errCount = Object.keys(out.errors || {}).length
@@ -366,472 +480,935 @@ export default function AdminPage() {
 
     if (loading) {
         return (
-            <div className="min-h-screen bg-slate-950 px-4 py-10 text-slate-200">
-                <div className="mx-auto max-w-5xl">Loading admin workspace...</div>
-            </div>
+            <Box sx={{ minHeight: "100vh", py: 8 }}>
+                <Container maxWidth="md">
+                    <Paper variant="outlined" sx={{ p: 3 }}>
+                        <Typography variant="h6">Loading admin workspace...</Typography>
+                    </Paper>
+                </Container>
+            </Box>
         )
     }
 
     if (!me?.isGlobalAdmin) {
         return (
-            <div className="min-h-screen bg-slate-950 px-4 py-10 text-slate-200">
-                <div className="mx-auto max-w-3xl rounded-2xl border border-rose-500/30 bg-rose-500/10 p-6">
-                    <h1 className="text-xl font-semibold">Admin access required</h1>
-                    <p className="mt-2 text-sm text-rose-100">
-                        This page needs global admin privileges. Switch to an admin identity or enable dev admin mode.
-                    </p>
-                    <Link href="/projects" className="mt-4 inline-block rounded-lg bg-slate-100 px-4 py-2 text-sm text-slate-900">
-                        Back to projects
-                    </Link>
-                </div>
-            </div>
+            <Box sx={{ minHeight: "100vh", py: 8 }}>
+                <Container maxWidth="md">
+                    <Paper variant="outlined" sx={{ p: 4 }}>
+                        <Typography variant="h5" sx={{ fontWeight: 700 }}>
+                            Admin access required
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
+                            This page needs global admin privileges. Switch to an admin identity or enable dev admin mode.
+                        </Typography>
+                        <Button component={Link} href="/projects" variant="contained" sx={{ mt: 3 }}>
+                            Back to projects
+                        </Button>
+                    </Paper>
+                </Container>
+            </Box>
         )
     }
 
     return (
-        <main className="min-h-screen bg-slate-950 px-4 py-6 text-slate-100">
-            <div className="mx-auto max-w-7xl space-y-5">
-                <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div>
-                            <div className="text-xs uppercase tracking-[0.22em] text-cyan-300/80">Admin Workflow</div>
-                            <h1 className="mt-1 text-2xl font-semibold">Project + Source Configuration</h1>
-                            <p className="mt-2 text-sm text-slate-400">
-                                Create projects, configure Git/Confluence/Jira sources, choose Ollama or ChatGPT-compatible
-                                LLM, then run ingestion.
-                            </p>
-                        </div>
-                        <Link href="/projects" className="rounded-lg border border-slate-700 px-4 py-2 text-sm hover:bg-slate-950">
-                            Back to Projects
-                        </Link>
-                    </div>
-                </div>
+        <Box sx={{ minHeight: "100vh", py: { xs: 2, md: 3 } }}>
+            <Container maxWidth="xl">
+                <Stack spacing={{ xs: 2, md: 2.5 }}>
+                    <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 } }}>
+                        <Stack
+                            direction={{ xs: "column", md: "row" }}
+                            spacing={2}
+                            alignItems={{ xs: "flex-start", md: "center" }}
+                            justifyContent="space-between"
+                        >
+                            <Box>
+                                <Typography variant="overline" color="primary.light" sx={{ letterSpacing: "0.14em" }}>
+                                    Admin Workflow
+                                </Typography>
+                                <Typography variant="h4" sx={{ fontWeight: 700, mt: 0.5, fontSize: { xs: "1.6rem", md: "2.1rem" } }}>
+                                    Project + Source Configuration
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                                    Create projects, configure Git/Confluence/Jira sources, choose model provider, and run
+                                    ingestion.
+                                </Typography>
+                            </Box>
 
-                {error && (
-                    <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-200">{error}</div>
-                )}
-                {notice && (
-                    <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200">
-                        {notice}
-                    </div>
-                )}
+                            <Button
+                                component={Link}
+                                href="/projects"
+                                variant="outlined"
+                                startIcon={<ArrowBackRounded />}
+                            >
+                                Back to projects
+                            </Button>
+                        </Stack>
+                    </Paper>
 
-                <div className="grid gap-5 xl:grid-cols-[380px,1fr]">
-                    <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-                        <h2 className="text-lg font-medium">New Project</h2>
-                        <form onSubmit={onCreateProject} className="mt-3 space-y-3">
-                            <label className="block text-sm">
-                                Key
-                                <input
-                                    className={inputClassName()}
-                                    value={createForm.key}
-                                    onChange={(e) => setCreateForm((f) => ({ ...f, key: e.target.value }))}
-                                    placeholder="qa-assist"
-                                    required
-                                />
-                            </label>
-                            <label className="block text-sm">
-                                Name
-                                <input
-                                    className={inputClassName()}
-                                    value={createForm.name}
-                                    onChange={(e) => setCreateForm((f) => ({ ...f, name: e.target.value }))}
-                                    placeholder="QA Assistant"
-                                    required
-                                />
-                            </label>
-                            <label className="block text-sm">
-                                Description
-                                <textarea
-                                    className={inputClassName()}
-                                    value={createForm.description}
-                                    onChange={(e) => setCreateForm((f) => ({ ...f, description: e.target.value }))}
-                                    rows={3}
-                                />
-                            </label>
-                            <label className="block text-sm">
-                                Local Repo Path
-                                <input
-                                    className={inputClassName()}
-                                    value={createForm.repo_path}
-                                    onChange={(e) => setCreateForm((f) => ({ ...f, repo_path: e.target.value }))}
-                                    placeholder="/workspace/repo"
-                                />
-                            </label>
-                            <label className="block text-sm">
-                                Default Branch
-                                <input
-                                    className={inputClassName()}
-                                    value={createForm.default_branch}
-                                    onChange={(e) => setCreateForm((f) => ({ ...f, default_branch: e.target.value }))}
-                                    placeholder="main"
-                                />
-                            </label>
+                    {busy && <LinearProgress />}
+                    {error && <Alert severity="error">{error}</Alert>}
+                    {notice && <Alert severity="success">{notice}</Alert>}
 
-                            <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
-                                <div className="text-sm font-medium">LLM</div>
-                                <label className="mt-2 block text-sm">
-                                    Provider
-                                    <select
-                                        className={inputClassName()}
-                                        value={createForm.llm_provider}
-                                        onChange={(e) => setCreateForm((f) => ({ ...f, llm_provider: e.target.value }))}
+                    <Box
+                        sx={{
+                            display: "grid",
+                            gap: 2.5,
+                            gridTemplateColumns: {
+                                xs: "1fr",
+                                xl: "minmax(360px, 420px) minmax(0, 1fr)",
+                            },
+                        }}
+                    >
+                        <Card variant="outlined">
+                            <CardContent sx={{ p: { xs: 1.5, md: 2.5 } }}>
+                                <Stack spacing={{ xs: 2, md: 2.5 }}>
+                                    <Box>
+                                        <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                                            New Project Wizard
+                                        </Typography>
+                                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                                            Click through each step to set up project metadata, model config, and sources.
+                                        </Typography>
+                                    </Box>
+
+                                    <Stepper
+                                        nonLinear
+                                        activeStep={wizardStep}
+                                        alternativeLabel={!compactWizard}
+                                        orientation={compactWizard ? "vertical" : "horizontal"}
+                                        sx={{
+                                            "& .MuiStepLabel-label": {
+                                                fontSize: { xs: "0.8rem", sm: "0.9rem" },
+                                            },
+                                        }}
                                     >
-                                        <option value="ollama">Ollama (local)</option>
-                                        <option value="openai">ChatGPT / OpenAI API</option>
-                                    </select>
-                                </label>
-                                <label className="mt-2 block text-sm">
-                                    Base URL
-                                    <input
-                                        className={inputClassName()}
-                                        value={createForm.llm_base_url}
-                                        onChange={(e) => setCreateForm((f) => ({ ...f, llm_base_url: e.target.value }))}
-                                        placeholder="http://ollama:11434/v1 or https://api.openai.com/v1"
-                                    />
-                                </label>
-                                <label className="mt-2 block text-sm">
-                                    Model
-                                    <input
-                                        className={inputClassName()}
-                                        value={createForm.llm_model}
-                                        onChange={(e) => setCreateForm((f) => ({ ...f, llm_model: e.target.value }))}
-                                        placeholder="llama3.2:3b or gpt-4o-mini"
-                                    />
-                                </label>
-                                <label className="mt-2 block text-sm">
-                                    API Key
-                                    <input
-                                        className={inputClassName()}
-                                        value={createForm.llm_api_key}
-                                        onChange={(e) => setCreateForm((f) => ({ ...f, llm_api_key: e.target.value }))}
-                                        placeholder="ollama / sk-..."
-                                    />
-                                </label>
-                            </div>
+                                        {CREATE_STEPS.map((label, index) => (
+                                            <Step key={label} completed={index < wizardStep && stepStatus[index]}>
+                                                <StepButton
+                                                    color="inherit"
+                                                    onClick={() => {
+                                                        if (canOpenStep(index)) {
+                                                            setWizardStep(index)
+                                                        }
+                                                    }}
+                                                    disabled={!canOpenStep(index)}
+                                                >
+                                                    {label}
+                                                </StepButton>
+                                            </Step>
+                                        ))}
+                                    </Stepper>
 
-                            <button
-                                type="submit"
-                                disabled={busy}
-                                className="w-full rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-cyan-300 disabled:opacity-50"
-                            >
-                                Create Project
-                            </button>
-                        </form>
-                    </section>
-
-                    <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-                        <div className="flex flex-wrap items-center gap-2">
-                            <h2 className="text-lg font-medium">Selected Project</h2>
-                            <select
-                                className="ml-auto rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-                                value={selectedProjectId || ""}
-                                onChange={(e) => setSelectedProjectId(e.target.value || null)}
-                            >
-                                {projects.map((p) => (
-                                    <option key={p.id} value={p.id}>
-                                        {p.name} ({p.key})
-                                    </option>
-                                ))}
-                            </select>
-                        </div>
-
-                        {!selectedProject && (
-                            <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950 p-4 text-sm text-slate-400">
-                                No project selected.
-                            </div>
-                        )}
-
-                        {selectedProject && (
-                            <div className="mt-4 space-y-4">
-                                <form onSubmit={onSaveProject} className="rounded-xl border border-slate-800 bg-slate-950 p-4">
-                                    <div className="grid gap-3 md:grid-cols-2">
-                                        <label className="block text-sm">
-                                            Key (read-only)
-                                            <input className={inputClassName()} value={editForm.key} disabled />
-                                        </label>
-                                        <label className="block text-sm">
-                                            Name
-                                            <input
-                                                className={inputClassName()}
-                                                value={editForm.name}
-                                                onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
+                                    {wizardStep === 0 && (
+                                        <Stack spacing={1.5}>
+                                            <TextField
+                                                label="Project Key"
+                                                value={createForm.key}
+                                                onChange={(e) => setCreateForm((f) => ({ ...f, key: e.target.value }))}
+                                                placeholder="qa-assist"
+                                                required
+                                                fullWidth
+                                                size="small"
                                             />
-                                        </label>
-                                        <label className="block text-sm md:col-span-2">
-                                            Description
-                                            <textarea
-                                                className={inputClassName()}
-                                                rows={3}
-                                                value={editForm.description}
-                                                onChange={(e) => setEditForm((f) => ({ ...f, description: e.target.value }))}
+                                            <TextField
+                                                label="Project Name"
+                                                value={createForm.name}
+                                                onChange={(e) => setCreateForm((f) => ({ ...f, name: e.target.value }))}
+                                                placeholder="QA Assistant"
+                                                required
+                                                fullWidth
+                                                size="small"
                                             />
-                                        </label>
-                                        <label className="block text-sm md:col-span-2">
-                                            Local Repo Path
-                                            <input
-                                                className={inputClassName()}
-                                                value={editForm.repo_path}
-                                                onChange={(e) => setEditForm((f) => ({ ...f, repo_path: e.target.value }))}
-                                            />
-                                        </label>
-                                        <label className="block text-sm">
-                                            Default Branch
-                                            <input
-                                                className={inputClassName()}
-                                                value={editForm.default_branch}
+                                            <TextField
+                                                label="Description"
+                                                value={createForm.description}
                                                 onChange={(e) =>
-                                                    setEditForm((f) => ({ ...f, default_branch: e.target.value }))
+                                                    setCreateForm((f) => ({ ...f, description: e.target.value }))
                                                 }
+                                                multiline
+                                                minRows={3}
+                                                fullWidth
+                                                size="small"
                                             />
-                                        </label>
-                                        <label className="block text-sm">
-                                            LLM Provider
-                                            <select
-                                                className={inputClassName()}
-                                                value={editForm.llm_provider}
+                                            <TextField
+                                                label="Local Repo Path"
+                                                value={createForm.repo_path}
                                                 onChange={(e) =>
-                                                    setEditForm((f) => ({ ...f, llm_provider: e.target.value }))
+                                                    setCreateForm((f) => ({ ...f, repo_path: e.target.value }))
                                                 }
+                                                placeholder="/workspace/repo"
+                                                fullWidth
+                                                size="small"
+                                            />
+                                            <TextField
+                                                label="Default Branch"
+                                                value={createForm.default_branch}
+                                                onChange={(e) =>
+                                                    setCreateForm((f) => ({ ...f, default_branch: e.target.value }))
+                                                }
+                                                placeholder="main"
+                                                fullWidth
+                                                size="small"
+                                            />
+                                        </Stack>
+                                    )}
+
+                                    {wizardStep === 1 && (
+                                        <Stack spacing={1.5}>
+                                            <FormControl fullWidth size="small">
+                                                <InputLabel id="create-llm-provider-label">Provider</InputLabel>
+                                                <Select
+                                                    labelId="create-llm-provider-label"
+                                                    value={createForm.llm_provider}
+                                                    label="Provider"
+                                                    onChange={(e) =>
+                                                        setCreateForm((f) => ({ ...f, llm_provider: e.target.value }))
+                                                    }
+                                                >
+                                                    <MenuItem value="ollama">Ollama (local)</MenuItem>
+                                                    <MenuItem value="openai">ChatGPT / OpenAI API</MenuItem>
+                                                </Select>
+                                            </FormControl>
+
+                                            <TextField
+                                                label="Base URL"
+                                                value={createForm.llm_base_url}
+                                                onChange={(e) =>
+                                                    setCreateForm((f) => ({ ...f, llm_base_url: e.target.value }))
+                                                }
+                                                placeholder="http://ollama:11434/v1 or https://api.openai.com/v1"
+                                                fullWidth
+                                                size="small"
+                                            />
+
+                                            <TextField
+                                                label="Model"
+                                                value={createForm.llm_model}
+                                                onChange={(e) =>
+                                                    setCreateForm((f) => ({ ...f, llm_model: e.target.value }))
+                                                }
+                                                placeholder="llama3.2:3b or gpt-4o-mini"
+                                                fullWidth
+                                                size="small"
+                                            />
+
+                                            <TextField
+                                                label="API Key"
+                                                value={createForm.llm_api_key}
+                                                onChange={(e) =>
+                                                    setCreateForm((f) => ({ ...f, llm_api_key: e.target.value }))
+                                                }
+                                                placeholder="ollama / sk-..."
+                                                fullWidth
+                                                size="small"
+                                            />
+                                        </Stack>
+                                    )}
+
+                                    {wizardStep === 2 && (
+                                        <Stack spacing={1.5}>
+                                            <Paper variant="outlined" sx={{ p: { xs: 1.25, sm: 1.5 } }}>
+                                                <Stack spacing={1.2}>
+                                                    <FormControlLabel
+                                                        control={
+                                                            <Switch
+                                                                checked={createGitForm.isEnabled}
+                                                                onChange={(e) =>
+                                                                    setCreateGitForm((f) => ({
+                                                                        ...f,
+                                                                        isEnabled: e.target.checked,
+                                                                    }))
+                                                                }
+                                                            />
+                                                        }
+                                                        label="Enable Git source"
+                                                    />
+                                                    <TextField
+                                                        label="Owner"
+                                                        value={createGitForm.owner}
+                                                        onChange={(e) =>
+                                                            setCreateGitForm((f) => ({ ...f, owner: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="Repository"
+                                                        value={createGitForm.repo}
+                                                        onChange={(e) =>
+                                                            setCreateGitForm((f) => ({ ...f, repo: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="Branch"
+                                                        value={createGitForm.branch}
+                                                        onChange={(e) =>
+                                                            setCreateGitForm((f) => ({ ...f, branch: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="Token"
+                                                        value={createGitForm.token}
+                                                        onChange={(e) =>
+                                                            setCreateGitForm((f) => ({ ...f, token: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="Paths (comma-separated)"
+                                                        value={createGitForm.paths}
+                                                        onChange={(e) =>
+                                                            setCreateGitForm((f) => ({ ...f, paths: e.target.value }))
+                                                        }
+                                                        placeholder="src, docs"
+                                                        size="small"
+                                                    />
+                                                </Stack>
+                                            </Paper>
+
+                                            <Paper variant="outlined" sx={{ p: { xs: 1.25, sm: 1.5 } }}>
+                                                <Stack spacing={1.2}>
+                                                    <FormControlLabel
+                                                        control={
+                                                            <Switch
+                                                                checked={createConfluenceForm.isEnabled}
+                                                                onChange={(e) =>
+                                                                    setCreateConfluenceForm((f) => ({
+                                                                        ...f,
+                                                                        isEnabled: e.target.checked,
+                                                                    }))
+                                                                }
+                                                            />
+                                                        }
+                                                        label="Enable Confluence source"
+                                                    />
+                                                    <TextField
+                                                        label="Base URL"
+                                                        value={createConfluenceForm.baseUrl}
+                                                        onChange={(e) =>
+                                                            setCreateConfluenceForm((f) => ({
+                                                                ...f,
+                                                                baseUrl: e.target.value,
+                                                            }))
+                                                        }
+                                                        placeholder="https://your-domain.atlassian.net/wiki"
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="Space Key"
+                                                        value={createConfluenceForm.spaceKey}
+                                                        onChange={(e) =>
+                                                            setCreateConfluenceForm((f) => ({
+                                                                ...f,
+                                                                spaceKey: e.target.value,
+                                                            }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="Email"
+                                                        value={createConfluenceForm.email}
+                                                        onChange={(e) =>
+                                                            setCreateConfluenceForm((f) => ({ ...f, email: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="API Token"
+                                                        value={createConfluenceForm.apiToken}
+                                                        onChange={(e) =>
+                                                            setCreateConfluenceForm((f) => ({
+                                                                ...f,
+                                                                apiToken: e.target.value,
+                                                            }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                </Stack>
+                                            </Paper>
+
+                                            <Paper variant="outlined" sx={{ p: { xs: 1.25, sm: 1.5 } }}>
+                                                <Stack spacing={1.2}>
+                                                    <FormControlLabel
+                                                        control={
+                                                            <Switch
+                                                                checked={createJiraForm.isEnabled}
+                                                                onChange={(e) =>
+                                                                    setCreateJiraForm((f) => ({
+                                                                        ...f,
+                                                                        isEnabled: e.target.checked,
+                                                                    }))
+                                                                }
+                                                            />
+                                                        }
+                                                        label="Enable Jira source"
+                                                    />
+                                                    <TextField
+                                                        label="Base URL"
+                                                        value={createJiraForm.baseUrl}
+                                                        onChange={(e) =>
+                                                            setCreateJiraForm((f) => ({ ...f, baseUrl: e.target.value }))
+                                                        }
+                                                        placeholder="https://your-domain.atlassian.net"
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="Email"
+                                                        value={createJiraForm.email}
+                                                        onChange={(e) =>
+                                                            setCreateJiraForm((f) => ({ ...f, email: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="API Token"
+                                                        value={createJiraForm.apiToken}
+                                                        onChange={(e) =>
+                                                            setCreateJiraForm((f) => ({ ...f, apiToken: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="JQL"
+                                                        value={createJiraForm.jql}
+                                                        onChange={(e) =>
+                                                            setCreateJiraForm((f) => ({ ...f, jql: e.target.value }))
+                                                        }
+                                                        placeholder="project = CORE ORDER BY updated DESC"
+                                                        size="small"
+                                                    />
+                                                </Stack>
+                                            </Paper>
+                                        </Stack>
+                                    )}
+
+                                    {wizardStep === 3 && (
+                                        <Stack spacing={1.5}>
+                                            <Paper variant="outlined" sx={{ p: { xs: 1.25, sm: 1.5 } }}>
+                                                <Stack spacing={1}>
+                                                    <Typography variant="subtitle2">Project</Typography>
+                                                    <Typography variant="body2" color="text.secondary">
+                                                        {createForm.name || "(no name)"} · {createForm.key || "(no key)"}
+                                                    </Typography>
+                                                    <Typography variant="body2" color="text.secondary">
+                                                        Branch: {createForm.default_branch || "main"}
+                                                    </Typography>
+                                                    <Typography variant="body2" color="text.secondary">
+                                                        Repo path: {createForm.repo_path || "not set"}
+                                                    </Typography>
+                                                </Stack>
+                                            </Paper>
+
+                                            <Paper variant="outlined" sx={{ p: { xs: 1.25, sm: 1.5 } }}>
+                                                <Stack spacing={1}>
+                                                    <Typography variant="subtitle2">LLM</Typography>
+                                                    <Typography variant="body2" color="text.secondary">
+                                                        {createForm.llm_provider.toUpperCase()} · {createForm.llm_model || "n/a"}
+                                                    </Typography>
+                                                    <Typography variant="body2" color="text.secondary" sx={{ wordBreak: "break-all" }}>
+                                                        {createForm.llm_base_url || "backend default"}
+                                                    </Typography>
+                                                </Stack>
+                                            </Paper>
+
+                                            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                                                <Chip
+                                                    label={`Git: ${createGitForm.isEnabled ? "enabled" : "disabled"}`}
+                                                    color={createGitForm.isEnabled ? "primary" : "default"}
+                                                    variant={createGitForm.isEnabled ? "filled" : "outlined"}
+                                                />
+                                                <Chip
+                                                    label={`Confluence: ${createConfluenceForm.isEnabled ? "enabled" : "disabled"}`}
+                                                    color={createConfluenceForm.isEnabled ? "primary" : "default"}
+                                                    variant={createConfluenceForm.isEnabled ? "filled" : "outlined"}
+                                                />
+                                                <Chip
+                                                    label={`Jira: ${createJiraForm.isEnabled ? "enabled" : "disabled"}`}
+                                                    color={createJiraForm.isEnabled ? "primary" : "default"}
+                                                    variant={createJiraForm.isEnabled ? "filled" : "outlined"}
+                                                />
+                                            </Stack>
+
+                                            <FormControlLabel
+                                                control={
+                                                    <Checkbox
+                                                        checked={ingestOnCreate}
+                                                        onChange={(e) => setIngestOnCreate(e.target.checked)}
+                                                    />
+                                                }
+                                                label="Run ingestion immediately after create"
+                                            />
+                                        </Stack>
+                                    )}
+
+                                    <Divider />
+
+                                    <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between">
+                                        <Button
+                                            variant="text"
+                                            disabled={wizardStep === 0 || busy}
+                                            onClick={() => setWizardStep((s) => Math.max(0, s - 1))}
+                                            sx={{ width: { xs: "100%", sm: "auto" } }}
+                                        >
+                                            Back
+                                        </Button>
+
+                                        <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ width: { xs: "100%", sm: "auto" } }}>
+                                            {wizardStep < CREATE_STEPS.length - 1 ? (
+                                                <Button
+                                                    variant="contained"
+                                                    onClick={() => {
+                                                        if (!canOpenStep(wizardStep + 1)) {
+                                                            if (wizardStep === 0) {
+                                                                setError("Please enter at least project key and name.")
+                                                            } else if (wizardStep === 1) {
+                                                                setError("Please set provider and model before continuing.")
+                                                            }
+                                                            return
+                                                        }
+                                                        setError(null)
+                                                        setWizardStep((s) => Math.min(CREATE_STEPS.length - 1, s + 1))
+                                                    }}
+                                                    disabled={busy}
+                                                    sx={{ width: { xs: "100%", sm: "auto" } }}
+                                                >
+                                                    Next
+                                                </Button>
+                                            ) : (
+                                                <Button
+                                                    variant="contained"
+                                                    startIcon={<AddRounded />}
+                                                    onClick={() => void createProjectFromWizard()}
+                                                    disabled={busy || !basicsValid || !llmValid}
+                                                    sx={{ width: { xs: "100%", sm: "auto" } }}
+                                                >
+                                                    Create Project
+                                                </Button>
+                                            )}
+
+                                            <Button
+                                                variant="outlined"
+                                                onClick={resetCreateWorkflow}
+                                                disabled={busy}
+                                                sx={{ width: { xs: "100%", sm: "auto" } }}
                                             >
-                                                <option value="ollama">Ollama (local)</option>
-                                                <option value="openai">ChatGPT / OpenAI API</option>
-                                            </select>
-                                        </label>
-                                        <label className="block text-sm md:col-span-2">
-                                            LLM Base URL
-                                            <input
-                                                className={inputClassName()}
-                                                value={editForm.llm_base_url}
-                                                onChange={(e) =>
-                                                    setEditForm((f) => ({ ...f, llm_base_url: e.target.value }))
-                                                }
-                                            />
-                                        </label>
-                                        <label className="block text-sm">
-                                            LLM Model
-                                            <input
-                                                className={inputClassName()}
-                                                value={editForm.llm_model}
-                                                onChange={(e) => setEditForm((f) => ({ ...f, llm_model: e.target.value }))}
-                                            />
-                                        </label>
-                                        <label className="block text-sm">
-                                            LLM API Key
-                                            <input
-                                                className={inputClassName()}
-                                                value={editForm.llm_api_key}
-                                                onChange={(e) =>
-                                                    setEditForm((f) => ({ ...f, llm_api_key: e.target.value }))
-                                                }
-                                            />
-                                        </label>
-                                    </div>
-                                    <button
-                                        type="submit"
-                                        disabled={busy}
-                                        className="mt-3 rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-cyan-300 disabled:opacity-50"
+                                                Reset
+                                            </Button>
+                                        </Stack>
+                                    </Stack>
+                                </Stack>
+                            </CardContent>
+                        </Card>
+
+                        <Card variant="outlined">
+                            <CardContent sx={{ p: { xs: 1.5, md: 2.5 } }}>
+                                <Stack spacing={2}>
+                                    <Stack
+                                        direction={{ xs: "column", sm: "row" }}
+                                        spacing={1.5}
+                                        alignItems={{ xs: "stretch", sm: "center" }}
                                     >
-                                        Save Project Settings
-                                    </button>
-                                </form>
+                                        <Box>
+                                            <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                                                Existing Project Setup
+                                            </Typography>
+                                            <Typography variant="body2" color="text.secondary">
+                                                Update project metadata, connectors, and run ingestion.
+                                            </Typography>
+                                        </Box>
 
-                                <div className="grid gap-4 lg:grid-cols-3">
-                                    <div className="rounded-xl border border-slate-800 bg-slate-950 p-4">
-                                        <div className="text-sm font-medium">Git Source</div>
-                                        <label className="mt-2 flex items-center gap-2 text-sm">
-                                            <input
-                                                type="checkbox"
-                                                checked={gitForm.isEnabled}
-                                                onChange={(e) => setGitForm((f) => ({ ...f, isEnabled: e.target.checked }))}
-                                            />
-                                            Enabled
-                                        </label>
-                                        <label className="mt-2 block text-sm">
-                                            Owner
-                                            <input
-                                                className={inputClassName()}
-                                                value={gitForm.owner}
-                                                onChange={(e) => setGitForm((f) => ({ ...f, owner: e.target.value }))}
-                                            />
-                                        </label>
-                                        <label className="mt-2 block text-sm">
-                                            Repo
-                                            <input
-                                                className={inputClassName()}
-                                                value={gitForm.repo}
-                                                onChange={(e) => setGitForm((f) => ({ ...f, repo: e.target.value }))}
-                                            />
-                                        </label>
-                                        <label className="mt-2 block text-sm">
-                                            Branch
-                                            <input
-                                                className={inputClassName()}
-                                                value={gitForm.branch}
-                                                onChange={(e) => setGitForm((f) => ({ ...f, branch: e.target.value }))}
-                                            />
-                                        </label>
-                                        <label className="mt-2 block text-sm">
-                                            Token
-                                            <input
-                                                className={inputClassName()}
-                                                value={gitForm.token}
-                                                onChange={(e) => setGitForm((f) => ({ ...f, token: e.target.value }))}
-                                            />
-                                        </label>
-                                        <label className="mt-2 block text-sm">
-                                            Paths (comma separated)
-                                            <input
-                                                className={inputClassName()}
-                                                value={gitForm.paths}
-                                                onChange={(e) => setGitForm((f) => ({ ...f, paths: e.target.value }))}
-                                                placeholder="src, docs"
-                                            />
-                                        </label>
-                                        <button
-                                            onClick={() => void saveConnector("git")}
-                                            disabled={busy}
-                                            className="mt-3 w-full rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-900 disabled:opacity-50"
-                                        >
-                                            Save Git
-                                        </button>
-                                    </div>
+                                        <FormControl size="small" sx={{ ml: { sm: "auto" }, minWidth: { xs: "100%", sm: 280 } }}>
+                                            <InputLabel id="selected-project-label">Project</InputLabel>
+                                            <Select
+                                                labelId="selected-project-label"
+                                                label="Project"
+                                                value={selectedProjectId || ""}
+                                                onChange={(e) => setSelectedProjectId(e.target.value || null)}
+                                            >
+                                                {projects.map((p) => (
+                                                    <MenuItem key={p.id} value={p.id}>
+                                                        {p.name} ({p.key})
+                                                    </MenuItem>
+                                                ))}
+                                            </Select>
+                                        </FormControl>
+                                    </Stack>
 
-                                    <div className="rounded-xl border border-slate-800 bg-slate-950 p-4">
-                                        <div className="text-sm font-medium">Confluence Source</div>
-                                        <label className="mt-2 flex items-center gap-2 text-sm">
-                                            <input
-                                                type="checkbox"
-                                                checked={confluenceForm.isEnabled}
-                                                onChange={(e) =>
-                                                    setConfluenceForm((f) => ({ ...f, isEnabled: e.target.checked }))
-                                                }
-                                            />
-                                            Enabled
-                                        </label>
-                                        <label className="mt-2 block text-sm">
-                                            Base URL
-                                            <input
-                                                className={inputClassName()}
-                                                value={confluenceForm.baseUrl}
-                                                onChange={(e) =>
-                                                    setConfluenceForm((f) => ({ ...f, baseUrl: e.target.value }))
-                                                }
-                                                placeholder="https://your-domain.atlassian.net/wiki"
-                                            />
-                                        </label>
-                                        <label className="mt-2 block text-sm">
-                                            Space Key
-                                            <input
-                                                className={inputClassName()}
-                                                value={confluenceForm.spaceKey}
-                                                onChange={(e) =>
-                                                    setConfluenceForm((f) => ({ ...f, spaceKey: e.target.value }))
-                                                }
-                                            />
-                                        </label>
-                                        <label className="mt-2 block text-sm">
-                                            Email
-                                            <input
-                                                className={inputClassName()}
-                                                value={confluenceForm.email}
-                                                onChange={(e) =>
-                                                    setConfluenceForm((f) => ({ ...f, email: e.target.value }))
-                                                }
-                                            />
-                                        </label>
-                                        <label className="mt-2 block text-sm">
-                                            API Token
-                                            <input
-                                                className={inputClassName()}
-                                                value={confluenceForm.apiToken}
-                                                onChange={(e) =>
-                                                    setConfluenceForm((f) => ({ ...f, apiToken: e.target.value }))
-                                                }
-                                            />
-                                        </label>
-                                        <button
-                                            onClick={() => void saveConnector("confluence")}
-                                            disabled={busy}
-                                            className="mt-3 w-full rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-900 disabled:opacity-50"
-                                        >
-                                            Save Confluence
-                                        </button>
-                                    </div>
+                                    {!selectedProject && <Alert severity="info">No project selected.</Alert>}
 
-                                    <div className="rounded-xl border border-slate-800 bg-slate-950 p-4">
-                                        <div className="text-sm font-medium">Jira Source</div>
-                                        <label className="mt-2 flex items-center gap-2 text-sm">
-                                            <input
-                                                type="checkbox"
-                                                checked={jiraForm.isEnabled}
-                                                onChange={(e) => setJiraForm((f) => ({ ...f, isEnabled: e.target.checked }))}
-                                            />
-                                            Enabled
-                                        </label>
-                                        <label className="mt-2 block text-sm">
-                                            Base URL
-                                            <input
-                                                className={inputClassName()}
-                                                value={jiraForm.baseUrl}
-                                                onChange={(e) => setJiraForm((f) => ({ ...f, baseUrl: e.target.value }))}
-                                                placeholder="https://your-domain.atlassian.net"
-                                            />
-                                        </label>
-                                        <label className="mt-2 block text-sm">
-                                            Email
-                                            <input
-                                                className={inputClassName()}
-                                                value={jiraForm.email}
-                                                onChange={(e) => setJiraForm((f) => ({ ...f, email: e.target.value }))}
-                                            />
-                                        </label>
-                                        <label className="mt-2 block text-sm">
-                                            API Token
-                                            <input
-                                                className={inputClassName()}
-                                                value={jiraForm.apiToken}
-                                                onChange={(e) => setJiraForm((f) => ({ ...f, apiToken: e.target.value }))}
-                                            />
-                                        </label>
-                                        <label className="mt-2 block text-sm">
-                                            JQL
-                                            <input
-                                                className={inputClassName()}
-                                                value={jiraForm.jql}
-                                                onChange={(e) => setJiraForm((f) => ({ ...f, jql: e.target.value }))}
-                                                placeholder="project = CORE ORDER BY updated DESC"
-                                            />
-                                        </label>
-                                        <button
-                                            onClick={() => void saveConnector("jira")}
-                                            disabled={busy}
-                                            className="mt-3 w-full rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-900 disabled:opacity-50"
-                                        >
-                                            Save Jira
-                                        </button>
-                                    </div>
-                                </div>
+                                    {selectedProject && (
+                                        <Stack spacing={2}>
+                                            <Paper variant="outlined" sx={{ p: { xs: 1.5, md: 2 } }}>
+                                                <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1.5 }}>
+                                                    Project Settings
+                                                </Typography>
 
-                                <div className="rounded-xl border border-slate-800 bg-slate-950 p-4">
-                                    <h3 className="text-sm font-medium">Ingestion</h3>
-                                    <p className="mt-1 text-sm text-slate-400">
-                                        Pull configured source data and reindex this project for retrieval.
-                                    </p>
-                                    <button
-                                        onClick={() => void runIngest()}
-                                        disabled={busy}
-                                        className="mt-3 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-emerald-300 disabled:opacity-50"
-                                    >
-                                        Run Ingestion
-                                    </button>
-                                </div>
-                            </div>
-                        )}
-                    </section>
-                </div>
-            </div>
-        </main>
+                                                <Box
+                                                    component="form"
+                                                    onSubmit={onSaveProject}
+                                                    sx={{
+                                                        display: "grid",
+                                                        gap: 1.5,
+                                                        gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                                                    }}
+                                                >
+                                                    <TextField label="Key" value={editForm.key} disabled size="small" fullWidth />
+                                                    <TextField
+                                                        label="Name"
+                                                        value={editForm.name}
+                                                        onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
+                                                        size="small"
+                                                        fullWidth
+                                                    />
+                                                    <TextField
+                                                        label="Description"
+                                                        value={editForm.description}
+                                                        onChange={(e) =>
+                                                            setEditForm((f) => ({ ...f, description: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                        multiline
+                                                        minRows={3}
+                                                        fullWidth
+                                                        sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}
+                                                    />
+                                                    <TextField
+                                                        label="Local Repo Path"
+                                                        value={editForm.repo_path}
+                                                        onChange={(e) =>
+                                                            setEditForm((f) => ({ ...f, repo_path: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                        fullWidth
+                                                        sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}
+                                                    />
+                                                    <TextField
+                                                        label="Default Branch"
+                                                        value={editForm.default_branch}
+                                                        onChange={(e) =>
+                                                            setEditForm((f) => ({ ...f, default_branch: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                        fullWidth
+                                                    />
+                                                    <FormControl size="small" fullWidth>
+                                                        <InputLabel id="edit-llm-provider-label">LLM Provider</InputLabel>
+                                                        <Select
+                                                            labelId="edit-llm-provider-label"
+                                                            label="LLM Provider"
+                                                            value={editForm.llm_provider}
+                                                            onChange={(e) =>
+                                                                setEditForm((f) => ({
+                                                                    ...f,
+                                                                    llm_provider: e.target.value,
+                                                                }))
+                                                            }
+                                                        >
+                                                            <MenuItem value="ollama">Ollama (local)</MenuItem>
+                                                            <MenuItem value="openai">ChatGPT / OpenAI API</MenuItem>
+                                                        </Select>
+                                                    </FormControl>
+                                                    <TextField
+                                                        label="LLM Base URL"
+                                                        value={editForm.llm_base_url}
+                                                        onChange={(e) =>
+                                                            setEditForm((f) => ({ ...f, llm_base_url: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                        fullWidth
+                                                        sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}
+                                                    />
+                                                    <TextField
+                                                        label="LLM Model"
+                                                        value={editForm.llm_model}
+                                                        onChange={(e) => setEditForm((f) => ({ ...f, llm_model: e.target.value }))}
+                                                        size="small"
+                                                        fullWidth
+                                                    />
+                                                    <TextField
+                                                        label="LLM API Key"
+                                                        value={editForm.llm_api_key}
+                                                        onChange={(e) =>
+                                                            setEditForm((f) => ({ ...f, llm_api_key: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                        fullWidth
+                                                    />
+
+                                                    <Box sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}>
+                                                        <Button
+                                                            type="submit"
+                                                            variant="contained"
+                                                            startIcon={<SaveRounded />}
+                                                            disabled={busy}
+                                                        >
+                                                            Save Project Settings
+                                                        </Button>
+                                                    </Box>
+                                                </Box>
+                                            </Paper>
+
+                                            <Box
+                                                sx={{
+                                                    display: "grid",
+                                                    gap: 1.5,
+                                                    gridTemplateColumns: {
+                                                        xs: "1fr",
+                                                        lg: "repeat(3, minmax(0, 1fr))",
+                                                    },
+                                                }}
+                                            >
+                                                <Paper variant="outlined" sx={{ p: { xs: 1.5, md: 2 } }}>
+                                                    <Stack spacing={1.2}>
+                                                        <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                                                            Git Source
+                                                        </Typography>
+                                                        <FormControlLabel
+                                                            control={
+                                                                <Switch
+                                                                    checked={gitForm.isEnabled}
+                                                                    onChange={(e) =>
+                                                                        setGitForm((f) => ({
+                                                                            ...f,
+                                                                            isEnabled: e.target.checked,
+                                                                        }))
+                                                                    }
+                                                                />
+                                                            }
+                                                            label="Enabled"
+                                                        />
+                                                        <TextField
+                                                            label="Owner"
+                                                            value={gitForm.owner}
+                                                            onChange={(e) =>
+                                                                setGitForm((f) => ({ ...f, owner: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Repo"
+                                                            value={gitForm.repo}
+                                                            onChange={(e) => setGitForm((f) => ({ ...f, repo: e.target.value }))}
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Branch"
+                                                            value={gitForm.branch}
+                                                            onChange={(e) =>
+                                                                setGitForm((f) => ({ ...f, branch: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Token"
+                                                            value={gitForm.token}
+                                                            onChange={(e) =>
+                                                                setGitForm((f) => ({ ...f, token: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Paths (comma-separated)"
+                                                            value={gitForm.paths}
+                                                            onChange={(e) =>
+                                                                setGitForm((f) => ({ ...f, paths: e.target.value }))
+                                                            }
+                                                            placeholder="src, docs"
+                                                            size="small"
+                                                        />
+                                                        <Button
+                                                            variant="outlined"
+                                                            onClick={() => void saveConnector("git")}
+                                                            disabled={busy}
+                                                        >
+                                                            Save Git
+                                                        </Button>
+                                                    </Stack>
+                                                </Paper>
+
+                                                <Paper variant="outlined" sx={{ p: { xs: 1.5, md: 2 } }}>
+                                                    <Stack spacing={1.2}>
+                                                        <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                                                            Confluence Source
+                                                        </Typography>
+                                                        <FormControlLabel
+                                                            control={
+                                                                <Switch
+                                                                    checked={confluenceForm.isEnabled}
+                                                                    onChange={(e) =>
+                                                                        setConfluenceForm((f) => ({
+                                                                            ...f,
+                                                                            isEnabled: e.target.checked,
+                                                                        }))
+                                                                    }
+                                                                />
+                                                            }
+                                                            label="Enabled"
+                                                        />
+                                                        <TextField
+                                                            label="Base URL"
+                                                            value={confluenceForm.baseUrl}
+                                                            onChange={(e) =>
+                                                                setConfluenceForm((f) => ({
+                                                                    ...f,
+                                                                    baseUrl: e.target.value,
+                                                                }))
+                                                            }
+                                                            placeholder="https://your-domain.atlassian.net/wiki"
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Space Key"
+                                                            value={confluenceForm.spaceKey}
+                                                            onChange={(e) =>
+                                                                setConfluenceForm((f) => ({
+                                                                    ...f,
+                                                                    spaceKey: e.target.value,
+                                                                }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Email"
+                                                            value={confluenceForm.email}
+                                                            onChange={(e) =>
+                                                                setConfluenceForm((f) => ({ ...f, email: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="API Token"
+                                                            value={confluenceForm.apiToken}
+                                                            onChange={(e) =>
+                                                                setConfluenceForm((f) => ({
+                                                                    ...f,
+                                                                    apiToken: e.target.value,
+                                                                }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <Button
+                                                            variant="outlined"
+                                                            onClick={() => void saveConnector("confluence")}
+                                                            disabled={busy}
+                                                        >
+                                                            Save Confluence
+                                                        </Button>
+                                                    </Stack>
+                                                </Paper>
+
+                                                <Paper variant="outlined" sx={{ p: { xs: 1.5, md: 2 } }}>
+                                                    <Stack spacing={1.2}>
+                                                        <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                                                            Jira Source
+                                                        </Typography>
+                                                        <FormControlLabel
+                                                            control={
+                                                                <Switch
+                                                                    checked={jiraForm.isEnabled}
+                                                                    onChange={(e) =>
+                                                                        setJiraForm((f) => ({
+                                                                            ...f,
+                                                                            isEnabled: e.target.checked,
+                                                                        }))
+                                                                    }
+                                                                />
+                                                            }
+                                                            label="Enabled"
+                                                        />
+                                                        <TextField
+                                                            label="Base URL"
+                                                            value={jiraForm.baseUrl}
+                                                            onChange={(e) =>
+                                                                setJiraForm((f) => ({ ...f, baseUrl: e.target.value }))
+                                                            }
+                                                            placeholder="https://your-domain.atlassian.net"
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Email"
+                                                            value={jiraForm.email}
+                                                            onChange={(e) =>
+                                                                setJiraForm((f) => ({ ...f, email: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="API Token"
+                                                            value={jiraForm.apiToken}
+                                                            onChange={(e) =>
+                                                                setJiraForm((f) => ({ ...f, apiToken: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="JQL"
+                                                            value={jiraForm.jql}
+                                                            onChange={(e) =>
+                                                                setJiraForm((f) => ({ ...f, jql: e.target.value }))
+                                                            }
+                                                            placeholder="project = CORE ORDER BY updated DESC"
+                                                            size="small"
+                                                        />
+                                                        <Button
+                                                            variant="outlined"
+                                                            onClick={() => void saveConnector("jira")}
+                                                            disabled={busy}
+                                                        >
+                                                            Save Jira
+                                                        </Button>
+                                                    </Stack>
+                                                </Paper>
+                                            </Box>
+
+                                            <Paper variant="outlined" sx={{ p: { xs: 1.5, md: 2 } }}>
+                                                <Stack
+                                                    direction={{ xs: "column", sm: "row" }}
+                                                    spacing={1.5}
+                                                    alignItems={{ xs: "flex-start", sm: "center" }}
+                                                    justifyContent="space-between"
+                                                >
+                                                    <Box>
+                                                        <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                                                            Ingestion
+                                                        </Typography>
+                                                        <Typography variant="body2" color="text.secondary">
+                                                            Pull configured source data and refresh the retrieval index.
+                                                        </Typography>
+                                                    </Box>
+
+                                                    <Stack direction="row" spacing={1} sx={{ width: { xs: "100%", sm: "auto" } }}>
+                                                        <Button
+                                                            variant="outlined"
+                                                            startIcon={<RefreshRounded />}
+                                                            onClick={() => void refreshProjects(selectedProject.id)}
+                                                            disabled={busy}
+                                                            sx={{ flex: { xs: 1, sm: "0 0 auto" } }}
+                                                        >
+                                                            Refresh
+                                                        </Button>
+                                                        <Button
+                                                            variant="contained"
+                                                            color="success"
+                                                            startIcon={<CloudUploadRounded />}
+                                                            onClick={() => void runIngest(selectedProject.id)}
+                                                            disabled={busy}
+                                                            sx={{ flex: { xs: 1, sm: "0 0 auto" } }}
+                                                        >
+                                                            Run Ingestion
+                                                        </Button>
+                                                    </Stack>
+                                                </Stack>
+                                            </Paper>
+                                        </Stack>
+                                    )}
+                                </Stack>
+                            </CardContent>
+                        </Card>
+                    </Box>
+                </Stack>
+            </Container>
+        </Box>
     )
 }
-

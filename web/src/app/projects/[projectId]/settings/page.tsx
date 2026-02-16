@@ -3,6 +3,8 @@
 import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
+import { Alert, Box, Button, Card, CardContent, Chip, Stack, Typography } from "@mui/material"
+import OpenInNewRounded from "@mui/icons-material/OpenInNewRounded"
 import { backendJson } from "@/lib/backend"
 import { ProjectDrawerLayout, type DrawerChat, type DrawerUser } from "@/components/ProjectDrawerLayout"
 import { buildChatPath, saveLastChat } from "@/lib/last-chat"
@@ -43,6 +45,21 @@ function maskSecret(secret?: string): string {
     return `${secret.slice(0, 3)}...${secret.slice(-2)}`
 }
 
+function DetailCard({ title, value }: { title: string; value: string }) {
+    return (
+        <Card variant="outlined">
+            <CardContent sx={{ p: { xs: 1.5, md: 2 } }}>
+                <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.1em" }}>
+                    {title}
+                </Typography>
+                <Typography variant="body2" sx={{ mt: 0.8, wordBreak: "break-word" }}>
+                    {value}
+                </Typography>
+            </CardContent>
+        </Card>
+    )
+}
+
 export default function ProjectSettingsPage() {
     const { projectId } = useParams<{ projectId: string }>()
     const router = useRouter()
@@ -75,6 +92,7 @@ export default function ProjectSettingsPage() {
 
     useEffect(() => {
         let cancelled = false
+
         async function boot() {
             setError(null)
             try {
@@ -106,7 +124,7 @@ export default function ProjectSettingsPage() {
             }
         }
 
-        boot()
+        void boot()
         return () => {
             cancelled = true
         }
@@ -160,91 +178,115 @@ export default function ProjectSettingsPage() {
             loadingChats={loadingChats}
             activeSection="settings"
         >
-            <main className="min-h-0 flex-1 overflow-y-auto px-4 py-6">
-                <div className="page-rise mx-auto max-w-4xl space-y-5">
-                    <div className="glass-card rounded-3xl p-5">
-                        <div className="text-xs uppercase tracking-[0.22em] text-cyan-300/80">Workspace Settings</div>
-                        <h1 className="mt-2 text-2xl font-semibold text-white">{projectLabel}</h1>
-                        <p className="mt-2 text-sm text-slate-300">
-                            Configure where the assistant reads from and which model stack it should use.
-                        </p>
-                    </div>
+            <Box sx={{ minHeight: 0, flex: 1, overflowY: "auto", px: { xs: 1.5, md: 3 }, py: { xs: 1.8, md: 2.5 } }}>
+                <Stack spacing={2} sx={{ maxWidth: 980, mx: "auto" }}>
+                    <Card variant="outlined">
+                        <CardContent sx={{ p: { xs: 1.5, md: 2.5 } }}>
+                            <Typography variant="overline" color="primary.light" sx={{ letterSpacing: "0.14em" }}>
+                                Workspace Settings
+                            </Typography>
+                            <Typography variant="h4" sx={{ mt: 0.5, fontWeight: 700, fontSize: { xs: "1.55rem", md: "2.1rem" } }}>
+                                {projectLabel}
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                                Review where this assistant reads from and which model stack it uses.
+                            </Typography>
+                        </CardContent>
+                    </Card>
 
-                    {error && (
-                        <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">
-                            {error}
-                        </div>
-                    )}
+                    {error && <Alert severity="error">{error}</Alert>}
 
-                    <section className="glass-card rounded-2xl p-5">
-                        <h2 className="text-lg font-medium text-white">Project</h2>
-                        <div className="mt-3 grid gap-3 text-sm text-slate-200 md:grid-cols-2">
-                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
-                                <div className="text-xs uppercase tracking-[0.15em] text-slate-500">Project ID</div>
-                                <div className="mt-1 break-all">{projectId}</div>
-                            </div>
-                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
-                                <div className="text-xs uppercase tracking-[0.15em] text-slate-500">Default Branch</div>
-                                <div className="mt-1">{project?.default_branch || "main"}</div>
-                            </div>
-                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 md:col-span-2">
-                                <div className="text-xs uppercase tracking-[0.15em] text-slate-500">Local Repo Path</div>
-                                <div className="mt-1 break-all">{project?.repo_path || "not configured"}</div>
-                            </div>
-                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 md:col-span-2">
-                                <div className="text-xs uppercase tracking-[0.15em] text-slate-500">Description</div>
-                                <div className="mt-1">{project?.description || "No description"}</div>
-                            </div>
-                        </div>
-                    </section>
-
-                    <section className="glass-card rounded-2xl p-5">
-                        <h2 className="text-lg font-medium text-white">LLM Settings</h2>
-                        <div className="mt-3 grid gap-3 text-sm text-slate-200 md:grid-cols-2">
-                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
-                                <div className="text-xs uppercase tracking-[0.15em] text-slate-500">Provider</div>
-                                <div className="mt-1">{project?.llm_provider || "default"}</div>
-                            </div>
-                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
-                                <div className="text-xs uppercase tracking-[0.15em] text-slate-500">Model</div>
-                                <div className="mt-1">{project?.llm_model || "backend default"}</div>
-                            </div>
-                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 md:col-span-2">
-                                <div className="text-xs uppercase tracking-[0.15em] text-slate-500">Base URL</div>
-                                <div className="mt-1 break-all">{project?.llm_base_url || "backend default"}</div>
-                            </div>
-                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 md:col-span-2">
-                                <div className="text-xs uppercase tracking-[0.15em] text-slate-500">API Key</div>
-                                <div className="mt-1">{maskSecret(project?.llm_api_key)}</div>
-                            </div>
-                        </div>
-                    </section>
-
-                    <section className="glass-card rounded-2xl p-5">
-                        <h2 className="text-lg font-medium text-white">Sources</h2>
-                        <p className="mt-2 text-sm text-slate-300">
-                            Git, Confluence, and Jira connectors are managed from the admin console and ingested into this
-                            project index.
-                        </p>
-                        <div className="mt-4 flex flex-wrap gap-2">
-                            <Link
-                                href={`/projects/${projectId}/chat`}
-                                className="rounded-xl bg-gradient-to-r from-cyan-300 to-emerald-300 px-4 py-2 text-sm font-semibold text-slate-900 hover:from-cyan-200 hover:to-emerald-200"
+                    <Card variant="outlined">
+                        <CardContent sx={{ p: { xs: 1.5, md: 2.5 } }}>
+                            <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                                Project
+                            </Typography>
+                            <Box
+                                sx={{
+                                    mt: 1.5,
+                                    display: "grid",
+                                    gap: 1.2,
+                                    gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                                }}
                             >
-                                Open Chat
-                            </Link>
-                            {me?.isGlobalAdmin && (
-                                <Link
-                                    href="/admin"
-                                    className="rounded-xl border border-white/15 bg-white/[0.03] px-4 py-2 text-sm text-slate-200 hover:bg-white/[0.08]"
-                                >
-                                    Open Admin Workflow
-                                </Link>
-                            )}
-                        </div>
-                    </section>
-                </div>
-            </main>
+                                <DetailCard title="Project ID" value={projectId} />
+                                <DetailCard title="Default Branch" value={project?.default_branch || "main"} />
+                                <Box sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}>
+                                    <DetailCard title="Local Repo Path" value={project?.repo_path || "not configured"} />
+                                </Box>
+                                <Box sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}>
+                                    <DetailCard title="Description" value={project?.description || "No description"} />
+                                </Box>
+                            </Box>
+                        </CardContent>
+                    </Card>
+
+                    <Card variant="outlined">
+                        <CardContent sx={{ p: { xs: 1.5, md: 2.5 } }}>
+                            <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                                LLM
+                            </Typography>
+                            <Box
+                                sx={{
+                                    mt: 1.5,
+                                    display: "grid",
+                                    gap: 1.2,
+                                    gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                                }}
+                            >
+                                <DetailCard title="Provider" value={project?.llm_provider || "default"} />
+                                <DetailCard title="Model" value={project?.llm_model || "backend default"} />
+                                <Box sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}>
+                                    <DetailCard title="Base URL" value={project?.llm_base_url || "backend default"} />
+                                </Box>
+                                <Box sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}>
+                                    <DetailCard title="API Key" value={maskSecret(project?.llm_api_key)} />
+                                </Box>
+                            </Box>
+                        </CardContent>
+                    </Card>
+
+                    <Card variant="outlined">
+                        <CardContent sx={{ p: { xs: 1.5, md: 2.5 } }}>
+                            <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                                Sources
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                                Git, Confluence, and Jira connectors are managed from the admin console and ingested into this
+                                project index.
+                            </Typography>
+
+                            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 1.5 }}>
+                                <Chip label="Git" color="primary" variant="outlined" />
+                                <Chip label="Confluence" color="primary" variant="outlined" />
+                                <Chip label="Jira" color="primary" variant="outlined" />
+                            </Stack>
+
+                            <Stack
+                                direction="row"
+                                spacing={1}
+                                useFlexGap
+                                flexWrap="wrap"
+                                sx={{ mt: 2, "& .MuiButton-root": { width: { xs: "100%", sm: "auto" } } }}
+                            >
+                                <Button component={Link} href={`/projects/${projectId}/chat`} variant="contained">
+                                    Open Chat
+                                </Button>
+                                {me?.isGlobalAdmin && (
+                                    <Button
+                                        component={Link}
+                                        href="/admin"
+                                        variant="outlined"
+                                        endIcon={<OpenInNewRounded />}
+                                    >
+                                        Open Admin Workflow
+                                    </Button>
+                                )}
+                            </Stack>
+                        </CardContent>
+                    </Card>
+                </Stack>
+            </Box>
         </ProjectDrawerLayout>
     )
 }

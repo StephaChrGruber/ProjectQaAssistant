@@ -3,6 +3,22 @@
 import Link from "next/link"
 import { useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
+import {
+    Alert,
+    Box,
+    Button,
+    Card,
+    CardActions,
+    CardContent,
+    Chip,
+    Container,
+    Stack,
+    Typography,
+} from "@mui/material"
+import PlayCircleOutlineRounded from "@mui/icons-material/PlayCircleOutlineRounded"
+import SettingsRounded from "@mui/icons-material/SettingsRounded"
+import AdminPanelSettingsRounded from "@mui/icons-material/AdminPanelSettingsRounded"
+import HistoryRounded from "@mui/icons-material/HistoryRounded"
 import { backendJson } from "@/lib/backend"
 import { readLastChat } from "@/lib/last-chat"
 
@@ -38,6 +54,7 @@ export default function ProjectsPage() {
 
     useEffect(() => {
         let cancelled = false
+
         async function load() {
             setLoading(true)
             setErr(null)
@@ -55,6 +72,7 @@ export default function ProjectsPage() {
                 if (!cancelled) setLoading(false)
             }
         }
+
         void load()
         return () => {
             cancelled = true
@@ -65,98 +83,144 @@ export default function ProjectsPage() {
     const hasLastChat = useMemo(() => Boolean(readLastChat()?.path), [])
 
     return (
-        <div className="min-h-screen px-4 py-8 text-slate-100">
-            <div className="page-rise mx-auto max-w-6xl space-y-6">
-                <section className="glass-card rounded-3xl p-6">
-                    <div className="flex flex-wrap items-start justify-between gap-4">
-                        <div className="max-w-3xl">
-                            <div className="inline-flex rounded-full border border-cyan-300/30 bg-cyan-300/10 px-2.5 py-1 text-[11px] uppercase tracking-[0.18em] text-cyan-100">
-                                Project QA Assistant
-                            </div>
-                            <h1 className="mt-3 text-3xl font-semibold leading-tight text-white">Choose A Workspace</h1>
-                            <p className="mt-3 text-sm text-slate-300">
-                                All conversations are branch-aware and source-backed by Git, Confluence, and Jira.
-                            </p>
-                        </div>
-                        <div className="space-y-2 text-right">
-                            <div className="text-sm text-slate-200">{userLabel}</div>
-                            <div className="flex flex-wrap justify-end gap-2">
-                                {hasLastChat && (
-                                    <button
-                                        onClick={() => {
-                                            const last = readLastChat()
-                                            if (last?.path) router.push(last.path)
-                                        }}
-                                        className="rounded-xl border border-cyan-300/30 bg-cyan-300/10 px-3 py-2 text-sm text-cyan-100 hover:bg-cyan-300/20"
+        <Box sx={{ minHeight: "100vh", py: { xs: 2, md: 3 } }}>
+            <Container maxWidth="xl">
+                <Stack spacing={{ xs: 2, md: 2.5 }}>
+                    <Card variant="outlined">
+                        <CardContent sx={{ p: { xs: 1.5, md: 2.5 } }}>
+                            <Stack
+                                direction={{ xs: "column", md: "row" }}
+                                spacing={2}
+                                alignItems={{ xs: "flex-start", md: "center" }}
+                                justifyContent="space-between"
+                            >
+                                <Box>
+                                    <Typography variant="overline" color="primary.light" sx={{ letterSpacing: "0.13em" }}>
+                                        Project QA Assistant
+                                    </Typography>
+                                    <Typography variant="h4" sx={{ mt: 0.6, fontWeight: 700, fontSize: { xs: "1.55rem", md: "2.1rem" } }}>
+                                        Workspaces
+                                    </Typography>
+                                    <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                                        Open a project chat with branch-aware retrieval over Git, Confluence, and Jira.
+                                    </Typography>
+                                </Box>
+
+                                <Stack spacing={1} sx={{ minWidth: { xs: "100%", md: 280 }, alignItems: { xs: "stretch", md: "flex-end" } }}>
+                                    <Typography variant="body2" color="text.secondary" sx={{ textAlign: { md: "right" } }}>
+                                        {userLabel}
+                                    </Typography>
+                                    <Stack
+                                        direction="row"
+                                        spacing={1}
+                                        useFlexGap
+                                        flexWrap="wrap"
+                                        justifyContent={{ md: "flex-end" }}
+                                        sx={{ "& .MuiButton-root": { width: { xs: "100%", sm: "auto" } } }}
                                     >
-                                        Resume Last Chat
-                                    </button>
-                                )}
-                                {me?.isGlobalAdmin && (
-                                    <Link
-                                        href="/admin"
-                                        className="rounded-xl border border-white/15 bg-white/[0.03] px-3 py-2 text-sm hover:bg-white/[0.08]"
+                                        {hasLastChat && (
+                                            <Button
+                                                variant="contained"
+                                                startIcon={<HistoryRounded />}
+                                                onClick={() => {
+                                                    const last = readLastChat()
+                                                    if (last?.path) router.push(last.path)
+                                                }}
+                                            >
+                                                Resume Last Chat
+                                            </Button>
+                                        )}
+                                        {me?.isGlobalAdmin && (
+                                            <Button
+                                                component={Link}
+                                                href="/admin"
+                                                variant="outlined"
+                                                startIcon={<AdminPanelSettingsRounded />}
+                                            >
+                                                Admin
+                                            </Button>
+                                        )}
+                                    </Stack>
+                                </Stack>
+                            </Stack>
+                        </CardContent>
+                    </Card>
+
+                    {err && <Alert severity="error">{err}</Alert>}
+
+                    {loading && <Alert severity="info">Loading projects...</Alert>}
+
+                    {!loading && !err && projects.length === 0 && (
+                        <Alert severity="warning">No projects found. Create one in the admin workflow.</Alert>
+                    )}
+
+                    <Box
+                        sx={{
+                            display: "grid",
+                            gap: 1.8,
+                            gridTemplateColumns: {
+                                xs: "1fr",
+                                sm: "repeat(2, minmax(0, 1fr))",
+                                xl: "repeat(3, minmax(0, 1fr))",
+                            },
+                        }}
+                    >
+                        {projects.map((p) => (
+                            <Card key={p._id} variant="outlined" sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
+                                <CardContent sx={{ pb: 1.5, p: { xs: 1.5, md: 2 } }}>
+                                    <Typography variant="h6" sx={{ fontWeight: 700, fontSize: { xs: "1rem", sm: "1.2rem" } }}>
+                                        {p.name || p.key || p._id}
+                                    </Typography>
+                                    <Typography variant="caption" color="text.secondary" sx={{ wordBreak: "break-all" }}>
+                                        {p._id}
+                                    </Typography>
+                                    <Typography variant="body2" color="text.secondary" sx={{ mt: 1.2 }}>
+                                        {p.description || "No description"}
+                                    </Typography>
+
+                                    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 1.4 }}>
+                                        <Chip
+                                            size="small"
+                                            label={`${(p.llm_provider || "default").toUpperCase()}${p.llm_model ? ` · ${p.llm_model}` : ""}`}
+                                            color="primary"
+                                            variant="outlined"
+                                        />
+                                        <Chip size="small" label={p.default_branch || "main"} variant="outlined" />
+                                    </Stack>
+                                </CardContent>
+
+                                <CardActions
+                                    sx={{
+                                        px: { xs: 1.5, md: 2 },
+                                        pb: { xs: 1.5, md: 2 },
+                                        mt: "auto",
+                                        flexWrap: "wrap",
+                                        gap: 1,
+                                        "& .MuiButton-root": { flex: { xs: 1, sm: "0 0 auto" } },
+                                    }}
+                                >
+                                    <Button
+                                        component={Link}
+                                        href={`/projects/${p._id}/chat`}
+                                        variant="contained"
+                                        startIcon={<PlayCircleOutlineRounded />}
                                     >
-                                        Admin
-                                    </Link>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                </section>
-
-                {err && (
-                    <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-200">
-                        {err}
-                    </div>
-                )}
-
-                {loading && (
-                    <div className="glass-card rounded-2xl p-4 text-sm text-slate-300">
-                        Loading projects...
-                    </div>
-                )}
-
-                <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                    {projects.map((p, idx) => (
-                        <article
-                            key={p._id}
-                            className="glass-card page-rise rounded-2xl p-4"
-                            style={{ animationDelay: `${Math.min(idx * 50, 260)}ms` }}
-                        >
-                            <div className="text-lg font-medium text-white">{p.name || p.key || p._id}</div>
-                            <div className="mt-1 text-xs text-slate-400">{p._id}</div>
-                            <p className="mt-3 min-h-10 text-sm text-slate-300">{p.description || "No description"}</p>
-                            <div className="mt-3 text-xs text-slate-400">
-                                {(p.llm_provider || "default LLM").toUpperCase()}
-                                {p.llm_model ? ` · ${p.llm_model}` : ""}
-                                {` · ${p.default_branch || "main"}`}
-                            </div>
-                            <div className="mt-4 flex flex-wrap gap-2">
-                                <Link
-                                    href={`/projects/${p._id}/chat`}
-                                    className="rounded-xl bg-gradient-to-r from-cyan-300 to-emerald-300 px-3 py-2 text-sm font-semibold text-slate-900 hover:from-cyan-200 hover:to-emerald-200"
-                                >
-                                    Open Chat
-                                </Link>
-                                <Link
-                                    href={`/projects/${p._id}/settings`}
-                                    className="rounded-xl border border-white/15 bg-white/[0.03] px-3 py-2 text-sm text-slate-100 hover:bg-white/[0.08]"
-                                >
-                                    Settings
-                                </Link>
-                            </div>
-                        </article>
-                    ))}
-                </section>
-
-                {!loading && !err && projects.length === 0 && (
-                    <div className="glass-card rounded-2xl p-4 text-sm text-slate-300">
-                        No projects found. Create one in the admin workflow.
-                    </div>
-                )}
-            </div>
-        </div>
+                                        Open Chat
+                                    </Button>
+                                    <Button
+                                        component={Link}
+                                        href={`/projects/${p._id}/settings`}
+                                        variant="outlined"
+                                        startIcon={<SettingsRounded />}
+                                    >
+                                        Settings
+                                    </Button>
+                                </CardActions>
+                            </Card>
+                        ))}
+                    </Box>
+                </Stack>
+            </Container>
+        </Box>
     )
 }
-

@@ -46,6 +46,26 @@ export function MuiThemeProvider({ children }: Props) {
             createTheme(
                 deepmerge(baseTheme, {
                     components: {
+                        MuiButton: {
+                            styleOverrides: {
+                                root: {
+                                    borderRadius: 12,
+                                    minHeight: 40,
+                                },
+                            },
+                        },
+                        MuiCard: {
+                            styleOverrides: {
+                                root: {
+                                    borderColor: "rgba(255,255,255,0.12)",
+                                },
+                            },
+                        },
+                        MuiTextField: {
+                            defaultProps: {
+                                size: "small",
+                            },
+                        },
                         MuiDrawer: {
                             styleOverrides: {
                                 paper: {
@@ -81,4 +101,3 @@ export function MuiThemeProvider({ children }: Props) {
         </ThemeProvider>
     )
 }
-

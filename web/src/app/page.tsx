@@ -2,6 +2,7 @@
 
 import { useEffect } from "react"
 import { useRouter } from "next/navigation"
+import { Box, CircularProgress, Paper, Stack, Typography } from "@mui/material"
 import { readLastChat } from "@/lib/last-chat"
 import { backendJson } from "@/lib/backend"
 
@@ -47,11 +48,15 @@ export default function Home() {
     }, [router])
 
     return (
-        <main className="flex min-h-screen items-center justify-center px-6">
-            <div className="rounded-2xl border border-white/15 bg-slate-900/70 px-6 py-4 text-sm text-slate-300 backdrop-blur">
-                Restoring your workspace...
-            </div>
-        </main>
+        <Box sx={{ minHeight: "100vh", display: "grid", placeItems: "center", px: 2 }}>
+            <Paper variant="outlined" sx={{ px: 3, py: 2 }}>
+                <Stack direction="row" spacing={1.2} alignItems="center">
+                    <CircularProgress size={18} />
+                    <Typography variant="body2" color="text.secondary">
+                        Restoring your workspace...
+                    </Typography>
+                </Stack>
+            </Paper>
+        </Box>
     )
 }
-
