@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 class AskReq(BaseModel):
     project_id: str
     question: str
+    local_repo_context: str | None = None
     branch: str = "main"
     user: str = "dev"
     chat_id: str | None = None
@@ -96,12 +97,21 @@ async def ask_agent(req: AskReq):
 
     # run retrieval + llm
     defaults = await _project_llm_defaults(req.project_id)
+    effective_question = req.question
+    if req.local_repo_context and req.local_repo_context.strip():
+        effective_question = (
+            f"{req.question}\n\n"
+            "The frontend executed local repository tools on the developer machine. "
+            "Use this evidence directly when relevant:\n\n"
+            f"{req.local_repo_context.strip()}"
+        )
+
     try:
         answer = await answer_with_agent(
             project_id=req.project_id,
             branch=req.branch,
             user_id=req.user,
-            question=req.question,
+            question=effective_question,
             llm_base_url=req.llm_base_url or defaults["llm_base_url"],
             llm_api_key=req.llm_api_key or defaults["llm_api_key"],
             llm_model=req.llm_model or defaults["llm_model"],

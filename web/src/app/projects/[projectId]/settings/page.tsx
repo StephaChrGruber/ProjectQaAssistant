@@ -32,6 +32,7 @@ import { backendJson } from "@/lib/backend"
 import { ProjectDrawerLayout, type DrawerChat, type DrawerUser } from "@/components/ProjectDrawerLayout"
 import { buildChatPath, saveLastChat } from "@/lib/last-chat"
 import PathPickerDialog from "@/components/PathPickerDialog"
+import { hasLocalRepoSnapshot, isBrowserLocalRepoPath } from "@/lib/local-repo-bridge"
 
 type ProjectDoc = {
     _id: string
@@ -230,6 +231,10 @@ export default function ProjectSettingsPage() {
         [project?.name, project?.key, projectId]
     )
     const userId = useMemo(() => me?.email || "dev@local", [me])
+    const localRepoConfiguredInBrowser = useMemo(
+        () => isBrowserLocalRepoPath(editForm.repo_path) && hasLocalRepoSnapshot(projectId),
+        [editForm.repo_path, projectId]
+    )
 
     const providerOptions = useMemo(
         () => (llmOptions?.providers?.length ? llmOptions.providers : DEFAULT_PROVIDER_OPTIONS),
@@ -695,6 +700,13 @@ export default function ProjectSettingsPage() {
                                             onChange={(e) => setEditForm((f) => ({ ...f, repo_path: e.target.value }))}
                                             fullWidth
                                             sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}
+                                            helperText={
+                                                isBrowserLocalRepoPath(editForm.repo_path)
+                                                    ? localRepoConfiguredInBrowser
+                                                        ? "Browser-local repo is indexed in this browser session."
+                                                        : "Browser-local repo path set. Pick the folder again to load local repo tools in this browser."
+                                                    : undefined
+                                            }
                                             InputProps={{
                                                 endAdornment: (
                                                     <InputAdornment position="end">
@@ -998,6 +1010,7 @@ export default function ProjectSettingsPage() {
                     open={pathPickerOpen}
                     title="Pick Repository Folder"
                     initialPath={editForm.repo_path}
+                    localRepoKey={projectId}
                     onClose={() => setPathPickerOpen(false)}
                     onPick={(path) => {
                         setEditForm((f) => ({ ...f, repo_path: path }))

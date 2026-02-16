@@ -17,6 +17,11 @@ import ClearAllRounded from "@mui/icons-material/ClearAllRounded"
 import { backendJson } from "@/lib/backend"
 import { ProjectDrawerLayout, type DrawerChat, type DrawerUser } from "@/components/ProjectDrawerLayout"
 import { buildChatPath, saveLastChat } from "@/lib/last-chat"
+import {
+    buildFrontendLocalRepoContext,
+    hasLocalRepoSnapshot,
+    isBrowserLocalRepoPath,
+} from "@/lib/local-repo-bridge"
 
 type ChatMessage = {
     role: "user" | "assistant" | "system" | "tool"
@@ -28,6 +33,7 @@ type ProjectDoc = {
     _id: string
     key?: string
     name?: string
+    repo_path?: string
     default_branch?: string
     llm_provider?: string
     llm_model?: string
@@ -357,6 +363,17 @@ export default function ProjectChatPage() {
         setMessages((prev) => [...prev, { role: "user", content: q, ts: new Date().toISOString() }])
 
         try {
+            const repoPath = (project?.repo_path || "").trim()
+            let localRepoContext: string | undefined
+            if (isBrowserLocalRepoPath(repoPath)) {
+                if (!hasLocalRepoSnapshot(projectId)) {
+                    throw new Error(
+                        "This project uses a browser-local repository. Open Project Settings and pick the local repo folder on this device first."
+                    )
+                }
+                localRepoContext = buildFrontendLocalRepoContext(projectId, q, branch) || undefined
+            }
+
             const res = await backendJson<AskAgentResponse>("/api/ask_agent", {
                 method: "POST",
                 body: JSON.stringify({
@@ -366,6 +383,7 @@ export default function ProjectChatPage() {
                     chat_id: selectedChatId,
                     top_k: 8,
                     question: q,
+                    local_repo_context: localRepoContext,
                 }),
             })
 
@@ -380,7 +398,7 @@ export default function ProjectChatPage() {
         } finally {
             setSending(false)
         }
-    }, [branch, input, loadChats, loadMessages, projectId, selectedChatId, sending, userId])
+    }, [branch, input, loadChats, loadMessages, project?.repo_path, projectId, selectedChatId, sending, userId])
 
     const clearChat = useCallback(async () => {
         if (!selectedChatId) return

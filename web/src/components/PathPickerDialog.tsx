@@ -21,6 +21,12 @@ import ArrowUpwardRounded from "@mui/icons-material/ArrowUpwardRounded"
 import FolderRounded from "@mui/icons-material/FolderRounded"
 import HomeRounded from "@mui/icons-material/HomeRounded"
 import { backendJson } from "@/lib/backend"
+import {
+    browserLocalRepoPath,
+    isBrowserLocalRepoPath,
+    pickLocalRepoSnapshotFromBrowser,
+    setLocalRepoSnapshot,
+} from "@/lib/local-repo-bridge"
 
 type DirectoryItem = {
     name: string
@@ -38,6 +44,7 @@ type Props = {
     open: boolean
     title?: string
     initialPath?: string
+    localRepoKey?: string
     onClose: () => void
     onPick: (path: string) => void
 }
@@ -51,6 +58,7 @@ export default function PathPickerDialog({
     open,
     title = "Pick Folder",
     initialPath,
+    localRepoKey,
     onClose,
     onPick,
 }: Props) {
@@ -59,15 +67,25 @@ export default function PathPickerDialog({
     const [roots, setRoots] = useState<string[]>([])
     const [parentPath, setParentPath] = useState<string | null>(null)
     const [loading, setLoading] = useState(false)
+    const [localPicking, setLocalPicking] = useState(false)
     const [error, setError] = useState<string | null>(null)
 
     const effectivePath = useMemo(() => currentPath.trim(), [currentPath])
 
     async function load(path?: string) {
+        const normalized = path?.trim() || ""
+        if (isBrowserLocalRepoPath(normalized)) {
+            setCurrentPath(normalized)
+            setDirectories([])
+            setRoots([])
+            setParentPath(null)
+            setError(null)
+            return
+        }
         setLoading(true)
         setError(null)
         try {
-            const query = path?.trim() ? `?path=${encodeURIComponent(path.trim())}` : ""
+            const query = normalized ? `?path=${encodeURIComponent(normalized)}` : ""
             const res = await backendJson<FsListResponse>(`/api/admin/fs/list${query}`)
             setCurrentPath(res.path || "")
             setDirectories(res.directories || [])
@@ -84,6 +102,25 @@ export default function PathPickerDialog({
         if (!open) return
         void load(initialPath)
     }, [open, initialPath])
+
+    async function pickLocalFolder() {
+        setLocalPicking(true)
+        setError(null)
+        try {
+            const snapshot = await pickLocalRepoSnapshotFromBrowser()
+            if (localRepoKey?.trim()) {
+                setLocalRepoSnapshot(localRepoKey.trim(), snapshot)
+            }
+            setCurrentPath(browserLocalRepoPath(snapshot.rootName))
+            setDirectories([])
+            setRoots([])
+            setParentPath(null)
+        } catch (err) {
+            setError(errText(err))
+        } finally {
+            setLocalPicking(false)
+        }
+    }
 
     return (
         <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
@@ -111,12 +148,20 @@ export default function PathPickerDialog({
 
                     <Stack direction="row" spacing={1}>
                         <Button
+                            variant="contained"
+                            startIcon={<FolderRounded />}
+                            onClick={() => void pickLocalFolder()}
+                            disabled={loading || localPicking}
+                        >
+                            {localPicking ? "Indexing Local Folder..." : "Pick From This Device"}
+                        </Button>
+                        <Button
                             variant="text"
                             startIcon={<HomeRounded />}
                             onClick={() => void load("")}
-                            disabled={loading}
+                            disabled={loading || localPicking}
                         >
-                            Roots
+                            Server Roots
                         </Button>
                         <Button
                             variant="text"
@@ -124,9 +169,9 @@ export default function PathPickerDialog({
                             onClick={() => {
                                 if (parentPath) void load(parentPath)
                             }}
-                            disabled={loading || !parentPath}
+                            disabled={loading || localPicking || !parentPath}
                         >
-                            Up
+                            Server Up
                         </Button>
                     </Stack>
 
@@ -173,7 +218,8 @@ export default function PathPickerDialog({
 
                     {roots.length > 0 && (
                         <Typography variant="caption" color="text.secondary">
-                            Server-side picker (backend filesystem). Allowed roots: {roots.join(", ")}
+                            Server-side picker (backend filesystem). Allowed roots: {roots.join(", ")}.
+                            For repos on your laptop, use "Pick From This Device".
                         </Typography>
                     )}
                 </Stack>

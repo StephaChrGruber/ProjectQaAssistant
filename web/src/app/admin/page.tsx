@@ -44,6 +44,10 @@ import DeleteForeverRounded from "@mui/icons-material/DeleteForeverRounded"
 import FolderOpenRounded from "@mui/icons-material/FolderOpenRounded"
 import { backendJson } from "@/lib/backend"
 import PathPickerDialog from "@/components/PathPickerDialog"
+import {
+    isBrowserLocalRepoPath,
+    moveLocalRepoSnapshot,
+} from "@/lib/local-repo-bridge"
 
 type MeUser = {
     id?: string
@@ -203,6 +207,8 @@ function asStr(v: unknown): string {
 function getConnector(project: AdminProject | undefined, type: ConnectorDoc["type"]): ConnectorDoc | undefined {
     return project?.connectors?.find((c) => c.type === type)
 }
+
+const CREATE_DRAFT_LOCAL_REPO_KEY = "draft:create:active"
 
 function connectorPayloads(git: GitForm, confluence: ConfluenceForm, jira: JiraForm) {
     return {
@@ -513,6 +519,10 @@ export default function AdminPage() {
                     llm_api_key: createForm.llm_api_key.trim() || null,
                 }),
             })
+
+            if (isBrowserLocalRepoPath(createForm.repo_path)) {
+                moveLocalRepoSnapshot(CREATE_DRAFT_LOCAL_REPO_KEY, created.id)
+            }
 
             const payloads = connectorPayloads(createGitForm, createConfluenceForm, createJiraForm)
             await Promise.all([
@@ -1743,6 +1753,13 @@ export default function AdminPage() {
                 <PathPickerDialog
                     open={Boolean(pathPickerTarget)}
                     title="Pick Repository Folder"
+                    localRepoKey={
+                        pathPickerTarget === "createRepoPath"
+                            ? CREATE_DRAFT_LOCAL_REPO_KEY
+                            : pathPickerTarget === "editRepoPath" && selectedProjectId
+                                ? selectedProjectId
+                                : undefined
+                    }
                     initialPath={
                         pathPickerTarget === "createRepoPath"
                             ? createForm.repo_path

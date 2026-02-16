@@ -17,6 +17,7 @@ export async function POST(req: Request) {
 
         // IMPORTANT: backend expects "question"
         question: body.question ?? body.query ?? "",
+        local_repo_context: body.local_repo_context ?? body.localRepoContext ?? null,
     }
 
     const res = await fetch(`${BACKEND}/ask_agent`, {
