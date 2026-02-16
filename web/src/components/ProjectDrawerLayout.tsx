@@ -1,5 +1,32 @@
 "use client"
 
+import ChatBubbleOutlineRounded from "@mui/icons-material/ChatBubbleOutlineRounded"
+import SettingsRounded from "@mui/icons-material/SettingsRounded"
+import AdminPanelSettingsRounded from "@mui/icons-material/AdminPanelSettingsRounded"
+import FolderRounded from "@mui/icons-material/FolderRounded"
+import AddRounded from "@mui/icons-material/AddRounded"
+import MenuRounded from "@mui/icons-material/MenuRounded"
+import {
+    AppBar,
+    Box,
+    Button,
+    Divider,
+    Drawer,
+    FormControl,
+    IconButton,
+    InputLabel,
+    List,
+    ListItemButton,
+    ListItemIcon,
+    ListItemText,
+    MenuItem,
+    Select,
+    Stack,
+    Toolbar,
+    Typography,
+    useMediaQuery,
+    useTheme,
+} from "@mui/material"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useEffect, useMemo, useState } from "react"
@@ -34,11 +61,13 @@ type Props = {
     children: React.ReactNode
 }
 
-function fmtTime(iso?: string): string {
+const DRAWER_WIDTH = 380
+
+function formatTime(iso?: string): string {
     if (!iso) return ""
-    const d = new Date(iso)
-    if (Number.isNaN(d.getTime())) return ""
-    return d.toLocaleString(undefined, {
+    const date = new Date(iso)
+    if (Number.isNaN(date.getTime())) return ""
+    return date.toLocaleString(undefined, {
         month: "short",
         day: "numeric",
         hour: "2-digit",
@@ -46,14 +75,10 @@ function fmtTime(iso?: string): string {
     })
 }
 
-function chatTitle(chat: DrawerChat): string {
-    const raw = (chat.title || "").trim()
-    if (!raw) return "New Conversation"
-    return raw
-}
-
-function cx(...parts: Array<string | false | null | undefined>) {
-    return parts.filter(Boolean).join(" ")
+function chatLabel(chat: DrawerChat): string {
+    const title = (chat.title || "").trim()
+    if (!title) return "New Conversation"
+    return title
 }
 
 export function ProjectDrawerLayout(props: Props) {
@@ -74,186 +99,263 @@ export function ProjectDrawerLayout(props: Props) {
     } = props
 
     const pathname = usePathname()
+    const theme = useTheme()
+    const desktop = useMediaQuery(theme.breakpoints.up("md"))
     const [mobileOpen, setMobileOpen] = useState(false)
 
     const userLabel = useMemo(() => user?.displayName || user?.email || "Developer", [user])
 
     useEffect(() => {
-        // Close drawer on route changes.
         setMobileOpen(false)
     }, [pathname])
 
     useEffect(() => {
-        // Prevent body scrolling when drawer is open on mobile.
-        if (!mobileOpen) return
-        const prev = document.body.style.overflow
+        if (!mobileOpen || desktop) return
+        const previous = document.body.style.overflow
         document.body.style.overflow = "hidden"
         return () => {
-            document.body.style.overflow = prev
+            document.body.style.overflow = previous
         }
-    }, [mobileOpen])
+    }, [mobileOpen, desktop])
 
-    const drawerPanel = (isTemporary: boolean) => (
-        <div className="flex h-full flex-col">
-            <div className="border-b border-white/10 p-4">
-                <div className="inline-flex items-center rounded-full border border-cyan-300/30 bg-cyan-300/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-cyan-100">
-                    Project QA
-                </div>
-                <div className="mt-3 truncate text-sm font-semibold text-white">{projectLabel}</div>
-                <div className="truncate text-xs text-slate-400">{projectId}</div>
-            </div>
-
-            <div className="border-b border-white/10 p-4">
-                <label className="text-[11px] uppercase tracking-[0.16em] text-slate-400">Branch</label>
-                <select
-                    value={branch}
-                    onChange={(e) => {
-                        onBranchChange(e.target.value)
-                        if (isTemporary) setMobileOpen(false)
+    const drawerContent = (
+        <Box sx={{ display: "flex", height: "100%", flexDirection: "column" }}>
+            <Box sx={{ px: 2.5, py: 2.5 }}>
+                <Typography
+                    variant="overline"
+                    sx={{
+                        color: "primary.light",
+                        letterSpacing: "0.12em",
+                        fontWeight: 700,
                     }}
-                    className="mt-2 w-full rounded-xl border border-white/15 bg-slate-900/80 px-3 py-2 text-sm outline-none ring-cyan-300/40 focus:ring-2"
                 >
-                    {branches.map((b) => (
-                        <option key={b} value={b}>
-                            {b}
-                        </option>
-                    ))}
-                    {branches.length === 0 && <option value={branch}>{branch}</option>}
-                </select>
-                <button
+                    Project QA
+                </Typography>
+                <Typography
+                    variant="h6"
+                    noWrap
+                    sx={{ mt: 1, fontWeight: 700, lineHeight: 1.25 }}
+                >
+                    {projectLabel}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" noWrap>
+                    {projectId}
+                </Typography>
+            </Box>
+
+            <Divider />
+
+            <Box sx={{ px: 2.5, py: 2 }}>
+                <FormControl fullWidth size="small">
+                    <InputLabel id="branch-select-label">Branch</InputLabel>
+                    <Select
+                        labelId="branch-select-label"
+                        label="Branch"
+                        value={branch}
+                        onChange={(event) => {
+                            onBranchChange(event.target.value)
+                            if (!desktop) setMobileOpen(false)
+                        }}
+                    >
+                        {branches.map((item) => (
+                            <MenuItem key={item} value={item}>
+                                {item}
+                            </MenuItem>
+                        ))}
+                        {branches.length === 0 && <MenuItem value={branch}>{branch}</MenuItem>}
+                    </Select>
+                </FormControl>
+
+                <Button
+                    fullWidth
+                    variant="contained"
+                    startIcon={<AddRounded />}
                     onClick={() => {
                         onNewChat()
-                        if (isTemporary) setMobileOpen(false)
+                        if (!desktop) setMobileOpen(false)
                     }}
-                    className="mt-3 w-full rounded-xl bg-gradient-to-r from-cyan-300 to-emerald-300 px-3 py-2 text-sm font-semibold text-slate-900 hover:from-cyan-200 hover:to-emerald-200"
+                    sx={{ mt: 1.5 }}
                 >
                     New Chat
-                </button>
-            </div>
+                </Button>
+            </Box>
 
-            <div className="min-h-0 flex-1 overflow-y-auto p-2">
-                <div className="px-2 pb-2 text-[11px] uppercase tracking-[0.16em] text-slate-400">Conversations</div>
-                {loadingChats && (
-                    <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-slate-400">
-                        Loading chats...
-                    </div>
-                )}
-                {!loadingChats && chats.length === 0 && (
-                    <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-slate-500">
-                        No chats for this branch yet.
-                    </div>
-                )}
-                <div className="space-y-1.5">
+            <Divider />
+
+            <Box sx={{ minHeight: 0, flex: 1, overflowY: "auto", px: 1.25, py: 1.25 }}>
+                <Typography
+                    variant="overline"
+                    sx={{ px: 1.25, color: "text.secondary", letterSpacing: "0.11em" }}
+                >
+                    Conversations
+                </Typography>
+
+                <List dense sx={{ pt: 0.5 }}>
+                    {loadingChats && (
+                        <ListItemButton disabled sx={{ borderRadius: 2 }}>
+                            <ListItemText primary="Loading chats..." />
+                        </ListItemButton>
+                    )}
+
+                    {!loadingChats && chats.length === 0 && (
+                        <ListItemButton disabled sx={{ borderRadius: 2 }}>
+                            <ListItemText primary="No chats for this branch" />
+                        </ListItemButton>
+                    )}
+
                     {chats.map((chat) => {
                         const selected = chat.chat_id === selectedChatId
                         return (
-                            <button
+                            <ListItemButton
                                 key={chat.chat_id}
+                                selected={selected}
                                 onClick={() => {
                                     onSelectChat(chat)
-                                    if (isTemporary) setMobileOpen(false)
+                                    if (!desktop) setMobileOpen(false)
                                 }}
-                                className={[
-                                    "w-full rounded-xl border px-3 py-2 text-left transition",
-                                    selected
-                                        ? "border-cyan-300/50 bg-cyan-300/10 shadow-[0_0_0_1px_rgba(103,232,249,0.25)]"
-                                        : "border-white/10 bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.06]",
-                                ].join(" ")}
+                                sx={{
+                                    mb: 0.5,
+                                    borderRadius: 2,
+                                    alignItems: "flex-start",
+                                }}
                             >
-                                <div className="truncate text-sm font-medium">{chatTitle(chat)}</div>
-                                <div className="mt-1 truncate text-[11px] text-slate-400">
-                                    {chat.branch || branch}
-                                    {chat.updated_at ? ` · ${fmtTime(chat.updated_at)}` : ""}
-                                </div>
-                            </button>
+                                <ListItemIcon sx={{ minWidth: 34, mt: 0.1 }}>
+                                    <ChatBubbleOutlineRounded fontSize="small" />
+                                </ListItemIcon>
+                                <ListItemText
+                                    primary={chatLabel(chat)}
+                                    secondary={`${chat.branch || branch}${chat.updated_at ? ` · ${formatTime(chat.updated_at)}` : ""}`}
+                                    primaryTypographyProps={{
+                                        noWrap: true,
+                                        fontWeight: selected ? 600 : 500,
+                                        fontSize: 14,
+                                    }}
+                                    secondaryTypographyProps={{
+                                        noWrap: true,
+                                        fontSize: 11,
+                                    }}
+                                />
+                            </ListItemButton>
                         )
                     })}
-                </div>
-            </div>
+                </List>
+            </Box>
 
-            <div className="border-t border-white/10 p-4">
-                <div className="truncate pb-3 text-xs text-slate-400">{userLabel}</div>
-                <div className="space-y-2 text-sm">
-                    <Link
+            <Divider />
+
+            <Box sx={{ px: 2, py: 1.5 }}>
+                <Typography variant="caption" color="text.secondary" noWrap sx={{ px: 1, display: "block", pb: 1 }}>
+                    {userLabel}
+                </Typography>
+
+                <List dense>
+                    <ListItemButton
+                        component={Link}
                         href={`/projects/${projectId}/settings`}
-                        className={cx(
-                            "block rounded-xl border px-3 py-2 transition",
-                            activeSection === "settings"
-                                ? "border-cyan-300/40 bg-cyan-300/10"
-                                : "border-white/10 bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.06]"
-                        )}
+                        selected={activeSection === "settings"}
+                        sx={{ borderRadius: 2 }}
                     >
-                        Settings
-                    </Link>
+                        <ListItemIcon sx={{ minWidth: 34 }}>
+                            <SettingsRounded fontSize="small" />
+                        </ListItemIcon>
+                        <ListItemText primary="Settings" />
+                    </ListItemButton>
+
                     {user?.isGlobalAdmin && (
-                        <Link
-                            href="/admin"
-                            className="block rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 transition hover:border-white/20 hover:bg-white/[0.06]"
-                        >
-                            Admin
-                        </Link>
+                        <ListItemButton component={Link} href="/admin" sx={{ borderRadius: 2 }}>
+                            <ListItemIcon sx={{ minWidth: 34 }}>
+                                <AdminPanelSettingsRounded fontSize="small" />
+                            </ListItemIcon>
+                            <ListItemText primary="Admin" />
+                        </ListItemButton>
                     )}
-                    <Link
-                        href="/projects"
-                        className="block rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 transition hover:border-white/20 hover:bg-white/[0.06]"
-                    >
-                        Projects
-                    </Link>
-                </div>
-            </div>
-        </div>
+
+                    <ListItemButton component={Link} href="/projects" sx={{ borderRadius: 2 }}>
+                        <ListItemIcon sx={{ minWidth: 34 }}>
+                            <FolderRounded fontSize="small" />
+                        </ListItemIcon>
+                        <ListItemText primary="Projects" />
+                    </ListItemButton>
+                </List>
+            </Box>
+        </Box>
     )
 
     return (
-        <div className="relative flex h-dvh min-h-screen w-full overflow-hidden text-slate-100">
-            <div className="fixed inset-0 -z-20 bg-[#05050a]" />
-            <div className="fixed inset-0 -z-10 bg-[radial-gradient(1000px_500px_at_5%_0%,rgba(0,193,255,0.22),transparent_60%),radial-gradient(800px_420px_at_95%_4%,rgba(0,255,166,0.14),transparent_55%),linear-gradient(180deg,#090e1a_0%,#05050a_100%)]" />
+        <Box sx={{ display: "flex", height: "100dvh", minHeight: "100vh", overflow: "hidden" }}>
+            <Box
+                sx={{
+                    position: "fixed",
+                    inset: 0,
+                    zIndex: -20,
+                    backgroundColor: "#05050a",
+                }}
+            />
+            <Box
+                sx={{
+                    position: "fixed",
+                    inset: 0,
+                    zIndex: -10,
+                    background:
+                        "radial-gradient(1000px 500px at 5% 0%, rgba(0,193,255,0.22), transparent 60%), radial-gradient(800px 420px at 95% 4%, rgba(0,255,166,0.14), transparent 55%), linear-gradient(180deg, #090e1a 0%, #05050a 100%)",
+                }}
+            />
 
-            <aside className="hidden h-full w-80 shrink-0 border-r border-white/10 bg-slate-950/80 backdrop-blur-xl lg:block">
-                {drawerPanel(false)}
-            </aside>
-
-            <div
-                className={cx(
-                    "fixed inset-0 z-40 lg:hidden",
-                    mobileOpen ? "pointer-events-auto" : "pointer-events-none"
-                )}
-                aria-hidden={!mobileOpen}
-            >
-                <button
-                    className={cx(
-                        "absolute inset-0 bg-black/55 transition-opacity",
-                        mobileOpen ? "opacity-100" : "opacity-0"
-                    )}
-                    onClick={() => setMobileOpen(false)}
-                    aria-label="Close drawer"
-                />
-                <aside
-                    className={cx(
-                        "absolute inset-y-0 left-0 w-[min(88vw,22rem)] border-r border-white/10 bg-slate-950/92 backdrop-blur-xl transition-transform duration-200 ease-out",
-                        mobileOpen ? "translate-x-0" : "-translate-x-full"
-                    )}
+            <Box component="nav" sx={{ width: { md: DRAWER_WIDTH }, flexShrink: { md: 0 } }}>
+                <Drawer
+                    variant={desktop ? "permanent" : "temporary"}
+                    open={desktop ? true : mobileOpen}
+                    onClose={() => setMobileOpen(false)}
+                    ModalProps={{ keepMounted: true }}
+                    sx={{
+                        display: "block",
+                        "& .MuiDrawer-paper": {
+                            width: DRAWER_WIDTH,
+                            boxSizing: "border-box",
+                            backgroundColor: "rgba(15, 20, 34, 0.88)",
+                        },
+                    }}
                 >
-                    {drawerPanel(true)}
-                </aside>
-            </div>
+                    {drawerContent}
+                </Drawer>
+            </Box>
 
-            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                <header className="sticky top-0 z-20 flex items-center justify-between border-b border-white/10 bg-slate-950/65 px-4 py-3 backdrop-blur-xl lg:hidden">
-                    <button
-                        onClick={() => setMobileOpen(true)}
-                        className="rounded-lg border border-white/15 bg-white/[0.03] px-3 py-1.5 text-sm"
-                        aria-label="Open menu"
+            <Box sx={{ display: "flex", minWidth: 0, flex: 1, flexDirection: "column", overflow: "hidden" }}>
+                {!desktop && (
+                    <AppBar
+                        position="sticky"
+                        color="transparent"
+                        elevation={0}
+                        sx={{
+                            borderBottom: "1px solid rgba(255,255,255,0.1)",
+                            backgroundColor: "rgba(10, 12, 22, 0.68)",
+                        }}
                     >
-                        Menu
-                    </button>
-                    <div className="min-w-0 text-right">
-                        <div className="truncate text-sm font-medium">{projectLabel}</div>
-                        <div className="text-xs text-slate-400">{branch}</div>
-                    </div>
-                </header>
+                        <Toolbar sx={{ minHeight: 58 }}>
+                            <IconButton
+                                color="inherit"
+                                edge="start"
+                                onClick={() => setMobileOpen(true)}
+                                aria-label="open navigation"
+                                sx={{ mr: 1 }}
+                            >
+                                <MenuRounded />
+                            </IconButton>
+
+                            <Stack sx={{ minWidth: 0, ml: "auto", textAlign: "right" }}>
+                                <Typography noWrap variant="subtitle2" sx={{ fontWeight: 700 }}>
+                                    {projectLabel}
+                                </Typography>
+                                <Typography noWrap variant="caption" color="text.secondary">
+                                    {branch}
+                                </Typography>
+                            </Stack>
+                        </Toolbar>
+                    </AppBar>
+                )}
+
                 {children}
-            </div>
-        </div>
+            </Box>
+        </Box>
     )
 }
