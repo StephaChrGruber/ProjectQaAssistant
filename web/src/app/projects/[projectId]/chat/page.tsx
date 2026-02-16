@@ -602,6 +602,10 @@ export default function ProjectChatPage() {
     }, [loadDocumentationList, selectedDocPath])
 
     const generateDocumentation = useCallback(async (opts?: { silent?: boolean }) => {
+        if (!opts?.silent) {
+            setDocsOpen(true)
+            setError(null)
+        }
         setDocsGenerating(true)
         setDocsError(null)
         setDocsNotice(null)
@@ -659,12 +663,13 @@ export default function ProjectChatPage() {
                 )
             }
 
-            if (!opts?.silent) {
-                setDocsOpen(true)
-            }
             await loadDocumentationList()
         } catch (err) {
-            setDocsError(errText(err))
+            const msg = errText(err)
+            setDocsError(msg)
+            if (!opts?.silent) {
+                setError(`Documentation generation failed: ${msg}`)
+            }
         } finally {
             setDocsGenerating(false)
         }
@@ -730,6 +735,11 @@ export default function ProjectChatPage() {
                 {error && (
                     <Box sx={{ px: { xs: 1.5, md: 3 }, pt: 1.25 }}>
                         <Alert severity="error">{error}</Alert>
+                    </Box>
+                )}
+                {docsNotice && (
+                    <Box sx={{ px: { xs: 1.5, md: 3 }, pt: 1.25 }}>
+                        <Alert severity="success">{docsNotice}</Alert>
                     </Box>
                 )}
 
