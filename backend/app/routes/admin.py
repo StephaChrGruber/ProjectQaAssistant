@@ -2,9 +2,12 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import requests
+import shutil
+from pathlib import Path
 from ..deps import current_user
 from ..models.base_mongo_models import Project, Membership, Connector
 from ..settings import settings
+from ..db import get_db
 
 router = APIRouter()
 
@@ -163,6 +166,73 @@ async def update_project(project_id: str, req: UpdateProject, user=Depends(curre
     await p.save()
 
     return _serialize_project(p)
+
+
+@router.delete("/admin/projects/{project_id}")
+async def delete_project(project_id: str, user=Depends(current_user)):
+    if not user.isGlobalAdmin:
+        raise HTTPException(403, "Global admin required")
+
+    p = await Project.get(project_id)
+    if not p:
+        raise HTTPException(404, "Project not found")
+
+    db = get_db()
+
+    # Legacy chat-store format kept messages in a separate collection.
+    legacy_chat_docs = await db["chats"].find(
+        {"projectId": project_id},
+        {"_id": 1},
+    ).to_list(length=50000)
+    legacy_chat_ids = [str(d.get("_id")) for d in legacy_chat_docs if d.get("_id") is not None]
+
+    connectors_res = await db["connectors"].delete_many({"projectId": project_id})
+    memberships_res = await db["memberships"].delete_many({"projectId": project_id})
+    chats_res = await db["chats"].delete_many(
+        {"$or": [{"project_id": project_id}, {"projectId": project_id}]}
+    )
+    chunks_res = await db["chunks"].delete_many(
+        {"$or": [{"project_id": project_id}, {"projectId": project_id}]}
+    )
+    docs_res = await db["docs"].delete_many(
+        {"$or": [{"project_id": project_id}, {"projectId": project_id}]}
+    )
+
+    messages_deleted = 0
+    if legacy_chat_ids:
+        msg_res = await db["messages"].delete_many({"chatId": {"$in": legacy_chat_ids}})
+        messages_deleted = int(msg_res.deleted_count or 0)
+
+    await p.delete()
+
+    chroma_path = Path(settings.CHROMA_ROOT) / project_id
+    chroma_deleted = False
+    chroma_error: str | None = None
+    if chroma_path.exists():
+        try:
+            shutil.rmtree(chroma_path)
+            chroma_deleted = True
+        except Exception as err:
+            chroma_error = str(err)
+
+    return {
+        "projectId": project_id,
+        "projectKey": p.key,
+        "deleted": {
+            "project": 1,
+            "connectors": int(connectors_res.deleted_count or 0),
+            "memberships": int(memberships_res.deleted_count or 0),
+            "chats": int(chats_res.deleted_count or 0),
+            "messages": messages_deleted,
+            "chunks": int(chunks_res.deleted_count or 0),
+            "docs": int(docs_res.deleted_count or 0),
+        },
+        "chroma": {
+            "path": str(chroma_path),
+            "deleted": chroma_deleted,
+            "error": chroma_error,
+        },
+    }
 
 
 @router.get("/admin/projects/{project_id}/connectors")

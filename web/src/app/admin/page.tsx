@@ -12,6 +12,10 @@ import {
     Chip,
     Container,
     Divider,
+    Dialog,
+    DialogActions,
+    DialogContent,
+    DialogTitle,
     FormControl,
     FormControlLabel,
     InputLabel,
@@ -34,6 +38,7 @@ import SaveRounded from "@mui/icons-material/SaveRounded"
 import CloudUploadRounded from "@mui/icons-material/CloudUploadRounded"
 import RefreshRounded from "@mui/icons-material/RefreshRounded"
 import ArrowBackRounded from "@mui/icons-material/ArrowBackRounded"
+import DeleteForeverRounded from "@mui/icons-material/DeleteForeverRounded"
 import { backendJson } from "@/lib/backend"
 
 type MeUser = {
@@ -121,6 +126,17 @@ type LlmOptionsResponse = {
     ollama_models: string[]
     openai_models: string[]
     discovery_error?: string | null
+}
+
+type DeleteProjectResponse = {
+    projectId: string
+    projectKey?: string
+    deleted?: Record<string, number>
+    chroma?: {
+        path?: string
+        deleted?: boolean
+        error?: string | null
+    }
 }
 
 const DEFAULT_PROVIDER_OPTIONS: LlmProviderOption[] = [
@@ -235,6 +251,8 @@ export default function AdminPage() {
     const [llmOptions, setLlmOptions] = useState<LlmOptionsResponse | null>(null)
     const [loadingLlmOptions, setLoadingLlmOptions] = useState(false)
     const [llmOptionsError, setLlmOptionsError] = useState<string | null>(null)
+    const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+    const [deleteConfirmKey, setDeleteConfirmKey] = useState("")
 
     const [createForm, setCreateForm] = useState<ProjectForm>(emptyProjectForm())
     const [createGitForm, setCreateGitForm] = useState<GitForm>(emptyGit())
@@ -590,6 +608,40 @@ export default function AdminPage() {
             const errCount = Object.keys(out.errors || {}).length
             setNotice(
                 `Ingestion finished. Docs: ${out.totalDocs || 0}, chunks: ${out.totalChunks || 0}, source errors: ${errCount}.`
+            )
+        } catch (err) {
+            setError(errText(err))
+        } finally {
+            setBusy(false)
+        }
+    }
+
+    async function deleteSelectedProject() {
+        if (!selectedProject || !selectedProjectId) return
+        const expectedKey = selectedProject.key.trim()
+        if (deleteConfirmKey.trim() !== expectedKey) {
+            setError(`Type "${expectedKey}" to confirm deletion.`)
+            return
+        }
+
+        setBusy(true)
+        setError(null)
+        setNotice(null)
+
+        try {
+            const out = await backendJson<DeleteProjectResponse>(`/api/admin/projects/${selectedProjectId}`, {
+                method: "DELETE",
+            })
+            await refreshProjects()
+            setDeleteDialogOpen(false)
+            setDeleteConfirmKey("")
+
+            const deletedChats = out.deleted?.chats || 0
+            const deletedChunks = out.deleted?.chunks || 0
+            const chromaMsg = out.chroma?.deleted ? " Chroma index removed." : ""
+            const chromaWarn = out.chroma?.error ? ` Chroma cleanup warning: ${out.chroma.error}` : ""
+            setNotice(
+                `Project ${out.projectKey || expectedKey} deleted. Chats removed: ${deletedChats}, chunks removed: ${deletedChunks}.${chromaMsg}${chromaWarn}`
             )
         } catch (err) {
             setError(errText(err))
@@ -1200,6 +1252,20 @@ export default function AdminPage() {
                                                 ))}
                                             </Select>
                                         </FormControl>
+
+                                        <Button
+                                            variant="outlined"
+                                            color="error"
+                                            startIcon={<DeleteForeverRounded />}
+                                            disabled={!selectedProject || busy}
+                                            onClick={() => {
+                                                setDeleteConfirmKey("")
+                                                setDeleteDialogOpen(true)
+                                            }}
+                                            sx={{ width: { xs: "100%", sm: "auto" } }}
+                                        >
+                                            Delete Project
+                                        </Button>
                                     </Stack>
 
                                     {!selectedProject && <Alert severity="info">No project selected.</Alert>}
@@ -1596,6 +1662,52 @@ export default function AdminPage() {
                         </Card>
                     </Box>
                 </Stack>
+
+                <Dialog
+                    open={deleteDialogOpen}
+                    onClose={() => {
+                        if (!busy) setDeleteDialogOpen(false)
+                    }}
+                    fullWidth
+                    maxWidth="sm"
+                >
+                    <DialogTitle>Delete Project</DialogTitle>
+                    <DialogContent>
+                        <Stack spacing={1.5} sx={{ mt: 0.5 }}>
+                            <Alert severity="warning">
+                                This removes the project configuration, connectors, chats, and indexed data.
+                            </Alert>
+                            <Typography variant="body2" color="text.secondary">
+                                Type <strong>{selectedProject?.key || ""}</strong> to confirm deletion.
+                            </Typography>
+                            <TextField
+                                label="Project Key Confirmation"
+                                value={deleteConfirmKey}
+                                onChange={(e) => setDeleteConfirmKey(e.target.value)}
+                                autoFocus
+                                fullWidth
+                                disabled={busy}
+                            />
+                        </Stack>
+                    </DialogContent>
+                    <DialogActions>
+                        <Button
+                            onClick={() => setDeleteDialogOpen(false)}
+                            disabled={busy}
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            color="error"
+                            variant="contained"
+                            startIcon={<DeleteForeverRounded />}
+                            disabled={busy || !selectedProject || deleteConfirmKey.trim() !== (selectedProject?.key || "")}
+                            onClick={() => void deleteSelectedProject()}
+                        >
+                            Delete Project
+                        </Button>
+                    </DialogActions>
+                </Dialog>
             </Container>
         </Box>
     )

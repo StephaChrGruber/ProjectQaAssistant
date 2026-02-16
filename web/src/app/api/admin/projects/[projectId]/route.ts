@@ -38,3 +38,21 @@ export async function PATCH(
     })
 }
 
+export async function DELETE(
+    _req: Request,
+    ctx: { params: Promise<{ projectId: string }> }
+) {
+    const { projectId } = await ctx.params
+
+    const res = await fetch(`${BACKEND}/admin/projects/${encodeURIComponent(projectId)}`, {
+        method: "DELETE",
+        headers: adminHeaders(),
+        cache: "no-store",
+    })
+
+    const text = await res.text()
+    return new NextResponse(text, {
+        status: res.status,
+        headers: { "Content-Type": res.headers.get("content-type") || "application/json" },
+    })
+}
