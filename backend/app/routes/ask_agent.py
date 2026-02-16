@@ -37,6 +37,10 @@ async def _project_llm_defaults(project_id: str) -> dict[str, str | None]:
     api_key = (project.get("llm_api_key") or "").strip() or None
     model = (project.get("llm_model") or "").strip() or None
 
+    # Legacy placeholder should never be used as OpenAI key.
+    if api_key and api_key.lower() == "ollama":
+        api_key = None
+
     # Provider-aware defaults for OpenAI-compatible clients.
     if provider == "ollama":
         base_url = base_url or "http://ollama:11434/v1"

@@ -108,6 +108,16 @@ def _normalize_openai_base(base_url: str | None) -> str:
     return base + "/"
 
 
+def _normalize_openai_api_key(api_key: str | None) -> str:
+    key = (api_key or "").strip()
+    if not key:
+        return ""
+    # Legacy placeholder from local/Ollama mode should never be used for OpenAI.
+    if key.lower() == "ollama":
+        return ""
+    return key
+
+
 def _looks_like_chat_model(model_id: str) -> bool:
     mid = (model_id or "").strip().lower()
     if not mid:
@@ -132,7 +142,7 @@ def _looks_like_chat_model(model_id: str) -> bool:
 
 
 def _discover_openai_models(base_url: str | None, api_key: str | None) -> tuple[list[str], str | None]:
-    key = (api_key or "").strip()
+    key = _normalize_openai_api_key(api_key)
     if not key:
         return FALLBACK_OPENAI_MODELS, None
 
@@ -160,6 +170,13 @@ def _discover_openai_models(base_url: str | None, api_key: str | None) -> tuple[
             deduped = list(dict.fromkeys(sorted(models)))
             return deduped, None
         return FALLBACK_OPENAI_MODELS, "OpenAI returned no chat-capable models for this key."
+    except requests.HTTPError as err:
+        status = err.response.status_code if err.response is not None else None
+        if status == 401:
+            return FALLBACK_OPENAI_MODELS, "Unauthorized (401). Check OpenAI API key."
+        if status == 429:
+            return FALLBACK_OPENAI_MODELS, "Rate limited or quota exceeded (429). Check billing/quota."
+        return FALLBACK_OPENAI_MODELS, str(err)
     except Exception as err:
         return FALLBACK_OPENAI_MODELS, str(err)
 
@@ -402,7 +419,7 @@ async def llm_options(
         raise HTTPException(403, "Global admin required")
 
     ollama_models, ollama_error = _discover_ollama_models(OLLAMA_DEFAULT_BASE_URL)
-    resolved_openai_key = (
+    resolved_openai_key = _normalize_openai_api_key(
         (openai_api_key or "").strip()
         or (settings.OPENAI_API_KEY or "").strip()
         or (settings.LLM_API_KEY or "").strip()

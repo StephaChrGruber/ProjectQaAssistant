@@ -153,6 +153,13 @@ function asStr(v: unknown): string {
     return typeof v === "string" ? v : ""
 }
 
+function normalizedOpenAiKey(input?: string): string {
+    const key = (input || "").trim()
+    if (!key) return ""
+    if (key.toLowerCase() === "ollama") return ""
+    return key
+}
+
 function csvToList(v: string): string[] {
     return v
         .split(",")
@@ -318,8 +325,9 @@ export default function ProjectSettingsPage() {
         setLoadingLlmOptions(true)
         try {
             const params = new URLSearchParams()
-            if (opts?.openaiApiKey?.trim()) {
-                params.set("openai_api_key", opts.openaiApiKey.trim())
+            const safeOpenAiKey = normalizedOpenAiKey(opts?.openaiApiKey)
+            if (safeOpenAiKey) {
+                params.set("openai_api_key", safeOpenAiKey)
             }
             if (opts?.openaiBaseUrl?.trim()) {
                 params.set("openai_base_url", opts.openaiBaseUrl.trim())

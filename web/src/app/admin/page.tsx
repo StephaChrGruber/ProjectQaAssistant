@@ -206,6 +206,13 @@ function asStr(v: unknown): string {
     return typeof v === "string" ? v : ""
 }
 
+function normalizedOpenAiKey(input?: string): string {
+    const key = (input || "").trim()
+    if (!key) return ""
+    if (key.toLowerCase() === "ollama") return ""
+    return key
+}
+
 function getConnector(project: AdminProject | undefined, type: ConnectorDoc["type"]): ConnectorDoc | undefined {
     return project?.connectors?.find((c) => c.type === type)
 }
@@ -358,8 +365,9 @@ export default function AdminPage() {
         setLoadingLlmOptions(true)
         try {
             const params = new URLSearchParams()
-            if (opts?.openaiApiKey?.trim()) {
-                params.set("openai_api_key", opts.openaiApiKey.trim())
+            const safeOpenAiKey = normalizedOpenAiKey(opts?.openaiApiKey)
+            if (safeOpenAiKey) {
+                params.set("openai_api_key", safeOpenAiKey)
             }
             if (opts?.openaiBaseUrl?.trim()) {
                 params.set("openai_base_url", opts.openaiBaseUrl.trim())
