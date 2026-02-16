@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# IDE
+.idea/
+
+# Node / Next
+web/node_modules/
+web/.next/
+web/.turbo/
+web/out/
+
+# Local environment files
+.env
+.env.local
+
+# Logs
+*.log

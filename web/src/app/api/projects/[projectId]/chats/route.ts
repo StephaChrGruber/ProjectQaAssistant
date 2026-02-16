@@ -1,16 +1,26 @@
-// web/src/app/api/projects/[projectId]/route.ts
 import { NextResponse } from "next/server"
 
 const BACKEND = process.env.BACKEND_BASE_URL || "http://backend:8080"
 const DEV_USER = process.env.POC_DEV_USER || "dev@local"
 
 export async function GET(
-    _req: Request,
-    ctx: { params: Promise<{ projectId: string }> } // params is a Promise in your Next version
+    req: Request,
+    ctx: { params: Promise<{ projectId: string }> }
 ) {
     const { projectId } = await ctx.params
+    const url = new URL(req.url)
+    const branch = url.searchParams.get("branch")
+    const limit = url.searchParams.get("limit")
 
-    const res = await fetch(`${BACKEND}/projects/${projectId}`, {
+    const upstream = new URL(`${BACKEND}/chats/by-project/${encodeURIComponent(projectId)}`)
+    if (branch) {
+        upstream.searchParams.set("branch", branch)
+    }
+    if (limit) {
+        upstream.searchParams.set("limit", limit)
+    }
+
+    const res = await fetch(upstream.toString(), {
         headers: { "X-Dev-User": DEV_USER },
         cache: "no-store",
     })
@@ -21,3 +31,4 @@ export async function GET(
         headers: { "Content-Type": res.headers.get("content-type") || "application/json" },
     })
 }
+

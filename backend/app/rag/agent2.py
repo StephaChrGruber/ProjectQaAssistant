@@ -43,8 +43,8 @@ ALLOWED_TOOLS = {
 }
 
 
-def _base() -> str:
-    base = (settings.LLM_BASE_URL or "http://ollama:11434").rstrip("/")
+def _base(llm_base_url: str | None = None) -> str:
+    base = (llm_base_url or settings.LLM_BASE_URL or "http://ollama:11434").rstrip("/")
     if base.endswith("/v1"):
         base = base[:-3]
     return base + "/v1/"
@@ -432,20 +432,32 @@ def _coerce_kwargs_for_callable(fn, kwargs: Dict[str, Any]) -> Dict[str, Any]:
 
     return out
 
-def _llm_chat_nostream(messages: List[Dict[str, str]], *, temperature: float, max_tokens: int) -> str:
-    endpoint = urljoin(_base(), "chat/completions")
+def _llm_chat_nostream(
+    messages: List[Dict[str, str]],
+    *,
+    temperature: float,
+    max_tokens: int,
+    llm_base_url: str | None = None,
+    llm_api_key: str | None = None,
+    llm_model: str | None = None,
+) -> str:
+    endpoint = urljoin(_base(llm_base_url), "chat/completions")
     payload = {
-        "model": settings.LLM_MODEL or "llama3.2:3b",
+        "model": llm_model or settings.LLM_MODEL or "llama3.2:3b",
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": False,
     }
 
+    headers = {"Content-Type": "application/json"}
+    if llm_api_key:
+        headers["Authorization"] = f"Bearer {llm_api_key}"
+
     r = requests.post(
         endpoint,
         json=payload,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         timeout=300,
     )
     r.raise_for_status()
@@ -556,6 +568,9 @@ class Agent2:
             temperature: float = 0.1,
             max_tokens: int = 800,
             max_tool_calls: int = 8,
+            llm_base_url: str | None = None,
+            llm_api_key: str | None = None,
+            llm_model: str | None = None,
     ):
         self.project_id = project_id
         self.branch = branch
@@ -563,6 +578,9 @@ class Agent2:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.max_tool_calls = max_tool_calls
+        self.llm_base_url = llm_base_url
+        self.llm_api_key = llm_api_key
+        self.llm_model = llm_model
 
     async def run(self, user_text: str) -> str:
         system_prompt = _system_prompt(self.project_id, self.branch, self.user_id)
@@ -579,6 +597,9 @@ class Agent2:
                 messages,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
+                llm_base_url=self.llm_base_url,
+                llm_api_key=self.llm_api_key,
+                llm_model=self.llm_model,
             ).strip()
 
             logger.info("LLM raw assistant text: %r", assistant_text[:2000])
@@ -650,6 +671,9 @@ async def answer_with_agent(
         question: str,
         temperature: float = 0.1,
         max_tokens: int = 800,
+        llm_base_url: str | None = None,
+        llm_api_key: str | None = None,
+        llm_model: str | None = None,
 ) -> str:
     agent = Agent2(
         project_id=project_id,
@@ -657,5 +681,8 @@ async def answer_with_agent(
         user_id=user_id,
         temperature=temperature,
         max_tokens=max_tokens,
+        llm_base_url=llm_base_url,
+        llm_api_key=llm_api_key,
+        llm_model=llm_model,
     )
     return await agent.run(question)

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Header
 from datetime import datetime
 from ..db import get_db
 from ..models.chat import ChatDoc, AppendReq, ChatResponse, ChatMessage
@@ -6,6 +6,32 @@ from ..models.chat import ChatDoc, AppendReq, ChatResponse, ChatMessage
 router = APIRouter(prefix="/chats", tags=["chats"])
 
 COLL = "chats"
+
+@router.get("/by-project/{project_id}")
+async def list_chats_by_project(
+    project_id: str,
+    branch: str | None = None,
+    user: str | None = None,
+    limit: int = 100,
+    x_dev_user: str | None = Header(default=None),
+):
+    user_id = (user or x_dev_user or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Missing user")
+
+    q: dict = {"project_id": project_id, "user": user_id}
+    if branch:
+        q["branch"] = branch
+
+    cursor = (
+        get_db()[COLL]
+        .find(q, {"_id": 0, "messages": 0})
+        .sort("updated_at", -1)
+        .limit(max(1, min(limit, 300)))
+    )
+    docs = await cursor.to_list(length=max(1, min(limit, 300)))
+    return docs
+
 
 @router.get("/{chat_id}", response_model=ChatResponse)
 async def get_chat(chat_id: str):

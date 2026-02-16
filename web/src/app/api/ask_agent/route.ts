@@ -1,8 +1,8 @@
 // web/src/app/api/ask_agent/route.ts
 import { NextResponse } from "next/server"
 
-const BACKEND = process.env.BACKEND_BASE_URL || "http://backend:8000"
-const DEV_USER = process.env.NEXT_PUBLIC_DEV_USER || "dev"
+const BACKEND = process.env.BACKEND_BASE_URL || "http://backend:8080"
+const DEV_USER = process.env.POC_DEV_USER || "dev@local"
 
 export async function POST(req: Request) {
     const body = await req.json()

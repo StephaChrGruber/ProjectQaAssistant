@@ -39,6 +39,12 @@ class Project(Document):
     key: str
     name: str
     description: Optional[str] = None
+    repo_path: Optional[str] = None
+    default_branch: str = "main"
+    llm_provider: Optional[str] = None  # e.g. "ollama" | "openai"
+    llm_base_url: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_api_key: Optional[str] = None
     createdAt: datetime = Field(default_factory=datetime.utcnow)
 
     class Settings:

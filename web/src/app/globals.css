@@ -1,3 +1,23 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+    --app-bg: #020617;
+    --app-bg-soft: #0b1222;
+    --app-fg: #e2e8f0;
+}
+
+html,
+body {
+    height: 100%;
+}
+
+body {
+    color: var(--app-fg);
+    background:
+        radial-gradient(1000px 500px at 0% 0%, rgba(34, 211, 238, 0.16), transparent 60%),
+        radial-gradient(900px 500px at 100% 0%, rgba(16, 185, 129, 0.12), transparent 55%),
+        linear-gradient(180deg, var(--app-bg-soft) 0%, var(--app-bg) 55%);
+    font-family: "Space Grotesk", "Sora", "Avenir Next", "Segoe UI", sans-serif;
+}

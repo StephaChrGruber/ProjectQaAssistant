@@ -1,12 +1,19 @@
-// web/src/app/api/projects/route.ts
 import { NextResponse } from "next/server"
 
 const BACKEND = process.env.BACKEND_BASE_URL || "http://backend:8080"
 const DEV_USER = process.env.POC_DEV_USER || "dev@local"
+const DEV_ADMIN = (process.env.POC_DEV_ADMIN || "").toLowerCase() === "true"
 
 export async function GET() {
-    const res = await fetch(`${BACKEND}/projects`, {
-        headers: { "X-Dev-User": DEV_USER },
+    const headers: Record<string, string> = {
+        "X-Dev-User": DEV_USER,
+    }
+    if (DEV_ADMIN) {
+        headers["X-Dev-Admin"] = "true"
+    }
+
+    const res = await fetch(`${BACKEND}/me`, {
+        headers,
         cache: "no-store",
     })
 
@@ -16,3 +23,4 @@ export async function GET() {
         headers: { "Content-Type": res.headers.get("content-type") || "application/json" },
     })
 }
+

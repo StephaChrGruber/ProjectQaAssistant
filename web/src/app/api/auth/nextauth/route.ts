@@ -1,7 +1,7 @@
 import NextAuth from "next-auth"
 import MicrosoftEntraID from "next-auth/providers/microsoft-entra-id"
 
-const handler = NextAuth({
+const { handlers } = NextAuth({
     providers: [
         MicrosoftEntraID({
             clientId: process.env.ENTRA_CLIENT_ID!,
@@ -25,4 +25,4 @@ const handler = NextAuth({
     },
 })
 
-export { handler as GET, handler as POST }
+export const { GET, POST } = handlers
