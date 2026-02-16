@@ -1,10 +1,27 @@
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+import requests
 from ..deps import current_user
 from ..models.base_mongo_models import Project, Membership, Connector
+from ..settings import settings
 
 router = APIRouter()
+
+OLLAMA_DEFAULT_BASE_URL = "http://ollama:11434/v1"
+OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
+FALLBACK_OLLAMA_MODELS = [
+    "llama3.2:3b",
+    "llama3.1:8b",
+    "mistral:7b",
+    "qwen2.5:7b",
+]
+FALLBACK_OPENAI_MODELS = [
+    "gpt-4o-mini",
+    "gpt-4.1-mini",
+    "gpt-4.1",
+    "gpt-4o",
+]
 
 class CreateProject(BaseModel):
     key: str
@@ -48,6 +65,34 @@ def _serialize_project(p: Project) -> dict:
         "llm_api_key": p.llm_api_key,
         "createdAt": p.createdAt.isoformat() if p.createdAt else None,
     }
+
+
+def _normalize_ollama_tags_url(base_url: str | None) -> str:
+    base = (base_url or settings.LLM_BASE_URL or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    return base + "/api/tags"
+
+
+def _discover_ollama_models(base_url: str | None) -> tuple[list[str], str | None]:
+    try:
+        res = requests.get(_normalize_ollama_tags_url(base_url), timeout=3)
+        res.raise_for_status()
+        data = res.json() or {}
+        raw = data.get("models") or []
+        names: list[str] = []
+        for item in raw:
+            name = (item or {}).get("name")
+            if isinstance(name, str) and name.strip():
+                names.append(name.strip())
+        if names:
+            # Keep stable order while deduplicating.
+            deduped = list(dict.fromkeys(names))
+            return deduped, None
+    except Exception as err:
+        return FALLBACK_OLLAMA_MODELS, str(err)
+
+    return FALLBACK_OLLAMA_MODELS, None
 
 @router.post("/admin/projects")
 async def create_project(req: CreateProject, user=Depends(current_user)):
@@ -185,4 +230,32 @@ async def upsert_connector(
         "isEnabled": doc.isEnabled,
         "config": doc.config,
         "updatedAt": doc.updatedAt.isoformat() if doc.updatedAt else None,
+    }
+
+
+@router.get("/admin/llm/options")
+async def llm_options(user=Depends(current_user)):
+    if not user.isGlobalAdmin:
+        raise HTTPException(403, "Global admin required")
+
+    ollama_models, discovery_error = _discover_ollama_models(OLLAMA_DEFAULT_BASE_URL)
+
+    return {
+        "providers": [
+            {
+                "value": "ollama",
+                "label": "Ollama (local)",
+                "defaultBaseUrl": OLLAMA_DEFAULT_BASE_URL,
+                "requiresApiKey": False,
+            },
+            {
+                "value": "openai",
+                "label": "ChatGPT / OpenAI API",
+                "defaultBaseUrl": OPENAI_DEFAULT_BASE_URL,
+                "requiresApiKey": True,
+            },
+        ],
+        "ollama_models": ollama_models,
+        "openai_models": FALLBACK_OPENAI_MODELS,
+        "discovery_error": discovery_error,
     }

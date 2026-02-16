@@ -1,6 +1,6 @@
 "use client"
 
-import { FormEvent, useEffect, useMemo, useState } from "react"
+import { Dispatch, FormEvent, SetStateAction, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import {
     Alert,
@@ -106,6 +106,37 @@ type JiraForm = {
 }
 
 const CREATE_STEPS = ["Project", "LLM", "Sources", "Review"] as const
+const FALLBACK_OLLAMA_MODELS = ["llama3.2:3b", "llama3.1:8b", "mistral:7b", "qwen2.5:7b"]
+const FALLBACK_OPENAI_MODELS = ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1", "gpt-4o"]
+
+type LlmProviderOption = {
+    value: string
+    label: string
+    defaultBaseUrl: string
+    requiresApiKey: boolean
+}
+
+type LlmOptionsResponse = {
+    providers: LlmProviderOption[]
+    ollama_models: string[]
+    openai_models: string[]
+    discovery_error?: string | null
+}
+
+const DEFAULT_PROVIDER_OPTIONS: LlmProviderOption[] = [
+    {
+        value: "ollama",
+        label: "Ollama (local)",
+        defaultBaseUrl: "http://ollama:11434/v1",
+        requiresApiKey: false,
+    },
+    {
+        value: "openai",
+        label: "ChatGPT / OpenAI API",
+        defaultBaseUrl: "https://api.openai.com/v1",
+        requiresApiKey: true,
+    },
+]
 
 function emptyProjectForm(): ProjectForm {
     return {
@@ -201,6 +232,9 @@ export default function AdminPage() {
 
     const [wizardStep, setWizardStep] = useState(0)
     const [ingestOnCreate, setIngestOnCreate] = useState(false)
+    const [llmOptions, setLlmOptions] = useState<LlmOptionsResponse | null>(null)
+    const [loadingLlmOptions, setLoadingLlmOptions] = useState(false)
+    const [llmOptionsError, setLlmOptionsError] = useState<string | null>(null)
 
     const [createForm, setCreateForm] = useState<ProjectForm>(emptyProjectForm())
     const [createGitForm, setCreateGitForm] = useState<GitForm>(emptyGit())
@@ -232,6 +266,42 @@ export default function AdminPage() {
         [basicsValid, llmValid]
     )
 
+    const providerOptions = useMemo(
+        () => (llmOptions?.providers?.length ? llmOptions.providers : DEFAULT_PROVIDER_OPTIONS),
+        [llmOptions]
+    )
+
+    function defaultBaseUrlForProvider(provider: string): string {
+        const found = providerOptions.find((item) => item.value === provider)
+        if (found?.defaultBaseUrl) return found.defaultBaseUrl
+        return provider === "openai" ? "https://api.openai.com/v1" : "http://ollama:11434/v1"
+    }
+
+    function defaultModelsForProvider(provider: string): string[] {
+        if (provider === "openai") {
+            return llmOptions?.openai_models?.length ? llmOptions.openai_models : FALLBACK_OPENAI_MODELS
+        }
+        return llmOptions?.ollama_models?.length ? llmOptions.ollama_models : FALLBACK_OLLAMA_MODELS
+    }
+
+    function modelOptionsForProvider(provider: string, current?: string): string[] {
+        const opts = [...defaultModelsForProvider(provider)]
+        if (current?.trim() && !opts.includes(current.trim())) {
+            opts.unshift(current.trim())
+        }
+        return Array.from(new Set(opts))
+    }
+
+    const createModelOptions = useMemo(
+        () => modelOptionsForProvider(createForm.llm_provider, createForm.llm_model),
+        [createForm.llm_provider, createForm.llm_model, llmOptions]
+    )
+
+    const editModelOptions = useMemo(
+        () => modelOptionsForProvider(editForm.llm_provider, editForm.llm_model),
+        [editForm.llm_provider, editForm.llm_model, llmOptions]
+    )
+
     async function refreshProjects(preferredProjectId?: string) {
         const all = await backendJson<AdminProject[]>("/api/admin/projects")
         setProjects(all)
@@ -253,6 +323,56 @@ export default function AdminPage() {
         })
     }
 
+    async function loadLlmOptions() {
+        setLoadingLlmOptions(true)
+        try {
+            const options = await backendJson<LlmOptionsResponse>("/api/admin/llm/options")
+            setLlmOptions(options)
+            setLlmOptionsError(options.discovery_error || null)
+        } catch (err) {
+            setLlmOptions(null)
+            setLlmOptionsError(errText(err))
+        } finally {
+            setLoadingLlmOptions(false)
+        }
+    }
+
+    function applyProviderChange(
+        setForm: Dispatch<SetStateAction<ProjectForm>>,
+        nextProvider: string
+    ) {
+        setForm((prev) => {
+            const oldProvider = prev.llm_provider || "ollama"
+            const oldDefaultBase = defaultBaseUrlForProvider(oldProvider)
+            const nextDefaultBase = defaultBaseUrlForProvider(nextProvider)
+            const nextBaseUrl =
+                !prev.llm_base_url.trim() || prev.llm_base_url.trim() === oldDefaultBase
+                    ? nextDefaultBase
+                    : prev.llm_base_url
+
+            const nextModelOptions = modelOptionsForProvider(nextProvider, prev.llm_model)
+            const nextModel =
+                prev.llm_model && nextModelOptions.includes(prev.llm_model)
+                    ? prev.llm_model
+                    : (nextModelOptions[0] || "")
+
+            let nextApiKey = prev.llm_api_key
+            if (nextProvider === "openai" && nextApiKey.trim() === "ollama") {
+                nextApiKey = ""
+            } else if (nextProvider === "ollama" && !nextApiKey.trim()) {
+                nextApiKey = "ollama"
+            }
+
+            return {
+                ...prev,
+                llm_provider: nextProvider,
+                llm_base_url: nextBaseUrl,
+                llm_model: nextModel,
+                llm_api_key: nextApiKey,
+            }
+        })
+    }
+
     useEffect(() => {
         let cancelled = false
 
@@ -263,7 +383,7 @@ export default function AdminPage() {
                 const meRes = await backendJson<MeResponse>("/api/me")
                 if (cancelled) return
                 setMe(meRes.user || null)
-                await refreshProjects()
+                await Promise.all([refreshProjects(), loadLlmOptions()])
             } catch (err) {
                 if (!cancelled) setError(errText(err))
             } finally {
@@ -294,9 +414,9 @@ export default function AdminPage() {
             repo_path: p.repo_path || "",
             default_branch: p.default_branch || "main",
             llm_provider: p.llm_provider || "ollama",
-            llm_base_url: p.llm_base_url || "",
-            llm_model: p.llm_model || "",
-            llm_api_key: p.llm_api_key || "",
+            llm_base_url: p.llm_base_url || defaultBaseUrlForProvider(p.llm_provider || "ollama"),
+            llm_model: p.llm_model || modelOptionsForProvider(p.llm_provider || "ollama")[0] || "",
+            llm_api_key: p.llm_api_key || ((p.llm_provider || "ollama") === "ollama" ? "ollama" : ""),
         })
 
         const g = getConnector(p, "github")
@@ -327,7 +447,7 @@ export default function AdminPage() {
             apiToken: asStr(j?.config?.apiToken),
             jql: asStr(j?.config?.jql),
         })
-    }, [selectedProject])
+    }, [selectedProject, llmOptions])
 
     function resetCreateWorkflow() {
         setCreateForm(emptyProjectForm())
@@ -661,14 +781,37 @@ export default function AdminPage() {
                                                     labelId="create-llm-provider-label"
                                                     value={createForm.llm_provider}
                                                     label="Provider"
-                                                    onChange={(e) =>
-                                                        setCreateForm((f) => ({ ...f, llm_provider: e.target.value }))
-                                                    }
+                                                    onChange={(e) => applyProviderChange(setCreateForm, e.target.value)}
                                                 >
-                                                    <MenuItem value="ollama">Ollama (local)</MenuItem>
-                                                    <MenuItem value="openai">ChatGPT / OpenAI API</MenuItem>
+                                                    {providerOptions.map((option) => (
+                                                        <MenuItem key={option.value} value={option.value}>
+                                                            {option.label}
+                                                        </MenuItem>
+                                                    ))}
                                                 </Select>
                                             </FormControl>
+
+                                            <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
+                                                <Typography variant="caption" color="text.secondary">
+                                                    {createForm.llm_provider === "ollama"
+                                                        ? "Choose from discovered local Ollama models."
+                                                        : "Use ChatGPT model IDs through OpenAI-compatible API."}
+                                                </Typography>
+                                                <Button
+                                                    variant="text"
+                                                    size="small"
+                                                    onClick={() => void loadLlmOptions()}
+                                                    disabled={loadingLlmOptions}
+                                                >
+                                                    {loadingLlmOptions ? "Refreshing..." : "Refresh models"}
+                                                </Button>
+                                            </Stack>
+
+                                            {llmOptionsError && (
+                                                <Alert severity="warning">
+                                                    Model discovery warning: {llmOptionsError}
+                                                </Alert>
+                                            )}
 
                                             <TextField
                                                 label="Base URL"
@@ -676,20 +819,39 @@ export default function AdminPage() {
                                                 onChange={(e) =>
                                                     setCreateForm((f) => ({ ...f, llm_base_url: e.target.value }))
                                                 }
-                                                placeholder="http://ollama:11434/v1 or https://api.openai.com/v1"
+                                                placeholder={defaultBaseUrlForProvider(createForm.llm_provider)}
                                                 fullWidth
                                                 size="small"
                                             />
 
+                                            <FormControl fullWidth size="small">
+                                                <InputLabel id="create-llm-model-label">Model</InputLabel>
+                                                <Select
+                                                    labelId="create-llm-model-label"
+                                                    label="Model"
+                                                    value={createForm.llm_model}
+                                                    onChange={(e) =>
+                                                        setCreateForm((f) => ({ ...f, llm_model: e.target.value }))
+                                                    }
+                                                >
+                                                    {createModelOptions.map((model) => (
+                                                        <MenuItem key={model} value={model}>
+                                                            {model}
+                                                        </MenuItem>
+                                                    ))}
+                                                </Select>
+                                            </FormControl>
+
                                             <TextField
-                                                label="Model"
+                                                label="Custom Model ID (optional)"
                                                 value={createForm.llm_model}
                                                 onChange={(e) =>
                                                     setCreateForm((f) => ({ ...f, llm_model: e.target.value }))
                                                 }
-                                                placeholder="llama3.2:3b or gpt-4o-mini"
+                                                placeholder="e.g. llama3.2:3b or gpt-4o-mini"
                                                 fullWidth
                                                 size="small"
+                                                helperText="You can type any OpenAI-compatible model ID."
                                             />
 
                                             <TextField
@@ -698,9 +860,14 @@ export default function AdminPage() {
                                                 onChange={(e) =>
                                                     setCreateForm((f) => ({ ...f, llm_api_key: e.target.value }))
                                                 }
-                                                placeholder="ollama / sk-..."
+                                                placeholder={createForm.llm_provider === "openai" ? "sk-..." : "ollama"}
                                                 fullWidth
                                                 size="small"
+                                                helperText={
+                                                    createForm.llm_provider === "openai"
+                                                        ? "Required for ChatGPT API."
+                                                        : "For local Ollama this can stay as 'ollama'."
+                                                }
                                             />
                                         </Stack>
                                     )}
@@ -1098,15 +1265,13 @@ export default function AdminPage() {
                                                             labelId="edit-llm-provider-label"
                                                             label="LLM Provider"
                                                             value={editForm.llm_provider}
-                                                            onChange={(e) =>
-                                                                setEditForm((f) => ({
-                                                                    ...f,
-                                                                    llm_provider: e.target.value,
-                                                                }))
-                                                            }
+                                                            onChange={(e) => applyProviderChange(setEditForm, e.target.value)}
                                                         >
-                                                            <MenuItem value="ollama">Ollama (local)</MenuItem>
-                                                            <MenuItem value="openai">ChatGPT / OpenAI API</MenuItem>
+                                                            {providerOptions.map((option) => (
+                                                                <MenuItem key={option.value} value={option.value}>
+                                                                    {option.label}
+                                                                </MenuItem>
+                                                            ))}
                                                         </Select>
                                                     </FormControl>
                                                     <TextField
@@ -1119,12 +1284,30 @@ export default function AdminPage() {
                                                         fullWidth
                                                         sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}
                                                     />
+                                                    <FormControl size="small" fullWidth>
+                                                        <InputLabel id="edit-llm-model-label">LLM Model</InputLabel>
+                                                        <Select
+                                                            labelId="edit-llm-model-label"
+                                                            label="LLM Model"
+                                                            value={editForm.llm_model}
+                                                            onChange={(e) =>
+                                                                setEditForm((f) => ({ ...f, llm_model: e.target.value }))
+                                                            }
+                                                        >
+                                                            {editModelOptions.map((model) => (
+                                                                <MenuItem key={model} value={model}>
+                                                                    {model}
+                                                                </MenuItem>
+                                                            ))}
+                                                        </Select>
+                                                    </FormControl>
                                                     <TextField
-                                                        label="LLM Model"
+                                                        label="Custom Model ID (optional)"
                                                         value={editForm.llm_model}
                                                         onChange={(e) => setEditForm((f) => ({ ...f, llm_model: e.target.value }))}
                                                         size="small"
                                                         fullWidth
+                                                        helperText="Override with any compatible model ID."
                                                     />
                                                     <TextField
                                                         label="LLM API Key"
@@ -1134,6 +1317,11 @@ export default function AdminPage() {
                                                         }
                                                         size="small"
                                                         fullWidth
+                                                        helperText={
+                                                            editForm.llm_provider === "openai"
+                                                                ? "Required for ChatGPT API."
+                                                                : "Usually 'ollama' for local models."
+                                                        }
                                                     />
 
                                                     <Box sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}>

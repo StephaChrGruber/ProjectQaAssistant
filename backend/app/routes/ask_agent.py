@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from ..db import get_db
 from datetime import datetime
 from bson import ObjectId
+from ..settings import settings
 
 from ..rag.agent2 import answer_with_agent
 
@@ -32,12 +33,20 @@ async def _project_llm_defaults(project_id: str) -> dict[str, str | None]:
     api_key = (project.get("llm_api_key") or "").strip() or None
     model = (project.get("llm_model") or "").strip() or None
 
-    # Reasonable provider-specific defaults for OpenAI-compatible clients.
+    # Provider-aware defaults for OpenAI-compatible clients.
     if provider == "ollama":
         base_url = base_url or "http://ollama:11434/v1"
         api_key = api_key or "ollama"
+        model = model or settings.LLM_MODEL or "llama3.2:3b"
     elif provider in ("openai", "chatgpt"):
         base_url = base_url or "https://api.openai.com/v1"
+        api_key = api_key or settings.OPENAI_API_KEY or settings.LLM_API_KEY
+        model = model or "gpt-4o-mini"
+    else:
+        # Legacy/global fallback.
+        base_url = base_url or settings.LLM_BASE_URL or "http://ollama:11434/v1"
+        api_key = api_key or settings.LLM_API_KEY
+        model = model or settings.LLM_MODEL or "llama3.2:3b"
 
     return {
         "llm_base_url": base_url,

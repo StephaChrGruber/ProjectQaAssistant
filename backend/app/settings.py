@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     LLM_BASE_URL: str | None = None
     LLM_API_KEY: str | None = None
     LLM_MODEL: str | None = None
+    OPENAI_API_KEY: str | None = None
 
     BACKEND_DEBUG_MODE: bool = True
 
