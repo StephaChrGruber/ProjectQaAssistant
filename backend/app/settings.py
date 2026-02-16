@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     LLM_API_KEY: str | None = None
     LLM_MODEL: str | None = None
     OPENAI_API_KEY: str | None = None
+    PATH_PICKER_ROOTS: str = "/"
 
     BACKEND_DEBUG_MODE: bool = True
 

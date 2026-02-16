@@ -40,6 +40,7 @@ import RefreshRounded from "@mui/icons-material/RefreshRounded"
 import ArrowBackRounded from "@mui/icons-material/ArrowBackRounded"
 import DeleteForeverRounded from "@mui/icons-material/DeleteForeverRounded"
 import { backendJson } from "@/lib/backend"
+import PathPickerDialog from "@/components/PathPickerDialog"
 
 type MeUser = {
     id?: string
@@ -251,6 +252,7 @@ export default function AdminPage() {
     const [llmOptions, setLlmOptions] = useState<LlmOptionsResponse | null>(null)
     const [loadingLlmOptions, setLoadingLlmOptions] = useState(false)
     const [llmOptionsError, setLlmOptionsError] = useState<string | null>(null)
+    const [pathPickerTarget, setPathPickerTarget] = useState<"createRepoPath" | "editRepoPath" | null>(null)
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
     const [deleteConfirmKey, setDeleteConfirmKey] = useState("")
 
@@ -812,6 +814,12 @@ export default function AdminPage() {
                                                 fullWidth
                                                 size="small"
                                             />
+                                            <Button
+                                                variant="outlined"
+                                                onClick={() => setPathPickerTarget("createRepoPath")}
+                                            >
+                                                Browse Path
+                                            </Button>
                                             <TextField
                                                 label="Default Branch"
                                                 value={createForm.default_branch}
@@ -1316,6 +1324,14 @@ export default function AdminPage() {
                                                         fullWidth
                                                         sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}
                                                     />
+                                                    <Box sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}>
+                                                        <Button
+                                                            variant="outlined"
+                                                            onClick={() => setPathPickerTarget("editRepoPath")}
+                                                        >
+                                                            Browse Path
+                                                        </Button>
+                                                    </Box>
                                                     <TextField
                                                         label="Default Branch"
                                                         value={editForm.default_branch}
@@ -1708,6 +1724,27 @@ export default function AdminPage() {
                         </Button>
                     </DialogActions>
                 </Dialog>
+
+                <PathPickerDialog
+                    open={Boolean(pathPickerTarget)}
+                    title="Pick Repository Folder"
+                    initialPath={
+                        pathPickerTarget === "createRepoPath"
+                            ? createForm.repo_path
+                            : pathPickerTarget === "editRepoPath"
+                                ? editForm.repo_path
+                                : ""
+                    }
+                    onClose={() => setPathPickerTarget(null)}
+                    onPick={(path) => {
+                        if (pathPickerTarget === "createRepoPath") {
+                            setCreateForm((f) => ({ ...f, repo_path: path }))
+                        } else if (pathPickerTarget === "editRepoPath") {
+                            setEditForm((f) => ({ ...f, repo_path: path }))
+                        }
+                        setPathPickerTarget(null)
+                    }}
+                />
             </Container>
         </Box>
     )

@@ -26,6 +26,8 @@ FALLBACK_OPENAI_MODELS = [
     "gpt-4o",
 ]
 
+MAX_PATH_PICKER_ENTRIES = 500
+
 class CreateProject(BaseModel):
     key: str
     name: str
@@ -96,6 +98,29 @@ def _discover_ollama_models(base_url: str | None) -> tuple[list[str], str | None
         return FALLBACK_OLLAMA_MODELS, str(err)
 
     return FALLBACK_OLLAMA_MODELS, None
+
+
+def _path_picker_roots() -> list[Path]:
+    raw = (settings.PATH_PICKER_ROOTS or "/").split(",")
+    roots: list[Path] = []
+    for item in raw:
+        p = item.strip()
+        if not p:
+            continue
+        try:
+            roots.append(Path(p).expanduser().resolve())
+        except Exception:
+            continue
+    return roots or [Path("/")]
+
+
+def _is_allowed_path(path: Path, roots: list[Path]) -> bool:
+    for root in roots:
+        if str(root) == "/":
+            return True
+        if path == root or root in path.parents:
+            return True
+    return False
 
 @router.post("/admin/projects")
 async def create_project(req: CreateProject, user=Depends(current_user)):
@@ -328,4 +353,65 @@ async def llm_options(user=Depends(current_user)):
         "ollama_models": ollama_models,
         "openai_models": FALLBACK_OPENAI_MODELS,
         "discovery_error": discovery_error,
+    }
+
+
+@router.get("/admin/fs/list")
+async def list_paths(path: str | None = None, user=Depends(current_user)):
+    if not user.isGlobalAdmin:
+        raise HTTPException(403, "Global admin required")
+
+    roots = _path_picker_roots()
+    roots_out = [str(r) for r in roots]
+
+    if not path:
+        dirs = [
+            {
+                "name": (r.name or str(r)),
+                "path": str(r),
+            }
+            for r in roots
+        ]
+        return {
+            "path": "",
+            "parent": None,
+            "roots": roots_out,
+            "directories": dirs,
+        }
+
+    try:
+        current = Path(path).expanduser().resolve()
+    except Exception:
+        raise HTTPException(400, "Invalid path")
+
+    if not _is_allowed_path(current, roots):
+        raise HTTPException(400, "Path not allowed by PATH_PICKER_ROOTS")
+
+    if not current.exists() or not current.is_dir():
+        raise HTTPException(404, "Directory not found")
+
+    directories = []
+    try:
+        for entry in sorted(current.iterdir(), key=lambda p: p.name.lower()):
+            if not entry.is_dir():
+                continue
+            if entry.name.startswith("."):
+                continue
+            if not _is_allowed_path(entry.resolve(), roots):
+                continue
+            directories.append({"name": entry.name, "path": str(entry.resolve())})
+            if len(directories) >= MAX_PATH_PICKER_ENTRIES:
+                break
+    except PermissionError:
+        raise HTTPException(403, "Permission denied")
+
+    parent: str | None = None
+    if current.parent != current and _is_allowed_path(current.parent.resolve(), roots):
+        parent = str(current.parent.resolve())
+
+    return {
+        "path": str(current),
+        "parent": parent,
+        "roots": roots_out,
+        "directories": directories,
     }
