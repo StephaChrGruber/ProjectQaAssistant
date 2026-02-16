@@ -173,7 +173,7 @@ export default function PathPickerDialog({
 
                     {roots.length > 0 && (
                         <Typography variant="caption" color="text.secondary">
-                            Allowed roots: {roots.join(", ")}
+                            Server-side picker (backend filesystem). Allowed roots: {roots.join(", ")}
                         </Typography>
                     )}
                 </Stack>

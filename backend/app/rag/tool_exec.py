@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import os
 import re
+import fnmatch
+import base64
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import chromadb
+import httpx
 from bson import ObjectId
 
 from ..db import get_db
@@ -81,6 +84,133 @@ def _line_slice(text: str, start_line: Optional[int], end_line: Optional[int]) -
     return s, e, sliced
 
 
+def _wanted(path: str, prefixes: list[str] | None) -> bool:
+    if not prefixes:
+        return True
+    return any(path == p or path.startswith(p.rstrip("/") + "/") for p in prefixes)
+
+
+async def _github_connector_config(project_id: str) -> Optional[dict]:
+    db = get_db()
+    connector = await db["connectors"].find_one(
+        {"projectId": project_id, "type": "github", "isEnabled": True}
+    )
+    if not connector:
+        return None
+    config = connector.get("config") or {}
+    required = ("owner", "repo", "token")
+    if not all(str(config.get(k, "")).strip() for k in required):
+        return None
+    return config
+
+
+def _github_headers(token: str) -> dict:
+    return {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+async def _github_open_file_content(config: dict, path: str, ref: Optional[str] = None) -> tuple[str, str]:
+    owner = str(config.get("owner", "")).strip()
+    repo = str(config.get("repo", "")).strip()
+    token = str(config.get("token", "")).strip()
+    branch = (ref or str(config.get("branch", "")).strip() or "main")
+    headers = _github_headers(token)
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
+            headers=headers,
+            params={"ref": branch},
+        )
+        resp.raise_for_status()
+        j = resp.json()
+        if j.get("encoding") != "base64" or "content" not in j:
+            raise ValueError(f"GitHub returned non-base64 content for {path}")
+        raw = base64.b64decode(j["content"]).decode("utf-8", errors="replace")
+        html_url = j.get("html_url") or f"https://github.com/{owner}/{repo}/blob/{branch}/{path}"
+        return raw, html_url
+
+
+async def _repo_grep_github(req: RepoGrepRequest, config: dict) -> RepoGrepResponse:
+    owner = str(config.get("owner", "")).strip()
+    repo = str(config.get("repo", "")).strip()
+    token = str(config.get("token", "")).strip()
+    branch = (req.branch or str(config.get("branch", "")).strip() or "main")
+    prefixes = config.get("paths") if isinstance(config.get("paths"), list) else None
+    headers = _github_headers(token)
+
+    flags = 0 if req.case_sensitive else re.IGNORECASE
+    pattern = re.compile(req.pattern if req.regex else re.escape(req.pattern), flags=flags)
+    glob_pat = req.glob or "*"
+    ctx = max(0, req.context_lines)
+    matches: List[GrepMatch] = []
+    seen_paths: set[str] = set()
+
+    # GitHub code search doesn't support regex, but gives candidate files quickly.
+    # We search by literal token, then apply regex/fixed matching locally per file content.
+    literal_hint = req.pattern if not req.regex else re.sub(r"[^A-Za-z0-9_.:/-]", " ", req.pattern).strip()
+    if not literal_hint:
+        literal_hint = req.pattern
+    query = f"{literal_hint} repo:{owner}/{repo}"
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        page = 1
+        while len(matches) < req.max_results and page <= 3:
+            res = await client.get(
+                "https://api.github.com/search/code",
+                headers=headers,
+                params={"q": query, "per_page": 100, "page": page},
+            )
+            if res.status_code >= 400:
+                break
+            items = res.json().get("items") or []
+            if not items:
+                break
+
+            for item in items:
+                path = str(item.get("path") or "")
+                if not path or path in seen_paths:
+                    continue
+                seen_paths.add(path)
+
+                if prefixes and not _wanted(path, prefixes):
+                    continue
+                if req.glob and not fnmatch.fnmatch(path, glob_pat):
+                    continue
+
+                try:
+                    text, _ = await _github_open_file_content(config, path, ref=branch)
+                except Exception:
+                    continue
+
+                lines = text.splitlines()
+                for i, line in enumerate(lines, start=1):
+                    m = pattern.search(line)
+                    if not m:
+                        continue
+                    before = lines[max(0, i - 1 - ctx): i - 1]
+                    after = lines[i: min(len(lines), i + ctx)]
+                    matches.append(
+                        GrepMatch(
+                            path=path,
+                            line=i,
+                            column=(m.start() + 1),
+                            snippet=line[:500],
+                            before=before,
+                            after=after,
+                        )
+                    )
+                    if len(matches) >= req.max_results:
+                        return RepoGrepResponse(matches=matches)
+
+            page += 1
+
+    return RepoGrepResponse(matches=matches)
+
+
 # ----------------------------
 # Project metadata tool
 # ----------------------------
@@ -136,12 +266,13 @@ async def repo_grep(req: RepoGrepRequest) -> RepoGrepResponse:
     This is a simple implementation (fast enough for small repos; can be optimized).
     """
     meta = await get_project_metadata(req.project_id)
-    if not meta.repo_path:
+    root = Path(meta.repo_path) if meta.repo_path else None
+    use_local = bool(root and root.exists())
+    if not use_local:
+        gh = await _github_connector_config(req.project_id)
+        if gh:
+            return await _repo_grep_github(req, gh)
         return RepoGrepResponse(matches=[])
-    root = Path(meta.repo_path)
-
-    if not root.exists():
-        raise FileNotFoundError(f"repo_path does not exist: {root}")
 
     # Glob filtering (optional)
     glob_pat = req.glob or "**/*"
@@ -158,7 +289,7 @@ async def repo_grep(req: RepoGrepRequest) -> RepoGrepResponse:
     ctx = max(0, req.context_lines)
 
     # Iterate files
-    for p in root.glob(glob_pat):
+    for p in root.glob(glob_pat):  # type: ignore[union-attr]
         if p.is_dir():
             continue
 
@@ -207,23 +338,36 @@ async def open_file(req: OpenFileRequest) -> OpenFileResponse:
     If you need `ref`, you can extend this using `git show {ref}:{path}`.
     """
     meta = await get_project_metadata(req.project_id)
-    if not meta.repo_path:
-        raise FileNotFoundError("Project has no repo_path configured")
-    full = _safe_join_repo(meta.repo_path, req.path)
+    if meta.repo_path:
+        full = _safe_join_repo(meta.repo_path, req.path)
 
-    if not full.exists() or not full.is_file():
-        raise FileNotFoundError(f"File not found: {req.path}")
+        if full.exists() and full.is_file():
+            text = _read_text_file(full, req.max_chars)
+            start, end, sliced = _line_slice(text, req.start_line, req.end_line)
+            return OpenFileResponse(
+                path=req.path,
+                ref=req.ref,
+                start_line=start,
+                end_line=end,
+                content=sliced,
+            )
 
-    text = _read_text_file(full, req.max_chars)
-    start, end, sliced = _line_slice(text, req.start_line, req.end_line)
+    # Fallback to GitHub connector when local filesystem is not accessible.
+    gh = await _github_connector_config(req.project_id)
+    if gh:
+        text, _ = await _github_open_file_content(gh, req.path, ref=req.ref)
+        if len(text) > req.max_chars:
+            text = text[:req.max_chars] + "\n... (truncated)\n"
+        start, end, sliced = _line_slice(text, req.start_line, req.end_line)
+        return OpenFileResponse(
+            path=req.path,
+            ref=req.ref,
+            start_line=start,
+            end_line=end,
+            content=sliced,
+        )
 
-    return OpenFileResponse(
-        path=req.path,
-        ref=req.ref,
-        start_line=start,
-        end_line=end,
-        content=sliced,
-    )
+    raise FileNotFoundError(f"File not found and no GitHub connector available: {req.path}")
 
 
 # ----------------------------

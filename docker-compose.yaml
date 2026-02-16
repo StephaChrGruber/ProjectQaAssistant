@@ -41,12 +41,15 @@ services:
       - LLM_BASE_URL=${LLM_BASE_URL}
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_MODEL=${LLM_MODEL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANONYMIZED_TELEMETRY=${ANONYMIZED_TELEMETRY}
+      - PATH_PICKER_ROOTS=${PATH_PICKER_ROOTS}
       - MONGO_URI=mongodb://mongo:27017
       - MONGO_DB=project_qa
       - ANONYMIZED_TELEMETRY=False
     volumes:
       - chroma_data:/data/chroma_projects
+      - ${HOST_REPO_ROOT:-.}:/host/repos
       # if you use seed connectors file:
       # - ./backend/seed_connectors.json:/app/seed_connectors.json:ro
     depends_on:
