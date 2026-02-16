@@ -31,7 +31,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEBUG = False
+DEBUG = os.getenv()
 if DEBUG:
     import pydevd_pycharm
     pydevd_pycharm.settrace(

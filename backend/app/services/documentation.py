@@ -169,7 +169,7 @@ def _llm_chat(
     api_key: str | None,
     model: str,
     timeout_sec: int = 90,
-    max_attempts: int = 1,
+    max_attempts: int = 10,
 ) -> str:
     endpoint = urljoin(base_url, "chat/completions")
     payload = {
@@ -301,6 +301,22 @@ def _sanitize_doc_plan(files_raw: Any) -> list[dict[str, str]]:
 
         seen.add(norm)
         out.append({"path": norm, "purpose": purpose})
+        if len(out) >= MAX_DOC_PLAN_FILES:
+            break
+    return out
+
+
+def _extract_doc_paths_from_text(text: str) -> list[str]:
+    raw = text or ""
+    matches = re.findall(r"(documentation/[A-Za-z0-9._/\-]+\.md)", raw, flags=re.IGNORECASE)
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in matches:
+        norm = _normalize_doc_path(m)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        out.append(norm)
         if len(out) >= MAX_DOC_PLAN_FILES:
             break
     return out
@@ -538,6 +554,31 @@ def _default_doc_purpose(path: str) -> str:
     return "Technical documentation for this area."
 
 
+def _extract_markdown_from_llm_output(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return ""
+
+    try:
+        obj = _extract_json_obj(text)
+        if isinstance(obj, dict):
+            for key in ("content", "markdown", "body", "text"):
+                value = obj.get(key)
+                if isinstance(value, str) and value.strip():
+                    return _strip_fences(value).strip()
+            files = obj.get("files")
+            if isinstance(files, list):
+                for item in files:
+                    if isinstance(item, dict):
+                        value = item.get("content")
+                        if isinstance(value, str) and value.strip():
+                            return _strip_fences(value).strip()
+    except DocumentationError:
+        pass
+
+    return _strip_fences(text).strip()
+
+
 def _generate_doc_plan_with_llm_from_context(
     *,
     project_name: str,
@@ -581,9 +622,28 @@ def _generate_doc_plan_with_llm_from_context(
         timeout_sec=75,
         max_attempts=1,
     )
-    obj = _extract_json_obj(raw)
-    plan = _sanitize_doc_plan(obj.get("files"))
-    summary = str(obj.get("summary") or "").strip()
+    summary = ""
+    plan_raw: Any = None
+    try:
+        obj = _extract_json_obj(raw)
+        summary = str(obj.get("summary") or "").strip()
+        plan_raw = obj.get("files")
+        if plan_raw is None:
+            plan_raw = obj.get("plan")
+        if plan_raw is None:
+            plan_raw = obj.get("documents")
+        if plan_raw is None:
+            plan_raw = obj.get("paths")
+    except DocumentationError:
+        plan_raw = None
+
+    plan = _sanitize_doc_plan(plan_raw)
+    if not plan:
+        plan = [{"path": p, "purpose": ""} for p in _extract_doc_paths_from_text(raw)]
+    if not plan:
+        raise DocumentationError("LLM did not return a usable documentation plan.")
+    if not summary:
+        summary = f"Planned {len(plan)} documentation files."
     return plan, summary
 
 
@@ -628,12 +688,15 @@ def _generate_single_doc_with_llm_from_context(
         base_url=llm_base,
         api_key=llm_key,
         model=llm_model,
-        timeout_sec=60,
-        max_attempts=1,
+        timeout_sec=120,
+        max_attempts=2,
     )
-    content = _strip_fences(raw).strip()
+    content = _extract_markdown_from_llm_output(raw)
     if not content:
         raise DocumentationError(f"LLM returned empty content for {target_path}")
+    if not content.startswith("#"):
+        title = Path(target_path).stem.replace("-", " ").replace("_", " ").title() or "Documentation"
+        content = f"# {title}\n\n{content}"
     return content + "\n"
 
 
@@ -792,6 +855,7 @@ async def generate_project_documentation(project_id: str, branch: Optional[str] 
     generated_files: list[dict[str, str]] = []
     summary = ""
     mode = "fallback"
+    llm_error: str | None = None
     if context:
         try:
             generated_files, summary = _generate_docs_with_llm_from_context(
@@ -804,13 +868,16 @@ async def generate_project_documentation(project_id: str, branch: Optional[str] 
             )
             if generated_files:
                 mode = "llm"
-        except Exception:
+        except Exception as err:
+            llm_error = str(err)
             generated_files = []
 
     if not generated_files:
         generated_files = fallback
         if not summary:
             summary = "Generated baseline documentation from repository structure."
+        if llm_error:
+            summary = f"{summary} LLM generation failed: {llm_error}"
 
     generated_files = _ensure_mandatory_docs(generated_files, fallback)
     written_paths = _write_docs(repo_path, generated_files)
@@ -824,6 +891,7 @@ async def generate_project_documentation(project_id: str, branch: Optional[str] 
         "summary": summary or "Documentation generated.",
         "files_written": written_paths,
         "context_files_used": len(selected_paths),
+        "llm_error": llm_error,
         "generated_at": datetime.utcnow().isoformat() + "Z",
     }
 
@@ -855,6 +923,7 @@ async def generate_project_documentation_from_local_context(
     generated_files: list[dict[str, str]] = []
     summary = ""
     mode = "fallback"
+    llm_error: str | None = None
 
     if local_repo_context and local_repo_context.strip():
         try:
@@ -868,13 +937,16 @@ async def generate_project_documentation_from_local_context(
             )
             if generated_files:
                 mode = "llm"
-        except Exception:
+        except Exception as err:
+            llm_error = str(err)
             generated_files = []
 
     if not generated_files:
         generated_files = fallback
         if not summary:
             summary = "Generated baseline documentation from local repository context."
+        if llm_error:
+            summary = f"{summary} LLM generation failed: {llm_error}"
 
     generated_files = _ensure_mandatory_docs(generated_files, fallback)
 
@@ -887,6 +959,7 @@ async def generate_project_documentation_from_local_context(
         "files": generated_files,
         "context_files_used": len(selected_paths),
         "local_repo_root": local_repo_root or "",
+        "llm_error": llm_error,
         "generated_at": datetime.utcnow().isoformat() + "Z",
     }
 
