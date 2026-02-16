@@ -1,6 +1,7 @@
 from __future__ import annotations
 from pydantic import BaseModel, Field
 from typing import Optional, List, Literal, Dict, Any
+from pydantic import ConfigDict
 
 
 class RepoGrepRequest(BaseModel):
@@ -19,8 +20,8 @@ class GrepMatch(BaseModel):
     line: int
     column: int
     snippet: str
-    before: List[str] = []
-    after: List[str] = []
+    before: List[str] = Field(default_factory=list)
+    after: List[str] = Field(default_factory=list)
 
 
 class RepoGrepResponse(BaseModel):
@@ -49,7 +50,7 @@ class KeywordSearchRequest(BaseModel):
     branch: Optional[str] = None
     query: str
     top_k: int = 10
-    source: Optional[Literal["confluence", "github", "any"]] = "any"
+    source: Optional[Literal["confluence", "github", "jira", "any"]] = "any"
 
 
 class KeywordHit(BaseModel):
@@ -72,19 +73,21 @@ class ProjectMetadataResponse(BaseModel):
     name: Optional[str] = None
     repo_path: str
     default_branch: str = "main"
-    extra: Dict[str, Any] = {}
+    extra: Dict[str, Any] = Field(default_factory=dict)
 
 class ChromaCountRequest(BaseModel):
-    projectId: str
+    model_config = ConfigDict(populate_by_name=True)
+    project_id: str = Field(alias="projectId")
 
 class ChromaCountResponse(BaseModel):
     count: int
 
 class ChromaSearchChunksRequest(BaseModel):
-    projectId: str
+    model_config = ConfigDict(populate_by_name=True)
+    project_id: str = Field(alias="projectId")
     query: str
     top_k: int = 6
-    max_sipped_chars: int = 500
+    max_snippet_chars: int = 500
 
 class ChromaSearchChunkResponse(BaseModel):
     query: str
@@ -92,9 +95,10 @@ class ChromaSearchChunkResponse(BaseModel):
     count: int
 
 class ChromaOpenChunksRequest(BaseModel):
-    projectId: str
+    model_config = ConfigDict(populate_by_name=True)
+    project_id: str = Field(alias="projectId")
     ids: List[str]
     max_chars_per_chunk: int = 2000
 
 class ChromaOpenChunksResponse(BaseModel):
-    result: List[Dict[str, Any]]
+    result: List[Dict[str, Any]] = Field(default_factory=list)

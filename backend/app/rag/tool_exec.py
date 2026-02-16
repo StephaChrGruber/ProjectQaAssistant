@@ -120,7 +120,7 @@ async def get_project_metadata(project_id: str) -> ProjectMetadataResponse:
         id=_oid_str(doc.get("_id")),
         key=doc.get("key"),
         name=doc.get("name"),
-        repo_path="",#doc["repo_path"],
+        repo_path=(doc.get("repo_path") or "").strip(),
         default_branch=doc.get("default_branch", "main"),
         extra=doc.get("extra", {}) or {},
     )
@@ -136,6 +136,8 @@ async def repo_grep(req: RepoGrepRequest) -> RepoGrepResponse:
     This is a simple implementation (fast enough for small repos; can be optimized).
     """
     meta = await get_project_metadata(req.project_id)
+    if not meta.repo_path:
+        return RepoGrepResponse(matches=[])
     root = Path(meta.repo_path)
 
     if not root.exists():
@@ -205,6 +207,8 @@ async def open_file(req: OpenFileRequest) -> OpenFileResponse:
     If you need `ref`, you can extend this using `git show {ref}:{path}`.
     """
     meta = await get_project_metadata(req.project_id)
+    if not meta.repo_path:
+        raise FileNotFoundError("Project has no repo_path configured")
     full = _safe_join_repo(meta.repo_path, req.path)
 
     if not full.exists() or not full.is_file():
@@ -240,7 +244,7 @@ async def keyword_search(req: KeywordSearchRequest) -> KeywordSearchResponse:
     # ⚠️ Adjust if your collection is named differently
     chunks = db["chunks"]
 
-    q: Dict[str, Any] = {"project_id": req["project_id"]}
+    q: Dict[str, Any] = {"project_id": req.project_id}
 
     if req.branch:
         q["branch"] = req.branch
@@ -250,25 +254,53 @@ async def keyword_search(req: KeywordSearchRequest) -> KeywordSearchResponse:
 
     # Use Mongo text search if you have it; otherwise fallback to regex
     # Recommended: create text index on {text:"text", title:"text", path:"text"}
-    cursor = chunks.find(
-        {**q, "$text": {"$search": req.query}},
-        {"score": {"$meta": "textScore"}, "text": 1, "title": 1, "path": 1, "source": 1, "branch": 1},
-    ).sort([("score", {"$meta": "textScore"})]).limit(req.top_k)
-
     hits: List[KeywordHit] = []
-    async for d in cursor:
-        preview = (d.get("text") or "")[:400]
-        hits.append(
-            KeywordHit(
-                id=_oid_str(d.get("_id")),
-                score=float(d.get("score") or 0.0),
-                path=d.get("path"),
-                title=d.get("title"),
-                source=d.get("source"),
-                branch=d.get("branch"),
-                preview=preview,
+    try:
+        cursor = chunks.find(
+            {**q, "$text": {"$search": req.query}},
+            {"score": {"$meta": "textScore"}, "text": 1, "title": 1, "path": 1, "source": 1, "branch": 1},
+        ).sort([("score", {"$meta": "textScore"})]).limit(req.top_k)
+
+        async for d in cursor:
+            preview = (d.get("text") or "")[:400]
+            hits.append(
+                KeywordHit(
+                    id=_oid_str(d.get("_id")),
+                    score=float(d.get("score") or 0.0),
+                    path=d.get("path"),
+                    title=d.get("title"),
+                    source=d.get("source"),
+                    branch=d.get("branch"),
+                    preview=preview,
+                )
             )
-        )
+    except Exception:
+        # Fallback for collections without text index.
+        rx = re.compile(re.escape(req.query), re.IGNORECASE)
+        cursor = chunks.find(
+            {
+                **q,
+                "$or": [
+                    {"text": {"$regex": rx}},
+                    {"title": {"$regex": rx}},
+                    {"path": {"$regex": rx}},
+                ],
+            },
+            {"text": 1, "title": 1, "path": 1, "source": 1, "branch": 1},
+        ).limit(req.top_k)
+        async for d in cursor:
+            preview = (d.get("text") or "")[:400]
+            hits.append(
+                KeywordHit(
+                    id=_oid_str(d.get("_id")),
+                    score=None,
+                    path=d.get("path"),
+                    title=d.get("title"),
+                    source=d.get("source"),
+                    branch=d.get("branch"),
+                    preview=preview,
+                )
+            )
 
     return KeywordSearchResponse(hits=hits)
 
@@ -280,14 +312,14 @@ def _client_for(project_id: str) -> chromadb.PersistentClient:
     return chromadb.PersistentClient(path=path)
 
 async def chroma_count(req: ChromaCountRequest) -> ChromaCountResponse:
-    client = _client_for(req.projectId)
+    client = _client_for(req.project_id)
     logger.info(f"Collections: {client.list_collections()}")
     col = client.get_or_create_collection(name=COLLECTION_NAME)
     logger.info(f"CollectionName: {COLLECTION_NAME}")
     return ChromaCountResponse(count=col.count())
 
 async def chroma_search_chunks(req: ChromaSearchChunksRequest) -> ChromaSearchChunkResponse:
-    client = _client_for(req.projectId)
+    client = _client_for(req.project_id)
     col = client.get_or_create_collection(COLLECTION_NAME)
 
     res = col.query(
@@ -320,9 +352,9 @@ async def chroma_search_chunks(req: ChromaSearchChunksRequest) -> ChromaSearchCh
 
 async def chroma_open_chunks(req: ChromaOpenChunksRequest) -> ChromaOpenChunksResponse:
     if not req.ids:
-        return ChromaOpenChunksResponse()
+        return ChromaOpenChunksResponse(result=[])
 
-    client = _client_for(req.projectId)
+    client = _client_for(req.project_id)
     col = client.get_or_create_collection(COLLECTION_NAME)
 
     res = col.get(
