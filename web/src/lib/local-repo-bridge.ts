@@ -32,6 +32,11 @@ type LocalRepoHit = {
 
 const LOCAL_REPO_PREFIX = "browser-local://"
 const SESSION_STORAGE_PREFIX = "projectqa.localRepo."
+const LOCAL_STORAGE_PREFIX = "projectqa.localRepo.persist."
+const IDB_NAME = "projectqa-local-repo"
+const IDB_VERSION = 1
+const IDB_STORE_SNAPSHOTS = "snapshots"
+const IDB_STORE_HANDLES = "handles"
 
 const MAX_FILES = 1200
 const MAX_FILE_BYTES = 350_000
@@ -171,6 +176,69 @@ const handleCache = new Map<string, FileSystemDirectoryHandle>()
 
 function sessionStorageKey(projectId: string): string {
     return `${SESSION_STORAGE_PREFIX}${projectId}`
+}
+
+function localStorageKey(projectId: string): string {
+    return `${LOCAL_STORAGE_PREFIX}${projectId}`
+}
+
+function hasWindow(): boolean {
+    return typeof window !== "undefined"
+}
+
+async function openLocalRepoDb(): Promise<IDBDatabase | null> {
+    if (!hasWindow() || !("indexedDB" in window)) return null
+    return await new Promise<IDBDatabase | null>((resolve) => {
+        try {
+            const req = window.indexedDB.open(IDB_NAME, IDB_VERSION)
+            req.onupgradeneeded = () => {
+                const db = req.result
+                if (!db.objectStoreNames.contains(IDB_STORE_SNAPSHOTS)) {
+                    db.createObjectStore(IDB_STORE_SNAPSHOTS)
+                }
+                if (!db.objectStoreNames.contains(IDB_STORE_HANDLES)) {
+                    db.createObjectStore(IDB_STORE_HANDLES)
+                }
+            }
+            req.onsuccess = () => resolve(req.result)
+            req.onerror = () => resolve(null)
+        } catch {
+            resolve(null)
+        }
+    })
+}
+
+async function idbGet(store: string, key: string): Promise<any> {
+    const db = await openLocalRepoDb()
+    if (!db) return null
+    return await new Promise<any>((resolve) => {
+        const tx = db.transaction(store, "readonly")
+        const req = tx.objectStore(store).get(key)
+        req.onsuccess = () => resolve(req.result ?? null)
+        req.onerror = () => resolve(null)
+    })
+}
+
+async function idbSet(store: string, key: string, value: any): Promise<void> {
+    const db = await openLocalRepoDb()
+    if (!db) return
+    await new Promise<void>((resolve) => {
+        const tx = db.transaction(store, "readwrite")
+        tx.objectStore(store).put(value, key)
+        tx.oncomplete = () => resolve()
+        tx.onerror = () => resolve()
+    })
+}
+
+async function idbDelete(store: string, key: string): Promise<void> {
+    const db = await openLocalRepoDb()
+    if (!db) return
+    await new Promise<void>((resolve) => {
+        const tx = db.transaction(store, "readwrite")
+        tx.objectStore(store).delete(key)
+        tx.oncomplete = () => resolve()
+        tx.onerror = () => resolve()
+    })
 }
 
 function extensionOf(path: string): string {
@@ -433,6 +501,7 @@ export function setLocalRepoSession(projectId: string, session: LocalRepoSession
     setLocalRepoSnapshot(projectId, session.snapshot)
     if (session.rootHandle) {
         handleCache.set(projectId, session.rootHandle)
+        void idbSet(IDB_STORE_HANDLES, projectId, session.rootHandle)
     }
 }
 
@@ -440,12 +509,19 @@ export function setLocalRepoSnapshot(projectId: string, snapshot: LocalRepoSnaps
     if (!projectId.trim()) return
     snapshotCache.set(projectId, snapshot)
 
-    if (typeof window === "undefined") return
+    if (!hasWindow()) return
+    const payload = JSON.stringify(snapshot)
     try {
-        window.sessionStorage.setItem(sessionStorageKey(projectId), JSON.stringify(snapshot))
+        window.sessionStorage.setItem(sessionStorageKey(projectId), payload)
     } catch {
         // Ignore storage quota errors; in-memory cache still works for current session.
     }
+    try {
+        window.localStorage.setItem(localStorageKey(projectId), payload)
+    } catch {
+        // Ignore localStorage quota errors.
+    }
+    void idbSet(IDB_STORE_SNAPSHOTS, projectId, snapshot)
 }
 
 export function getLocalRepoSnapshot(projectId: string): LocalRepoSnapshot | null {
@@ -454,17 +530,33 @@ export function getLocalRepoSnapshot(projectId: string): LocalRepoSnapshot | nul
     const inMemory = snapshotCache.get(projectId)
     if (inMemory) return inMemory
 
-    if (typeof window === "undefined") return null
+    if (!hasWindow()) return null
     try {
         const raw = window.sessionStorage.getItem(sessionStorageKey(projectId))
-        if (!raw) return null
-        const parsed = JSON.parse(raw) as LocalRepoSnapshot
-        if (!parsed?.files?.length) return null
-        snapshotCache.set(projectId, parsed)
-        return parsed
+        if (raw) {
+            const parsed = JSON.parse(raw) as LocalRepoSnapshot
+            if (parsed?.files?.length) {
+                snapshotCache.set(projectId, parsed)
+                return parsed
+            }
+        }
     } catch {
-        return null
+        // continue with localStorage fallback
     }
+
+    try {
+        const raw = window.localStorage.getItem(localStorageKey(projectId))
+        if (raw) {
+            const parsed = JSON.parse(raw) as LocalRepoSnapshot
+            if (parsed?.files?.length) {
+                snapshotCache.set(projectId, parsed)
+                return parsed
+            }
+        }
+    } catch {
+        // fall through
+    }
+    return null
 }
 
 export function hasLocalRepoSnapshot(projectId: string): boolean {
@@ -490,6 +582,28 @@ export async function ensureLocalRepoWritePermission(projectId: string): Promise
     }
 }
 
+export async function restoreLocalRepoSession(projectId: string): Promise<boolean> {
+    if (!projectId.trim()) return false
+
+    // Warm snapshot cache from synchronous storages first.
+    const existing = getLocalRepoSnapshot(projectId)
+    if (!existing) {
+        const persisted = await idbGet(IDB_STORE_SNAPSHOTS, projectId)
+        if (persisted?.files?.length) {
+            setLocalRepoSnapshot(projectId, persisted as LocalRepoSnapshot)
+        }
+    }
+
+    if (!handleCache.has(projectId)) {
+        const persistedHandle = await idbGet(IDB_STORE_HANDLES, projectId)
+        if (persistedHandle && (persistedHandle as FileSystemHandle).kind === "directory") {
+            handleCache.set(projectId, persistedHandle as FileSystemDirectoryHandle)
+        }
+    }
+
+    return Boolean(getLocalRepoSnapshot(projectId))
+}
+
 export function moveLocalRepoSnapshot(fromKey: string, toKey: string): void {
     if (!fromKey.trim() || !toKey.trim()) return
     const snapshot = getLocalRepoSnapshot(fromKey)
@@ -503,9 +617,23 @@ export function moveLocalRepoSnapshot(fromKey: string, toKey: string): void {
     }
 
     snapshotCache.delete(fromKey)
-    if (typeof window !== "undefined") {
+    if (hasWindow()) {
         window.sessionStorage.removeItem(sessionStorageKey(fromKey))
+        window.localStorage.removeItem(localStorageKey(fromKey))
     }
+    void (async () => {
+        const persistedSnap = await idbGet(IDB_STORE_SNAPSHOTS, fromKey)
+        if (persistedSnap) {
+            await idbSet(IDB_STORE_SNAPSHOTS, toKey, persistedSnap)
+        }
+        await idbDelete(IDB_STORE_SNAPSHOTS, fromKey)
+
+        const persistedHandle = await idbGet(IDB_STORE_HANDLES, fromKey)
+        if (persistedHandle) {
+            await idbSet(IDB_STORE_HANDLES, toKey, persistedHandle)
+        }
+        await idbDelete(IDB_STORE_HANDLES, fromKey)
+    })()
 }
 
 function searchTerms(question: string): string[] {

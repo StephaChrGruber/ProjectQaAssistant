@@ -36,6 +36,7 @@ import {
     isBrowserLocalRepoPath,
     listLocalDocumentationFiles,
     readLocalDocumentationFile,
+    restoreLocalRepoSession,
     writeLocalDocumentationFiles,
 } from "@/lib/local-repo-bridge"
 import ReactMarkdown from "react-markdown"
@@ -399,6 +400,11 @@ export default function ProjectChatPage() {
         })
     }, [branch, projectId, selectedChatId, syncUrl])
 
+    useEffect(() => {
+        if (!browserLocalRepoMode) return
+        void restoreLocalRepoSession(projectId)
+    }, [browserLocalRepoMode, projectId])
+
     const onSelectChat = useCallback((chat: DrawerChat) => {
         setSelectedChatId(chat.chat_id)
     }, [])
@@ -427,9 +433,15 @@ export default function ProjectChatPage() {
             if (!asksForDocumentationGeneration(question)) return
 
             if (!hasLocalRepoSnapshot(projectId)) {
+                await restoreLocalRepoSession(projectId)
+            }
+            if (!hasLocalRepoSnapshot(projectId)) {
                 throw new Error(
                     "Browser-local repository is not indexed in this session. Open Project Settings and pick the local repository folder first."
                 )
+            }
+            if (!hasLocalRepoWriteCapability(projectId)) {
+                await restoreLocalRepoSession(projectId)
             }
             if (!hasLocalRepoWriteCapability(projectId)) {
                 throw new Error(
@@ -483,6 +495,9 @@ export default function ProjectChatPage() {
             const repoPath = (project?.repo_path || "").trim()
             let localRepoContext: string | undefined
             if (isBrowserLocalRepoPath(repoPath)) {
+                if (!hasLocalRepoSnapshot(projectId)) {
+                    await restoreLocalRepoSession(projectId)
+                }
                 if (!hasLocalRepoSnapshot(projectId)) {
                     throw new Error(
                         "This project uses a browser-local repository. Open Project Settings and pick the local repo folder on this device first."
@@ -612,9 +627,15 @@ export default function ProjectChatPage() {
         try {
             if (browserLocalRepoMode) {
                 if (!hasLocalRepoSnapshot(projectId)) {
+                    await restoreLocalRepoSession(projectId)
+                }
+                if (!hasLocalRepoSnapshot(projectId)) {
                     throw new Error(
                         "Browser-local repository is not indexed in this session. Open Project Settings and pick the local repository folder first."
                     )
+                }
+                if (!hasLocalRepoWriteCapability(projectId)) {
+                    await restoreLocalRepoSession(projectId)
                 }
                 if (!hasLocalRepoWriteCapability(projectId)) {
                     throw new Error(
