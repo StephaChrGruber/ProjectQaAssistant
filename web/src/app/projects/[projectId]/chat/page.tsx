@@ -144,6 +144,24 @@ export default function ProjectChatPage() {
                     `/api/projects/${projectId}/chats?branch=${encodeURIComponent(activeBranch)}&limit=100`
                 )
 
+                if (preferredChatId && !docs.some((c) => c.chat_id === preferredChatId)) {
+                    await ensureChat(preferredChatId, activeBranch)
+                    const now = new Date().toISOString()
+                    const merged: DrawerChat[] = [
+                        {
+                            chat_id: preferredChatId,
+                            title: `${projectLabel} / ${activeBranch}`,
+                            branch: activeBranch,
+                            updated_at: now,
+                            created_at: now,
+                        },
+                        ...docs,
+                    ]
+                    setChats(merged)
+                    setSelectedChatId(preferredChatId)
+                    return preferredChatId
+                }
+
                 if (!docs.length) {
                     const fallback = preferredChatId || `${projectId}::${activeBranch}::${userId}`
                     await ensureChat(fallback, activeBranch)
@@ -492,4 +510,3 @@ export default function ProjectChatPage() {
         </ProjectDrawerLayout>
     )
 }
-

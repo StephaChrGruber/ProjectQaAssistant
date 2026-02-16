@@ -52,6 +52,10 @@ function chatTitle(chat: DrawerChat): string {
     return raw
 }
 
+function cx(...parts: Array<string | false | null | undefined>) {
+    return parts.filter(Boolean).join(" ")
+}
+
 export function ProjectDrawerLayout(props: Props) {
     const {
         projectId,
@@ -89,135 +93,157 @@ export function ProjectDrawerLayout(props: Props) {
         }
     }, [mobileOpen])
 
-    return (
-        <div className="flex h-screen w-full overflow-hidden text-slate-100">
-            <div className="fixed inset-0 -z-20 bg-[#05050a]" />
-            <div className="fixed inset-0 -z-10 bg-[radial-gradient(1000px_500px_at_5%_0%,rgba(0,193,255,0.22),transparent_60%),radial-gradient(800px_420px_at_95%_4%,rgba(0,255,166,0.14),transparent_55%),linear-gradient(180deg,#090e1a_0%,#05050a_100%)]" />
+    const drawerPanel = (isTemporary: boolean) => (
+        <div className="flex h-full flex-col">
+            <div className="border-b border-white/10 p-4">
+                <div className="inline-flex items-center rounded-full border border-cyan-300/30 bg-cyan-300/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-cyan-100">
+                    Project QA
+                </div>
+                <div className="mt-3 truncate text-sm font-semibold text-white">{projectLabel}</div>
+                <div className="truncate text-xs text-slate-400">{projectId}</div>
+            </div>
 
-            {mobileOpen && (
+            <div className="border-b border-white/10 p-4">
+                <label className="text-[11px] uppercase tracking-[0.16em] text-slate-400">Branch</label>
+                <select
+                    value={branch}
+                    onChange={(e) => {
+                        onBranchChange(e.target.value)
+                        if (isTemporary) setMobileOpen(false)
+                    }}
+                    className="mt-2 w-full rounded-xl border border-white/15 bg-slate-900/80 px-3 py-2 text-sm outline-none ring-cyan-300/40 focus:ring-2"
+                >
+                    {branches.map((b) => (
+                        <option key={b} value={b}>
+                            {b}
+                        </option>
+                    ))}
+                    {branches.length === 0 && <option value={branch}>{branch}</option>}
+                </select>
                 <button
-                    className="fixed inset-0 z-30 bg-black/55 md:hidden"
-                    onClick={() => setMobileOpen(false)}
-                    aria-label="Close drawer"
-                />
-            )}
+                    onClick={() => {
+                        onNewChat()
+                        if (isTemporary) setMobileOpen(false)
+                    }}
+                    className="mt-3 w-full rounded-xl bg-gradient-to-r from-cyan-300 to-emerald-300 px-3 py-2 text-sm font-semibold text-slate-900 hover:from-cyan-200 hover:to-emerald-200"
+                >
+                    New Chat
+                </button>
+            </div>
 
-            <aside
-                className={[
-                    "fixed inset-y-0 left-0 z-40 w-[20rem] border-r border-white/10 bg-slate-950/85 backdrop-blur-xl",
-                    "transform transition-transform duration-200 ease-out md:static md:translate-x-0",
-                    mobileOpen ? "translate-x-0" : "-translate-x-full",
-                ].join(" ")}
-            >
-                <div className="flex h-full flex-col">
-                    <div className="border-b border-white/10 p-4">
-                        <div className="inline-flex items-center rounded-full border border-cyan-300/30 bg-cyan-300/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-cyan-100">
-                            Project QA
-                        </div>
-                        <div className="mt-3 truncate text-sm font-semibold text-white">{projectLabel}</div>
-                        <div className="truncate text-xs text-slate-400">{projectId}</div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-2">
+                <div className="px-2 pb-2 text-[11px] uppercase tracking-[0.16em] text-slate-400">Conversations</div>
+                {loadingChats && (
+                    <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-slate-400">
+                        Loading chats...
                     </div>
-
-                    <div className="border-b border-white/10 p-4">
-                        <label className="text-[11px] uppercase tracking-[0.16em] text-slate-400">Branch</label>
-                        <select
-                            value={branch}
-                            onChange={(e) => onBranchChange(e.target.value)}
-                            className="mt-2 w-full rounded-xl border border-white/15 bg-slate-900/80 px-3 py-2 text-sm outline-none ring-cyan-300/40 focus:ring-2"
-                        >
-                            {branches.map((b) => (
-                                <option key={b} value={b}>
-                                    {b}
-                                </option>
-                            ))}
-                            {branches.length === 0 && <option value={branch}>{branch}</option>}
-                        </select>
-                        <button
-                            onClick={onNewChat}
-                            className="mt-3 w-full rounded-xl bg-gradient-to-r from-cyan-300 to-emerald-300 px-3 py-2 text-sm font-semibold text-slate-900 hover:from-cyan-200 hover:to-emerald-200"
-                        >
-                            New Chat
-                        </button>
+                )}
+                {!loadingChats && chats.length === 0 && (
+                    <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-slate-500">
+                        No chats for this branch yet.
                     </div>
-
-                    <div className="min-h-0 flex-1 overflow-y-auto p-2">
-                        <div className="px-2 pb-2 text-[11px] uppercase tracking-[0.16em] text-slate-400">Conversations</div>
-                        {loadingChats && (
-                            <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-slate-400">
-                                Loading chats...
-                            </div>
-                        )}
-                        {!loadingChats && chats.length === 0 && (
-                            <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-slate-500">
-                                No chats for this branch yet.
-                            </div>
-                        )}
-                        <div className="space-y-1.5">
-                            {chats.map((chat) => {
-                                const selected = chat.chat_id === selectedChatId
-                                return (
-                                    <button
-                                        key={chat.chat_id}
-                                        onClick={() => {
-                                            onSelectChat(chat)
-                                            setMobileOpen(false)
-                                        }}
-                                        className={[
-                                            "w-full rounded-xl border px-3 py-2 text-left transition",
-                                            selected
-                                                ? "border-cyan-300/50 bg-cyan-300/10 shadow-[0_0_0_1px_rgba(103,232,249,0.25)]"
-                                                : "border-white/10 bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.06]",
-                                        ].join(" ")}
-                                    >
-                                        <div className="truncate text-sm font-medium">{chatTitle(chat)}</div>
-                                        <div className="mt-1 truncate text-[11px] text-slate-400">
-                                            {chat.branch || branch}
-                                            {chat.updated_at ? ` · ${fmtTime(chat.updated_at)}` : ""}
-                                        </div>
-                                    </button>
-                                )
-                            })}
-                        </div>
-                    </div>
-
-                    <div className="border-t border-white/10 p-4">
-                        <div className="truncate pb-3 text-xs text-slate-400">{userLabel}</div>
-                        <div className="space-y-2 text-sm">
-                            <Link
-                                href={`/projects/${projectId}/settings`}
+                )}
+                <div className="space-y-1.5">
+                    {chats.map((chat) => {
+                        const selected = chat.chat_id === selectedChatId
+                        return (
+                            <button
+                                key={chat.chat_id}
+                                onClick={() => {
+                                    onSelectChat(chat)
+                                    if (isTemporary) setMobileOpen(false)
+                                }}
                                 className={[
-                                    "block rounded-xl border px-3 py-2 transition",
-                                    activeSection === "settings"
-                                        ? "border-cyan-300/40 bg-cyan-300/10"
+                                    "w-full rounded-xl border px-3 py-2 text-left transition",
+                                    selected
+                                        ? "border-cyan-300/50 bg-cyan-300/10 shadow-[0_0_0_1px_rgba(103,232,249,0.25)]"
                                         : "border-white/10 bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.06]",
                                 ].join(" ")}
                             >
-                                Settings
-                            </Link>
-                            {user?.isGlobalAdmin && (
-                                <Link
-                                    href="/admin"
-                                    className="block rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 transition hover:border-white/20 hover:bg-white/[0.06]"
-                                >
-                                    Admin
-                                </Link>
-                            )}
-                            <Link
-                                href="/projects"
-                                className="block rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 transition hover:border-white/20 hover:bg-white/[0.06]"
-                            >
-                                Projects
-                            </Link>
-                        </div>
-                    </div>
+                                <div className="truncate text-sm font-medium">{chatTitle(chat)}</div>
+                                <div className="mt-1 truncate text-[11px] text-slate-400">
+                                    {chat.branch || branch}
+                                    {chat.updated_at ? ` · ${fmtTime(chat.updated_at)}` : ""}
+                                </div>
+                            </button>
+                        )
+                    })}
                 </div>
+            </div>
+
+            <div className="border-t border-white/10 p-4">
+                <div className="truncate pb-3 text-xs text-slate-400">{userLabel}</div>
+                <div className="space-y-2 text-sm">
+                    <Link
+                        href={`/projects/${projectId}/settings`}
+                        className={cx(
+                            "block rounded-xl border px-3 py-2 transition",
+                            activeSection === "settings"
+                                ? "border-cyan-300/40 bg-cyan-300/10"
+                                : "border-white/10 bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.06]"
+                        )}
+                    >
+                        Settings
+                    </Link>
+                    {user?.isGlobalAdmin && (
+                        <Link
+                            href="/admin"
+                            className="block rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 transition hover:border-white/20 hover:bg-white/[0.06]"
+                        >
+                            Admin
+                        </Link>
+                    )}
+                    <Link
+                        href="/projects"
+                        className="block rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 transition hover:border-white/20 hover:bg-white/[0.06]"
+                    >
+                        Projects
+                    </Link>
+                </div>
+            </div>
+        </div>
+    )
+
+    return (
+        <div className="relative flex h-dvh min-h-screen w-full overflow-hidden text-slate-100">
+            <div className="fixed inset-0 -z-20 bg-[#05050a]" />
+            <div className="fixed inset-0 -z-10 bg-[radial-gradient(1000px_500px_at_5%_0%,rgba(0,193,255,0.22),transparent_60%),radial-gradient(800px_420px_at_95%_4%,rgba(0,255,166,0.14),transparent_55%),linear-gradient(180deg,#090e1a_0%,#05050a_100%)]" />
+
+            <aside className="hidden h-full w-80 shrink-0 border-r border-white/10 bg-slate-950/80 backdrop-blur-xl lg:block">
+                {drawerPanel(false)}
             </aside>
 
-            <div className="flex min-w-0 flex-1 flex-col">
-                <header className="sticky top-0 z-20 flex items-center justify-between border-b border-white/10 bg-slate-950/65 px-4 py-3 backdrop-blur-xl md:hidden">
+            <div
+                className={cx(
+                    "fixed inset-0 z-40 lg:hidden",
+                    mobileOpen ? "pointer-events-auto" : "pointer-events-none"
+                )}
+                aria-hidden={!mobileOpen}
+            >
+                <button
+                    className={cx(
+                        "absolute inset-0 bg-black/55 transition-opacity",
+                        mobileOpen ? "opacity-100" : "opacity-0"
+                    )}
+                    onClick={() => setMobileOpen(false)}
+                    aria-label="Close drawer"
+                />
+                <aside
+                    className={cx(
+                        "absolute inset-y-0 left-0 w-[min(88vw,22rem)] border-r border-white/10 bg-slate-950/92 backdrop-blur-xl transition-transform duration-200 ease-out",
+                        mobileOpen ? "translate-x-0" : "-translate-x-full"
+                    )}
+                >
+                    {drawerPanel(true)}
+                </aside>
+            </div>
+
+            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                <header className="sticky top-0 z-20 flex items-center justify-between border-b border-white/10 bg-slate-950/65 px-4 py-3 backdrop-blur-xl lg:hidden">
                     <button
                         onClick={() => setMobileOpen(true)}
                         className="rounded-lg border border-white/15 bg-white/[0.03] px-3 py-1.5 text-sm"
+                        aria-label="Open menu"
                     >
                         Menu
                     </button>
@@ -231,4 +257,3 @@ export function ProjectDrawerLayout(props: Props) {
         </div>
     )
 }
-
