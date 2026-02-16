@@ -13,6 +13,7 @@ from bson import ObjectId
 
 from ..db import get_db
 from ..settings import settings
+from ..services.documentation import generate_project_documentation, DocumentationError
 
 import logging
 
@@ -254,6 +255,17 @@ async def get_project_metadata(project_id: str) -> ProjectMetadataResponse:
         default_branch=doc.get("default_branch", "main"),
         extra=doc.get("extra", {}) or {},
     )
+
+
+async def generate_project_docs(project_id: str, branch: Optional[str] = None) -> dict:
+    """
+    Scans the project repository and generates/updates markdown documentation files
+    under `documentation/` at the repository root for the selected branch.
+    """
+    try:
+        return await generate_project_documentation(project_id=project_id, branch=branch)
+    except DocumentationError as err:
+        return {"error": str(err)}
 
 
 # ----------------------------

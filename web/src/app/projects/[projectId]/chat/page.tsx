@@ -7,6 +7,13 @@ import {
     Box,
     Button,
     CircularProgress,
+    Dialog,
+    DialogContent,
+    DialogTitle,
+    Divider,
+    List,
+    ListItemButton,
+    ListItemText,
     Paper,
     Stack,
     TextField,
@@ -14,6 +21,9 @@ import {
 } from "@mui/material"
 import SendRounded from "@mui/icons-material/SendRounded"
 import ClearAllRounded from "@mui/icons-material/ClearAllRounded"
+import DescriptionRounded from "@mui/icons-material/DescriptionRounded"
+import AutoFixHighRounded from "@mui/icons-material/AutoFixHighRounded"
+import CloseRounded from "@mui/icons-material/CloseRounded"
 import { backendJson } from "@/lib/backend"
 import { ProjectDrawerLayout, type DrawerChat, type DrawerUser } from "@/components/ProjectDrawerLayout"
 import { buildChatPath, saveLastChat } from "@/lib/last-chat"
@@ -22,6 +32,8 @@ import {
     hasLocalRepoSnapshot,
     isBrowserLocalRepoPath,
 } from "@/lib/local-repo-bridge"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 
 type ChatMessage = {
     role: "user" | "assistant" | "system" | "tool"
@@ -54,6 +66,30 @@ type ChatResponse = {
 
 type AskAgentResponse = {
     answer?: string
+}
+
+type GenerateDocsResponse = {
+    branch?: string
+    current_branch?: string
+    mode?: string
+    summary?: string
+    files_written?: string[]
+}
+
+type DocumentationListResponse = {
+    branch?: string
+    current_branch?: string
+    files?: Array<{
+        path: string
+        size?: number | null
+        updated_at?: string | null
+    }>
+}
+
+type DocumentationFileResponse = {
+    branch?: string
+    path: string
+    content: string
 }
 
 function splitChartBlocks(text: string): Array<{ type: "text" | "chart"; value: string }> {
@@ -110,6 +146,15 @@ export default function ProjectChatPage() {
     const [sending, setSending] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [booting, setBooting] = useState(true)
+    const [docsOpen, setDocsOpen] = useState(false)
+    const [docsLoading, setDocsLoading] = useState(false)
+    const [docsGenerating, setDocsGenerating] = useState(false)
+    const [docsError, setDocsError] = useState<string | null>(null)
+    const [docsNotice, setDocsNotice] = useState<string | null>(null)
+    const [docsFiles, setDocsFiles] = useState<Array<{ path: string; size?: number | null; updated_at?: string | null }>>([])
+    const [selectedDocPath, setSelectedDocPath] = useState<string | null>(null)
+    const [selectedDocContent, setSelectedDocContent] = useState("")
+    const [docContentLoading, setDocContentLoading] = useState(false)
 
     const scrollRef = useRef<HTMLDivElement | null>(null)
     const projectLabel = useMemo(() => project?.name || project?.key || projectId, [project, projectId])
@@ -412,6 +457,82 @@ export default function ProjectChatPage() {
         }
     }, [branch, loadChats, loadMessages, selectedChatId])
 
+    const loadDocumentationFile = useCallback(
+        async (path: string) => {
+            setDocContentLoading(true)
+            setDocsError(null)
+            try {
+                const doc = await backendJson<DocumentationFileResponse>(
+                    `/api/projects/${projectId}/documentation/file?branch=${encodeURIComponent(branch)}&path=${encodeURIComponent(path)}`
+                )
+                setSelectedDocPath(doc.path || path)
+                setSelectedDocContent(doc.content || "")
+            } catch (err) {
+                setDocsError(errText(err))
+            } finally {
+                setDocContentLoading(false)
+            }
+        },
+        [branch, projectId]
+    )
+
+    const loadDocumentationList = useCallback(
+        async (preferredPath?: string | null) => {
+            setDocsLoading(true)
+            setDocsError(null)
+            try {
+                const out = await backendJson<DocumentationListResponse>(
+                    `/api/projects/${projectId}/documentation?branch=${encodeURIComponent(branch)}`
+                )
+                const files = (out.files || []).filter((f) => !!f.path).sort((a, b) => a.path.localeCompare(b.path))
+                setDocsFiles(files)
+                const target = (preferredPath && files.find((f) => f.path === preferredPath)?.path) || files[0]?.path || null
+                setSelectedDocPath(target)
+                if (target) {
+                    await loadDocumentationFile(target)
+                } else {
+                    setSelectedDocContent("")
+                }
+            } catch (err) {
+                setDocsFiles([])
+                setSelectedDocPath(null)
+                setSelectedDocContent("")
+                setDocsError(errText(err))
+            } finally {
+                setDocsLoading(false)
+            }
+        },
+        [branch, loadDocumentationFile, projectId]
+    )
+
+    const openDocumentationViewer = useCallback(() => {
+        setDocsOpen(true)
+        void loadDocumentationList(selectedDocPath)
+    }, [loadDocumentationList, selectedDocPath])
+
+    const generateDocumentation = useCallback(async () => {
+        setDocsGenerating(true)
+        setDocsError(null)
+        setDocsNotice(null)
+        try {
+            const out = await backendJson<GenerateDocsResponse>(`/api/projects/${projectId}/documentation/generate`, {
+                method: "POST",
+                body: JSON.stringify({ branch }),
+            })
+            const mode = out.mode || "generated"
+            const count = out.files_written?.length || 0
+            setDocsNotice(
+                `Documentation ${mode === "llm" ? "generated with LLM" : "generated"} for branch ${out.branch || branch}. Files updated: ${count}.`
+            )
+            setDocsOpen(true)
+            await loadDocumentationList()
+        } catch (err) {
+            setDocsError(errText(err))
+        } finally {
+            setDocsGenerating(false)
+        }
+    }, [branch, loadDocumentationList, projectId])
+
     return (
         <ProjectDrawerLayout
             projectId={projectId}
@@ -448,6 +569,25 @@ export default function ProjectChatPage() {
                         Branch: {branch} · {(project?.llm_provider || "default LLM").toUpperCase()}
                         {project?.llm_model ? ` · ${project.llm_model}` : ""}
                     </Typography>
+                    <Stack direction="row" spacing={1} sx={{ mt: 1.2 }}>
+                        <Button
+                            size="small"
+                            variant="outlined"
+                            startIcon={<DescriptionRounded />}
+                            onClick={openDocumentationViewer}
+                        >
+                            Open Docs
+                        </Button>
+                        <Button
+                            size="small"
+                            variant="contained"
+                            startIcon={<AutoFixHighRounded />}
+                            onClick={() => void generateDocumentation()}
+                            disabled={docsGenerating || booting}
+                        >
+                            {docsGenerating ? "Generating..." : "Generate Docs"}
+                        </Button>
+                    </Stack>
                 </Paper>
 
                 {error && (
@@ -598,6 +738,122 @@ export default function ProjectChatPage() {
                         </Stack>
                     </Stack>
                 </Paper>
+
+                <Dialog
+                    open={docsOpen}
+                    onClose={() => setDocsOpen(false)}
+                    fullWidth
+                    maxWidth="lg"
+                >
+                    <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+                        <Stack spacing={0.2}>
+                            <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                                Project Documentation
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                                Branch: {branch} · Source folder: <code>documentation/</code>
+                            </Typography>
+                        </Stack>
+                        <Stack direction="row" spacing={1}>
+                            <Button
+                                size="small"
+                                variant="contained"
+                                startIcon={<AutoFixHighRounded />}
+                                onClick={() => void generateDocumentation()}
+                                disabled={docsGenerating}
+                            >
+                                {docsGenerating ? "Generating..." : "Regenerate"}
+                            </Button>
+                            <Button
+                                size="small"
+                                variant="text"
+                                startIcon={<CloseRounded />}
+                                onClick={() => setDocsOpen(false)}
+                            >
+                                Close
+                            </Button>
+                        </Stack>
+                    </DialogTitle>
+                    <DialogContent dividers sx={{ p: 0 }}>
+                        {(docsLoading || docContentLoading) && (
+                            <Box sx={{ px: 2, py: 1 }}>
+                                <CircularProgress size={18} />
+                            </Box>
+                        )}
+                        {docsError && (
+                            <Box sx={{ p: 1.5 }}>
+                                <Alert severity="error">{docsError}</Alert>
+                            </Box>
+                        )}
+                        {docsNotice && (
+                            <Box sx={{ p: 1.5 }}>
+                                <Alert severity="success">{docsNotice}</Alert>
+                            </Box>
+                        )}
+
+                        <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "280px 1fr" }, minHeight: 500 }}>
+                            <Box sx={{ borderRight: { md: "1px solid" }, borderColor: "divider", bgcolor: "background.default" }}>
+                                <List dense sx={{ maxHeight: 560, overflowY: "auto" }}>
+                                    {docsFiles.map((file) => (
+                                        <ListItemButton
+                                            key={file.path}
+                                            selected={selectedDocPath === file.path}
+                                            onClick={() => void loadDocumentationFile(file.path)}
+                                        >
+                                            <ListItemText
+                                                primary={file.path.replace(/^documentation\//, "")}
+                                                secondary={file.size ? `${Math.round(file.size / 1024)} KB` : undefined}
+                                                primaryTypographyProps={{ noWrap: true }}
+                                                secondaryTypographyProps={{ noWrap: true }}
+                                            />
+                                        </ListItemButton>
+                                    ))}
+                                    {!docsFiles.length && !docsLoading && (
+                                        <ListItemButton disabled>
+                                            <ListItemText primary="No documentation files found." />
+                                        </ListItemButton>
+                                    )}
+                                </List>
+                            </Box>
+
+                            <Box sx={{ p: { xs: 1.5, md: 2.2 }, overflowY: "auto", maxHeight: 560 }}>
+                                {selectedDocPath ? (
+                                    <Stack spacing={1.4}>
+                                        <Typography variant="subtitle2" color="text.secondary">
+                                            {selectedDocPath}
+                                        </Typography>
+                                        <Divider />
+                                        <Box
+                                            sx={{
+                                                "& h1, & h2, & h3": { mt: 2, mb: 1 },
+                                                "& p, & li": { fontSize: "0.93rem" },
+                                                "& code": {
+                                                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                                                    bgcolor: "action.hover",
+                                                    px: 0.5,
+                                                    borderRadius: 0.6,
+                                                },
+                                                "& pre code": {
+                                                    display: "block",
+                                                    p: 1.2,
+                                                    overflowX: "auto",
+                                                },
+                                            }}
+                                        >
+                                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                                {selectedDocContent || "_No content._"}
+                                            </ReactMarkdown>
+                                        </Box>
+                                    </Stack>
+                                ) : (
+                                    <Typography variant="body2" color="text.secondary">
+                                        Generate documentation or select a file to preview.
+                                    </Typography>
+                                )}
+                            </Box>
+                        </Box>
+                    </DialogContent>
+                </Dialog>
             </Stack>
         </ProjectDrawerLayout>
     )

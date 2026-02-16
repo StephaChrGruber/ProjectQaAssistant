@@ -15,6 +15,7 @@ from .tool_exec import (
     repo_grep,
     open_file,
     keyword_search,
+    generate_project_docs,
     chroma_count,
     chroma_search_chunks,
     chroma_open_chunks,
@@ -41,6 +42,7 @@ ALLOWED_TOOLS = {
     "get_project_metadata": get_project_metadata,
     "repo_grep": repo_grep,
     "open_file": open_file,
+    "generate_project_docs": generate_project_docs,
     #"keyword_search": keyword_search,
     "chroma_count": chroma_count,
     "chroma_search_chunks": chroma_search_chunks,
@@ -292,6 +294,7 @@ def _system_prompt(project_id: str, branch: str, user_id: str) -> str:
         "- Use repo_grep to locate symbols, endpoints, config keys, and files in the git repo.\n"
         "- Use open_file to read exact code around grep results.\n"
         "- Use keyword_search or chroma_search_chunks for documentation and explanations.\n"
+        "- If asked to create, update, or refresh repository documentation files, call generate_project_docs before your final response.\n"
         "- Always include file paths and line numbers when citing code.\n"
         "- After receiving a TOOL_RESULT, continue reasoning.\n"
         "- When you have enough information, respond with a normal text answer (no JSON).\n"
