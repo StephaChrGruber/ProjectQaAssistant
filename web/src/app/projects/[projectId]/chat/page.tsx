@@ -1,9 +1,10 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useParams, useSearchParams } from "next/navigation"
+import { useParams, useRouter, useSearchParams } from "next/navigation"
 import { backendJson } from "@/lib/backend"
 import { ProjectDrawerLayout, type DrawerChat, type DrawerUser } from "@/components/ProjectDrawerLayout"
+import { buildChatPath, saveLastChat } from "@/lib/last-chat"
 
 type ChatMessage = {
     role: "user" | "assistant" | "system" | "tool"
@@ -52,6 +53,7 @@ function splitChartBlocks(text: string): Array<{ type: "text" | "chart"; value: 
         parts.push({ type: "chart", value: (m[1] ?? "").trim() })
         last = end
     }
+
     if (last < text.length) {
         parts.push({ type: "text", value: text.slice(last) })
     }
@@ -69,8 +71,10 @@ function makeChatId(projectId: string, branch: string, user: string): string {
 
 export default function ProjectChatPage() {
     const { projectId } = useParams<{ projectId: string }>()
+    const router = useRouter()
     const searchParams = useSearchParams()
-    const preferredChatFromUrl = searchParams.get("chat")
+    const initialChatRef = useRef(searchParams.get("chat"))
+    const initialBranchRef = useRef(searchParams.get("branch"))
 
     const [me, setMe] = useState<DrawerUser | null>(null)
     const [project, setProject] = useState<ProjectDoc | null>(null)
@@ -90,16 +94,20 @@ export default function ProjectChatPage() {
     const [booting, setBooting] = useState(true)
 
     const scrollRef = useRef<HTMLDivElement | null>(null)
-
+    const projectLabel = useMemo(() => project?.name || project?.key || projectId, [project, projectId])
     const userId = useMemo(() => me?.email || "dev@local", [me])
-    const projectLabel = useMemo(
-        () => project?.name || project?.key || projectId,
-        [project?.key, project?.name, projectId]
-    )
 
     useEffect(() => {
         selectedChatIdRef.current = selectedChatId
     }, [selectedChatId])
+
+    const syncUrl = useCallback(
+        (chatId: string, activeBranch: string) => {
+            const next = buildChatPath(projectId, activeBranch, chatId)
+            router.replace(next)
+        },
+        [projectId, router]
+    )
 
     const scrollToBottom = useCallback(() => {
         const el = scrollRef.current
@@ -108,19 +116,19 @@ export default function ProjectChatPage() {
     }, [])
 
     const ensureChat = useCallback(
-        async (chatId: string) => {
+        async (chatId: string, activeBranch: string) => {
             await backendJson<ChatResponse>("/api/chats/ensure", {
                 method: "POST",
                 body: JSON.stringify({
                     chat_id: chatId,
                     project_id: projectId,
-                    branch,
+                    branch: activeBranch,
                     user: userId,
                     messages: [],
                 }),
             })
         },
-        [branch, projectId, userId]
+        [projectId, userId]
     )
 
     const loadMessages = useCallback(async (chatId: string) => {
@@ -129,42 +137,25 @@ export default function ProjectChatPage() {
     }, [])
 
     const loadChats = useCallback(
-        async (preferredChatId?: string) => {
+        async (activeBranch: string, preferredChatId?: string | null) => {
             setLoadingChats(true)
             try {
                 const docs = await backendJson<DrawerChat[]>(
-                    `/api/projects/${projectId}/chats?branch=${encodeURIComponent(branch)}&limit=100`
+                    `/api/projects/${projectId}/chats?branch=${encodeURIComponent(activeBranch)}&limit=100`
                 )
-                if (preferredChatId && !docs.some((c) => c.chat_id === preferredChatId)) {
-                    await ensureChat(preferredChatId)
-                    const now = new Date().toISOString()
-                    const merged = [
-                        {
-                            chat_id: preferredChatId,
-                            title: `${projectLabel} / ${branch}`,
-                            branch,
-                            updated_at: now,
-                            created_at: now,
-                        },
-                        ...docs,
-                    ]
-                    setChats(merged)
-                    setSelectedChatId(preferredChatId)
-                    return preferredChatId
-                }
+
                 if (!docs.length) {
-                    const fallback = preferredChatId || `${projectId}::${branch}::${userId}`
-                    await ensureChat(fallback)
+                    const fallback = preferredChatId || `${projectId}::${activeBranch}::${userId}`
+                    await ensureChat(fallback, activeBranch)
                     const now = new Date().toISOString()
-                    setChats([
-                        {
-                            chat_id: fallback,
-                            title: `${projectLabel} / ${branch}`,
-                            branch,
-                            updated_at: now,
-                            created_at: now,
-                        },
-                    ])
+                    const seeded: DrawerChat = {
+                        chat_id: fallback,
+                        title: `${projectLabel} / ${activeBranch}`,
+                        branch: activeBranch,
+                        updated_at: now,
+                        created_at: now,
+                    }
+                    setChats([seeded])
                     setSelectedChatId(fallback)
                     return fallback
                 }
@@ -172,18 +163,21 @@ export default function ProjectChatPage() {
                 setChats(docs)
                 const current = preferredChatId || selectedChatIdRef.current
                 const next =
-                    (current && docs.some((c) => c.chat_id === current) && current) || docs[0].chat_id || null
+                    (current && docs.some((c) => c.chat_id === current) && current) ||
+                    docs[0]?.chat_id ||
+                    null
                 setSelectedChatId(next)
                 return next
             } finally {
                 setLoadingChats(false)
             }
         },
-        [branch, ensureChat, projectId, projectLabel, userId]
+        [ensureChat, projectId, projectLabel, userId]
     )
 
     useEffect(() => {
         let cancelled = false
+
         async function boot() {
             setBooting(true)
             setError(null)
@@ -192,33 +186,37 @@ export default function ProjectChatPage() {
                     backendJson<MeResponse>("/api/me"),
                     backendJson<ProjectDoc>(`/api/projects/${projectId}`),
                 ])
-
                 if (cancelled) return
                 setMe(meRes.user || null)
                 setProject(projectRes)
 
-                let b: string[] = []
+                let fetchedBranches: string[] = []
                 try {
-                    const branchesRes = await backendJson<BranchesResponse>(`/api/projects/${projectId}/branches`)
-                    b = (branchesRes.branches || []).filter(Boolean)
+                    const b = await backendJson<BranchesResponse>(`/api/projects/${projectId}/branches`)
+                    fetchedBranches = (b.branches || []).filter(Boolean)
                 } catch {
-                    b = []
+                    fetchedBranches = []
                 }
 
-                if (!b.length) {
-                    b = [projectRes.default_branch || "main"]
+                if (!fetchedBranches.length) {
+                    fetchedBranches = [projectRes.default_branch || "main"]
                 }
 
-                setBranches(b)
-                setBranch((prev) => {
-                    if (prev && b.includes(prev)) return prev
-                    const preferred = (projectRes.default_branch || "").trim()
-                    if (preferred && b.includes(preferred)) return preferred
-                    return b[0] || "main"
-                })
+                setBranches(fetchedBranches)
+
+                const urlBranch = (initialBranchRef.current || "").trim()
+                const preferred = (projectRes.default_branch || "").trim()
+                if (urlBranch && fetchedBranches.includes(urlBranch)) {
+                    setBranch(urlBranch)
+                } else if (preferred && fetchedBranches.includes(preferred)) {
+                    setBranch(preferred)
+                } else {
+                    setBranch(fetchedBranches[0] || "main")
+                }
             } catch (err) {
-                if (cancelled) return
-                setError(errText(err))
+                if (!cancelled) {
+                    setError(errText(err))
+                }
             } finally {
                 if (!cancelled) {
                     setBooting(false)
@@ -226,19 +224,22 @@ export default function ProjectChatPage() {
             }
         }
 
-        boot()
+        void boot()
         return () => {
             cancelled = true
         }
     }, [projectId])
 
     useEffect(() => {
-        if (!projectId || !branch) return
+        if (!branch) return
         let cancelled = false
 
-        async function load() {
+        async function loadByBranch() {
             try {
-                await loadChats(preferredChatFromUrl || undefined)
+                const next = await loadChats(branch, initialChatRef.current)
+                if (!cancelled && next) {
+                    initialChatRef.current = null
+                }
             } catch (err) {
                 if (!cancelled) {
                     setError(errText(err))
@@ -246,14 +247,14 @@ export default function ProjectChatPage() {
             }
         }
 
-        load()
+        void loadByBranch()
         return () => {
             cancelled = true
         }
-    }, [branch, loadChats, preferredChatFromUrl, projectId])
+    }, [branch, loadChats])
 
     useEffect(() => {
-        if (!selectedChatId) return
+        if (!selectedChatId || !branch) return
         const chatId = selectedChatId
         let cancelled = false
 
@@ -261,7 +262,7 @@ export default function ProjectChatPage() {
             setLoadingMessages(true)
             setError(null)
             try {
-                await ensureChat(chatId)
+                await ensureChat(chatId, branch)
                 await loadMessages(chatId)
             } catch (err) {
                 if (!cancelled) {
@@ -275,22 +276,44 @@ export default function ProjectChatPage() {
             }
         }
 
-        syncSelectedChat()
+        void syncSelectedChat()
         return () => {
             cancelled = true
         }
-    }, [ensureChat, loadMessages, selectedChatId])
+    }, [branch, ensureChat, loadMessages, selectedChatId])
 
     useEffect(() => {
         scrollToBottom()
-    }, [messages, sending, scrollToBottom])
+    }, [messages, sending, loadingMessages, scrollToBottom])
+
+    useEffect(() => {
+        if (!selectedChatId || !branch) return
+        syncUrl(selectedChatId, branch)
+        saveLastChat({
+            projectId,
+            branch,
+            chatId: selectedChatId,
+            path: buildChatPath(projectId, branch, selectedChatId),
+            ts: Date.now(),
+        })
+    }, [branch, projectId, selectedChatId, syncUrl])
+
+    const onSelectChat = useCallback((chat: DrawerChat) => {
+        setSelectedChatId(chat.chat_id)
+    }, [])
+
+    const onBranchChange = useCallback((nextBranch: string) => {
+        setBranch(nextBranch)
+        setMessages([])
+        setSelectedChatId(null)
+    }, [])
 
     const onNewChat = useCallback(async () => {
         const newChatId = makeChatId(projectId, branch, userId)
         setError(null)
         try {
-            await ensureChat(newChatId)
-            await loadChats(newChatId)
+            await ensureChat(newChatId, branch)
+            await loadChats(branch, newChatId)
             setMessages([])
         } catch (err) {
             setError(errText(err))
@@ -304,7 +327,6 @@ export default function ProjectChatPage() {
         setSending(true)
         setError(null)
         setInput("")
-
         setMessages((prev) => [...prev, { role: "user", content: q, ts: new Date().toISOString() }])
 
         try {
@@ -325,7 +347,7 @@ export default function ProjectChatPage() {
             }
 
             await loadMessages(selectedChatId)
-            await loadChats(selectedChatId)
+            await loadChats(branch, selectedChatId)
         } catch (err) {
             setError(errText(err))
         } finally {
@@ -339,11 +361,11 @@ export default function ProjectChatPage() {
         try {
             await backendJson(`/api/chats/${encodeURIComponent(selectedChatId)}/clear`, { method: "POST" })
             await loadMessages(selectedChatId)
-            await loadChats(selectedChatId)
+            await loadChats(branch, selectedChatId)
         } catch (err) {
             setError(errText(err))
         }
-    }, [loadChats, loadMessages, selectedChatId])
+    }, [branch, loadChats, loadMessages, selectedChatId])
 
     return (
         <ProjectDrawerLayout
@@ -351,21 +373,22 @@ export default function ProjectChatPage() {
             projectLabel={projectLabel}
             branch={branch}
             branches={branches}
-            onBranchChange={setBranch}
+            onBranchChange={onBranchChange}
             chats={chats}
             selectedChatId={selectedChatId}
-            onSelectChat={setSelectedChatId}
+            onSelectChat={onSelectChat}
             onNewChat={onNewChat}
             user={me}
             loadingChats={loadingChats}
+            activeSection="chat"
         >
-            <main className="flex min-h-0 flex-1 flex-col bg-slate-950">
-                <div className="border-b border-slate-800 px-5 py-4">
-                    <div className="text-xs uppercase tracking-[0.2em] text-slate-400">RAG Chat</div>
-                    <div className="mt-1 text-sm text-slate-200">
-                        {projectLabel} · {branch}
+            <main className="flex min-h-0 flex-1 flex-col">
+                <div className="border-b border-white/10 bg-slate-950/55 px-5 py-4 backdrop-blur-xl">
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-slate-400">RAG Conversation</div>
+                    <div className="mt-1 text-sm text-white">
+                        {projectLabel} · <span className="text-cyan-200">{branch}</span>
                     </div>
-                    <div className="text-xs text-slate-500">
+                    <div className="text-xs text-slate-400">
                         {(project?.llm_provider || "default LLM").toUpperCase()}
                         {project?.llm_model ? ` · ${project.llm_model}` : ""}
                     </div>
@@ -380,14 +403,14 @@ export default function ProjectChatPage() {
                 <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-6">
                     <div className="mx-auto max-w-4xl space-y-4">
                         {booting && (
-                            <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-300">
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm text-slate-300">
                                 Loading workspace...
                             </div>
                         )}
 
                         {!booting && !loadingMessages && messages.length === 0 && (
-                            <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-300">
-                                No messages yet. Ask about code, Jira tickets, Confluence pages, or cross-source context.
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm text-slate-300">
+                                Start with a question about this project. I can pull context from Git, Confluence, and Jira.
                             </div>
                         )}
 
@@ -397,26 +420,26 @@ export default function ProjectChatPage() {
                                 <div key={`${m.ts || idx}-${idx}`} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
                                     <div
                                         className={[
-                                            "max-w-[88%] rounded-2xl border px-4 py-3 text-sm leading-relaxed shadow-sm",
+                                            "max-w-[88%] rounded-2xl border px-4 py-3 text-sm leading-relaxed",
                                             isUser
-                                                ? "border-cyan-300/40 bg-cyan-400/15 text-cyan-100"
-                                                : "border-slate-800 bg-slate-900 text-slate-100",
+                                                ? "border-cyan-300/30 bg-gradient-to-br from-cyan-300/20 to-emerald-300/10 text-cyan-100"
+                                                : "border-white/10 bg-white/[0.03] text-slate-100",
                                         ].join(" ")}
                                     >
-                                        {splitChartBlocks(m.content || "").map((p, i) => {
-                                            if (p.type === "chart") {
+                                        {splitChartBlocks(m.content || "").map((part, i) => {
+                                            if (part.type === "chart") {
                                                 return (
-                                                    <div key={i} className="mt-3 rounded-lg border border-slate-700 bg-slate-950 p-3">
+                                                    <div key={i} className="mt-3 rounded-xl border border-white/10 bg-black/20 p-3">
                                                         <div className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
-                                                            chart
+                                                            Chart Block
                                                         </div>
-                                                        <pre className="overflow-x-auto text-xs text-slate-200">{p.value}</pre>
+                                                        <pre className="overflow-x-auto text-xs text-slate-200">{part.value}</pre>
                                                     </div>
                                                 )
                                             }
                                             return (
                                                 <p key={i} className="whitespace-pre-wrap">
-                                                    {p.value}
+                                                    {part.value}
                                                 </p>
                                             )
                                         })}
@@ -427,7 +450,7 @@ export default function ProjectChatPage() {
 
                         {(sending || loadingMessages) && (
                             <div className="flex justify-start">
-                                <div className="rounded-xl border border-slate-800 bg-slate-900 px-4 py-2 text-sm text-slate-300">
+                                <div className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2 text-sm text-slate-300">
                                     Thinking...
                                 </div>
                             </div>
@@ -435,7 +458,7 @@ export default function ProjectChatPage() {
                     </div>
                 </div>
 
-                <div className="border-t border-slate-800 bg-slate-950 px-4 py-4">
+                <div className="border-t border-white/10 bg-slate-950/65 px-4 py-4 backdrop-blur-xl">
                     <div className="mx-auto flex max-w-4xl items-end gap-2">
                         <textarea
                             value={input}
@@ -446,20 +469,20 @@ export default function ProjectChatPage() {
                                     void send()
                                 }
                             }}
-                            placeholder="Ask anything about this project (Enter to send, Shift+Enter newline)"
-                            className="min-h-[46px] max-h-44 flex-1 resize-none rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-300/35 placeholder:text-slate-500 focus:ring-2"
+                            placeholder="Ask a project question (Enter to send, Shift+Enter for newline)"
+                            className="min-h-[48px] max-h-44 flex-1 resize-none rounded-2xl border border-white/15 bg-white/[0.03] px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-300/40 placeholder:text-slate-500 focus:ring-2"
                         />
                         <button
                             onClick={() => void clearChat()}
                             disabled={!selectedChatId || sending}
-                            className="rounded-xl border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:bg-slate-900 disabled:opacity-50"
+                            className="rounded-xl border border-white/15 bg-white/[0.03] px-3 py-2 text-sm text-slate-200 hover:bg-white/[0.06] disabled:opacity-50"
                         >
                             Clear
                         </button>
                         <button
                             onClick={() => void send()}
                             disabled={sending || !input.trim() || !selectedChatId}
-                            className="rounded-xl bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-cyan-300 disabled:opacity-50"
+                            className="rounded-xl bg-gradient-to-r from-cyan-300 to-emerald-300 px-4 py-2 text-sm font-semibold text-slate-900 hover:from-cyan-200 hover:to-emerald-200 disabled:opacity-50"
                         >
                             Send
                         </button>
@@ -469,3 +492,4 @@ export default function ProjectChatPage() {
         </ProjectDrawerLayout>
     )
 }
+

@@ -3,9 +3,11 @@
 @tailwind utilities;
 
 :root {
-    --app-bg: #020617;
-    --app-bg-soft: #0b1222;
+    --app-bg: #06070f;
+    --app-bg-soft: #101427;
     --app-fg: #e2e8f0;
+    --app-accent: #67e8f9;
+    --app-accent-2: #86efac;
 }
 
 html,
@@ -16,8 +18,45 @@ body {
 body {
     color: var(--app-fg);
     background:
-        radial-gradient(1000px 500px at 0% 0%, rgba(34, 211, 238, 0.16), transparent 60%),
-        radial-gradient(900px 500px at 100% 0%, rgba(16, 185, 129, 0.12), transparent 55%),
+        radial-gradient(1100px 600px at 0% -2%, rgba(103, 232, 249, 0.2), transparent 60%),
+        radial-gradient(900px 500px at 100% -4%, rgba(134, 239, 172, 0.15), transparent 58%),
         linear-gradient(180deg, var(--app-bg-soft) 0%, var(--app-bg) 55%);
     font-family: "Space Grotesk", "Sora", "Avenir Next", "Segoe UI", sans-serif;
+    letter-spacing: 0.005em;
+}
+
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+}
+
+*::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.3);
+    border-radius: 999px;
+}
+
+@keyframes page-rise {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.page-rise {
+    animation: page-rise 320ms ease-out both;
+}
+
+.glass-card {
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: linear-gradient(145deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.03));
+    backdrop-filter: blur(16px);
 }

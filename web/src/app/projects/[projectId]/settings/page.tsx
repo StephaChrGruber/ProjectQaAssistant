@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import { backendJson } from "@/lib/backend"
 import { ProjectDrawerLayout, type DrawerChat, type DrawerUser } from "@/components/ProjectDrawerLayout"
+import { buildChatPath, saveLastChat } from "@/lib/last-chat"
 
 type ProjectDoc = {
     _id: string
@@ -116,15 +117,32 @@ export default function ProjectSettingsPage() {
     }, [loadChats])
 
     const onSelectChat = useCallback(
-        (chatId: string) => {
-            router.push(`/projects/${projectId}/chat?chat=${encodeURIComponent(chatId)}`)
+        (chat: DrawerChat) => {
+            const targetBranch = chat.branch || branch
+            const path = buildChatPath(projectId, targetBranch, chat.chat_id)
+            saveLastChat({
+                projectId,
+                branch: targetBranch,
+                chatId: chat.chat_id,
+                path,
+                ts: Date.now(),
+            })
+            router.push(path)
         },
-        [projectId, router]
+        [branch, projectId, router]
     )
 
     const onNewChat = useCallback(() => {
         const chatId = makeChatId(projectId, branch, userId)
-        router.push(`/projects/${projectId}/chat?chat=${encodeURIComponent(chatId)}`)
+        const path = buildChatPath(projectId, branch, chatId)
+        saveLastChat({
+            projectId,
+            branch,
+            chatId,
+            path,
+            ts: Date.now(),
+        })
+        router.push(path)
     }, [branch, projectId, router, userId])
 
     return (
@@ -140,84 +158,85 @@ export default function ProjectSettingsPage() {
             onNewChat={onNewChat}
             user={me}
             loadingChats={loadingChats}
+            activeSection="settings"
         >
-            <main className="min-h-0 flex-1 overflow-y-auto bg-slate-950 px-4 py-6">
-                <div className="mx-auto max-w-4xl space-y-5">
-                    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+            <main className="min-h-0 flex-1 overflow-y-auto px-4 py-6">
+                <div className="page-rise mx-auto max-w-4xl space-y-5">
+                    <div className="glass-card rounded-3xl p-5">
                         <div className="text-xs uppercase tracking-[0.22em] text-cyan-300/80">Workspace Settings</div>
-                        <h1 className="mt-2 text-2xl font-semibold text-slate-100">{projectLabel}</h1>
-                        <p className="mt-2 text-sm text-slate-400">
+                        <h1 className="mt-2 text-2xl font-semibold text-white">{projectLabel}</h1>
+                        <p className="mt-2 text-sm text-slate-300">
                             Configure where the assistant reads from and which model stack it should use.
                         </p>
                     </div>
 
                     {error && (
-                        <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">
+                        <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">
                             {error}
                         </div>
                     )}
 
-                    <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-                        <h2 className="text-lg font-medium text-slate-100">Project</h2>
-                        <div className="mt-3 grid gap-3 text-sm text-slate-300 md:grid-cols-2">
-                            <div className="rounded-lg border border-slate-800 bg-slate-950 p-3">
+                    <section className="glass-card rounded-2xl p-5">
+                        <h2 className="text-lg font-medium text-white">Project</h2>
+                        <div className="mt-3 grid gap-3 text-sm text-slate-200 md:grid-cols-2">
+                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
                                 <div className="text-xs uppercase tracking-[0.15em] text-slate-500">Project ID</div>
                                 <div className="mt-1 break-all">{projectId}</div>
                             </div>
-                            <div className="rounded-lg border border-slate-800 bg-slate-950 p-3">
+                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
                                 <div className="text-xs uppercase tracking-[0.15em] text-slate-500">Default Branch</div>
                                 <div className="mt-1">{project?.default_branch || "main"}</div>
                             </div>
-                            <div className="rounded-lg border border-slate-800 bg-slate-950 p-3 md:col-span-2">
+                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 md:col-span-2">
                                 <div className="text-xs uppercase tracking-[0.15em] text-slate-500">Local Repo Path</div>
                                 <div className="mt-1 break-all">{project?.repo_path || "not configured"}</div>
                             </div>
-                            <div className="rounded-lg border border-slate-800 bg-slate-950 p-3 md:col-span-2">
+                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 md:col-span-2">
                                 <div className="text-xs uppercase tracking-[0.15em] text-slate-500">Description</div>
                                 <div className="mt-1">{project?.description || "No description"}</div>
                             </div>
                         </div>
                     </section>
 
-                    <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-                        <h2 className="text-lg font-medium text-slate-100">LLM Settings</h2>
-                        <div className="mt-3 grid gap-3 text-sm text-slate-300 md:grid-cols-2">
-                            <div className="rounded-lg border border-slate-800 bg-slate-950 p-3">
+                    <section className="glass-card rounded-2xl p-5">
+                        <h2 className="text-lg font-medium text-white">LLM Settings</h2>
+                        <div className="mt-3 grid gap-3 text-sm text-slate-200 md:grid-cols-2">
+                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
                                 <div className="text-xs uppercase tracking-[0.15em] text-slate-500">Provider</div>
                                 <div className="mt-1">{project?.llm_provider || "default"}</div>
                             </div>
-                            <div className="rounded-lg border border-slate-800 bg-slate-950 p-3">
+                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
                                 <div className="text-xs uppercase tracking-[0.15em] text-slate-500">Model</div>
                                 <div className="mt-1">{project?.llm_model || "backend default"}</div>
                             </div>
-                            <div className="rounded-lg border border-slate-800 bg-slate-950 p-3 md:col-span-2">
+                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 md:col-span-2">
                                 <div className="text-xs uppercase tracking-[0.15em] text-slate-500">Base URL</div>
                                 <div className="mt-1 break-all">{project?.llm_base_url || "backend default"}</div>
                             </div>
-                            <div className="rounded-lg border border-slate-800 bg-slate-950 p-3 md:col-span-2">
+                            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 md:col-span-2">
                                 <div className="text-xs uppercase tracking-[0.15em] text-slate-500">API Key</div>
                                 <div className="mt-1">{maskSecret(project?.llm_api_key)}</div>
                             </div>
                         </div>
                     </section>
 
-                    <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-                        <h2 className="text-lg font-medium text-slate-100">Sources</h2>
-                        <p className="mt-2 text-sm text-slate-400">
+                    <section className="glass-card rounded-2xl p-5">
+                        <h2 className="text-lg font-medium text-white">Sources</h2>
+                        <p className="mt-2 text-sm text-slate-300">
                             Git, Confluence, and Jira connectors are managed from the admin console and ingested into this
                             project index.
                         </p>
                         <div className="mt-4 flex flex-wrap gap-2">
                             <Link
                                 href={`/projects/${projectId}/chat`}
-                                className="rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-cyan-300"
+                                className="rounded-xl bg-gradient-to-r from-cyan-300 to-emerald-300 px-4 py-2 text-sm font-semibold text-slate-900 hover:from-cyan-200 hover:to-emerald-200"
                             >
                                 Open Chat
                             </Link>
                             {me?.isGlobalAdmin && (
                                 <Link
                                     href="/admin"
-                                    className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-200 hover:bg-slate-950"
+                                    className="rounded-xl border border-white/15 bg-white/[0.03] px-4 py-2 text-sm text-slate-200 hover:bg-white/[0.08]"
                                 >
                                     Open Admin Workflow
                                 </Link>
@@ -229,4 +248,3 @@ export default function ProjectSettingsPage() {
         </ProjectDrawerLayout>
     )
 }
-
