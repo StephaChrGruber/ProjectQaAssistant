@@ -1,4 +1,4 @@
-from ..models import Connector
+from ..models.base_mongo_models import Connector
 
 async def load_connectors(project_id: str) -> list[Connector]:
     return await Connector.find(

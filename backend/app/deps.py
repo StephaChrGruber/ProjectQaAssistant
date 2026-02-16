@@ -1,6 +1,6 @@
 from fastapi import Header, HTTPException
 from .settings import settings
-from .models import User, Membership
+from .models.base_mongo_models import User, Membership
 
 async def current_user(
         x_dev_user: str | None = Header(default=None),

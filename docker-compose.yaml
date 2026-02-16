@@ -6,6 +6,7 @@ services:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
+      - ./mongo-init:/docker-entrypoint-initdb.d
 
   ollama:
     image: ollama/ollama:latest
@@ -41,6 +42,9 @@ services:
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_MODEL=${LLM_MODEL}
       - ANONYMIZED_TELEMETRY=${ANONYMIZED_TELEMETRY}
+      - MONGO_URI=mongodb://mongo:27017
+      - MONGO_DB=project_qa
+      - ANONYMIZED_TELEMETRY=False
     volumes:
       - chroma_data:/data/chroma_projects
       # if you use seed connectors file:
@@ -50,6 +54,7 @@ services:
       - ollama
     ports:
       - "8080:8080"
+      - "1234:1234"
 
   web:
     build: ./web
@@ -64,6 +69,9 @@ services:
         condition: service_started
     ports:
       - "3000:3000"
+    volumes:
+      - ./web:/app
+      - /app/node_modules
 
 volumes:
   mongo_data:

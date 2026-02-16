@@ -4,7 +4,7 @@ from typing import Any
 from scim2_filter_parser import Parser
 
 from ..deps import scim_auth
-from ..models import User, Group, GroupMembership
+from ..models.base_mongo_models import User, Group, GroupMembership
 
 router = APIRouter(prefix="/scim/v2", dependencies=[Depends(scim_auth)])
 

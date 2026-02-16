@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     LLM_API_KEY: str | None = None
     LLM_MODEL: str | None = None
 
+    BACKEND_DEBUG_MODE: bool = True
+
     class Config:
         env_file = ".env"
 

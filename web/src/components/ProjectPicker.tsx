@@ -18,7 +18,7 @@ export default function ProjectPicker({ initialProjects }: { initialProjects: Pr
         setAnswer(null)
         setSources([])
         try {
-            const res = await fetch("/api/ask", {
+            const res = await fetch("/api/ask_agent", {
                 method: "POST",
                 body: JSON.stringify({ projectId, question, topK: 6 }),
                 headers: { "Content-Type": "application/json" },

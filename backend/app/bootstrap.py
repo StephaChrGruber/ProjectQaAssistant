@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 from typing import Any
 
-from .models import Project, Connector
+from .models.base_mongo_models import Project, Connector
 
 DEFAULT_PROJECT_KEY = "POC"
 DEFAULT_PROJECT_NAME = "Local POC Project"

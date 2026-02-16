@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from ..deps import require_project_role, current_user
-from ..models import Project, AuditLog
+from ..models.base_mongo_models import Project, AuditLog
 from ..settings import settings
 from ..rag.rag import answer
 

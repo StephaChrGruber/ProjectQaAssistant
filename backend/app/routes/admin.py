@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from ..deps import current_user
-from ..models import Project, Membership
+from ..models.base_mongo_models import Project, Membership
 
 router = APIRouter()
 

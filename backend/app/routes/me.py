@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 from ..deps import current_user
-from ..models import Project, Membership
+from ..models.base_mongo_models import Project, Membership
 
 router = APIRouter()
 
