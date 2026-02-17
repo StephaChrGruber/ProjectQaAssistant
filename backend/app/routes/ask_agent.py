@@ -8,10 +8,38 @@ from ..db import get_db
 from datetime import datetime
 from bson import ObjectId
 from ..rag.agent2 import LLMUpstreamError, answer_with_agent
+from ..rag.tool_runtime import ToolContext, build_default_tool_runtime
 from ..services.llm_profiles import resolve_project_llm_config
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+_SOURCE_DISCOVERY_RUNTIME = build_default_tool_runtime()
+_COMMON_QUESTION_WORDS = {
+    "what",
+    "where",
+    "when",
+    "which",
+    "with",
+    "from",
+    "that",
+    "this",
+    "please",
+    "show",
+    "find",
+    "does",
+    "about",
+    "into",
+    "project",
+    "code",
+    "repo",
+    "file",
+    "files",
+    "chat",
+    "answer",
+    "help",
+    "there",
+    "their",
+}
 
 class AskReq(BaseModel):
     project_id: str
@@ -545,6 +573,71 @@ def _collect_answer_sources(
     return out[:24]
 
 
+def _fallback_repo_pattern(question: str) -> str | None:
+    tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_./-]{2,}", _as_text(question).lower())
+    ranked = [
+        t
+        for t in tokens
+        if t not in _COMMON_QUESTION_WORDS and not t.startswith("http") and len(t) >= 3
+    ]
+    if not ranked:
+        return None
+    ranked.sort(key=lambda t: ("/" in t or "_" in t or "-" in t, len(t)), reverse=True)
+    return ranked[0]
+
+
+async def _discover_sources_when_missing(
+    *,
+    project_id: str,
+    branch: str,
+    user: str,
+    chat_id: str,
+    question: str,
+    tool_policy: dict[str, Any],
+    local_repo_context: str | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    events: list[dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    ctx = ToolContext(
+        project_id=project_id,
+        branch=branch,
+        user_id=user,
+        chat_id=chat_id,
+        policy=tool_policy or {},
+    )
+
+    calls: list[tuple[str, dict[str, Any]]] = [
+        ("keyword_search", {"query": question, "top_k": 8}),
+        ("repo_tree", {"path": "", "max_depth": 2, "include_dirs": False, "include_files": True, "max_entries": 120}),
+    ]
+    pattern = _fallback_repo_pattern(question)
+    if pattern:
+        calls.insert(1, ("repo_grep", {"pattern": pattern, "regex": False, "case_sensitive": False, "max_results": 18, "context_lines": 0}))
+
+    for name, args in calls:
+        try:
+            envelope = await _SOURCE_DISCOVERY_RUNTIME.execute(name, args, ctx)
+            ev = envelope.model_dump()
+        except Exception:
+            logger.exception(
+                "source_discovery tool failed project=%s branch=%s tool=%s",
+                project_id,
+                branch,
+                name,
+            )
+            continue
+        events.append(ev)
+        _extract_sources_from_tool_event(ev, out, seen)
+        if len(out) >= 12:
+            break
+
+    if len(out) < 24:
+        _extract_sources_from_local_repo_context(local_repo_context, out, seen)
+    return events, out[:24]
+
+
 @router.post("/ask_agent")
 async def ask_agent(req: AskReq):
     chat_id = req.chat_id or f"{req.project_id}::{req.branch}::{req.user}"
@@ -627,6 +720,20 @@ async def ask_agent(req: AskReq):
         answer = str((agent_out or {}).get("answer") or "")
         tool_events = (agent_out or {}).get("tool_events") or []
         answer_sources = _collect_answer_sources(tool_events, local_repo_context=req.local_repo_context)
+        if not answer_sources:
+            fallback_events, fallback_sources = await _discover_sources_when_missing(
+                project_id=req.project_id,
+                branch=req.branch,
+                user=req.user,
+                chat_id=chat_id,
+                question=req.question,
+                tool_policy=effective_tool_policy,
+                local_repo_context=req.local_repo_context,
+            )
+            if fallback_events:
+                tool_events = [*tool_events, *fallback_events]
+            if fallback_sources:
+                answer_sources = fallback_sources
     except LLMUpstreamError as err:
         detail = str(err)
         detail_lc = detail.lower()
