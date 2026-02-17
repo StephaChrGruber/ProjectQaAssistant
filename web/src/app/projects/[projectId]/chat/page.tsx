@@ -1,12 +1,13 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useParams, useRouter, useSearchParams } from "next/navigation"
 import {
     Alert,
     Box,
     Button,
     CircularProgress,
+    Collapse,
     Dialog,
     DialogContent,
     DialogTitle,
@@ -24,6 +25,10 @@ import ClearAllRounded from "@mui/icons-material/ClearAllRounded"
 import DescriptionRounded from "@mui/icons-material/DescriptionRounded"
 import AutoFixHighRounded from "@mui/icons-material/AutoFixHighRounded"
 import CloseRounded from "@mui/icons-material/CloseRounded"
+import FolderRounded from "@mui/icons-material/FolderRounded"
+import DescriptionOutlined from "@mui/icons-material/DescriptionOutlined"
+import ExpandMoreRounded from "@mui/icons-material/ExpandMoreRounded"
+import ChevronRightRounded from "@mui/icons-material/ChevronRightRounded"
 import { backendJson } from "@/lib/backend"
 import { ProjectDrawerLayout, type DrawerChat, type DrawerUser } from "@/components/ProjectDrawerLayout"
 import { buildChatPath, saveLastChat } from "@/lib/last-chat"
@@ -85,20 +90,110 @@ type GenerateDocsResponse = {
     files?: Array<{ path: string; content: string }>
 }
 
+type DocumentationFileEntry = {
+    path: string
+    size?: number | null
+    updated_at?: string | null
+}
+
 type DocumentationListResponse = {
     branch?: string
     current_branch?: string
-    files?: Array<{
-        path: string
-        size?: number | null
-        updated_at?: string | null
-    }>
+    files?: DocumentationFileEntry[]
 }
 
 type DocumentationFileResponse = {
     branch?: string
     path: string
     content: string
+}
+
+type DocTreeNode = {
+    kind: "folder" | "file"
+    name: string
+    path: string
+    file?: DocumentationFileEntry
+    children?: DocTreeNode[]
+}
+
+function relDocPath(path: string): string {
+    return path.replace(/^documentation\/?/, "")
+}
+
+function docAncestorFolders(path: string): string[] {
+    const rel = relDocPath(path)
+    const parts = rel.split("/").filter(Boolean)
+    const out: string[] = []
+    let current = "documentation"
+    for (let i = 0; i < parts.length - 1; i += 1) {
+        current = `${current}/${parts[i]}`
+        out.push(current)
+    }
+    return out
+}
+
+function buildDocTree(files: DocumentationFileEntry[]): DocTreeNode[] {
+    type MutableNode = {
+        kind: "folder" | "file"
+        name: string
+        path: string
+        file?: DocumentationFileEntry
+        children: Map<string, MutableNode>
+    }
+    const root: MutableNode = { kind: "folder", name: "documentation", path: "documentation", children: new Map() }
+
+    for (const file of files) {
+        const rel = relDocPath(file.path)
+        if (!rel.trim()) continue
+        const parts = rel.split("/").filter(Boolean)
+        if (!parts.length) continue
+
+        let cur = root
+        let builtPath = "documentation"
+        for (let i = 0; i < parts.length; i += 1) {
+            const part = parts[i]
+            const isLast = i === parts.length - 1
+            builtPath = `${builtPath}/${part}`
+            const key = `${isLast ? "file" : "folder"}:${part}`
+            if (!cur.children.has(key)) {
+                cur.children.set(key, {
+                    kind: isLast ? "file" : "folder",
+                    name: part,
+                    path: builtPath,
+                    file: isLast ? file : undefined,
+                    children: new Map(),
+                })
+            }
+            const next = cur.children.get(key)!
+            if (isLast) {
+                next.file = file
+            }
+            cur = next
+        }
+    }
+
+    const toReadonly = (node: MutableNode): DocTreeNode => {
+        const children = Array.from(node.children.values())
+            .map(toReadonly)
+            .sort((a, b) => {
+                if (a.kind !== b.kind) return a.kind === "folder" ? -1 : 1
+                return a.name.localeCompare(b.name)
+            })
+        return {
+            kind: node.kind,
+            name: node.name,
+            path: node.path,
+            file: node.file,
+            children,
+        }
+    }
+
+    return Array.from(root.children.values())
+        .map(toReadonly)
+        .sort((a, b) => {
+            if (a.kind !== b.kind) return a.kind === "folder" ? -1 : 1
+            return a.name.localeCompare(b.name)
+        })
 }
 
 function splitChartBlocks(text: string): Array<{ type: "text" | "chart"; value: string }> {
@@ -172,7 +267,8 @@ export default function ProjectChatPage() {
     const [docsGenerating, setDocsGenerating] = useState(false)
     const [docsError, setDocsError] = useState<string | null>(null)
     const [docsNotice, setDocsNotice] = useState<string | null>(null)
-    const [docsFiles, setDocsFiles] = useState<Array<{ path: string; size?: number | null; updated_at?: string | null }>>([])
+    const [docsFiles, setDocsFiles] = useState<DocumentationFileEntry[]>([])
+    const [expandedDocFolders, setExpandedDocFolders] = useState<string[]>([])
     const [selectedDocPath, setSelectedDocPath] = useState<string | null>(null)
     const [selectedDocContent, setSelectedDocContent] = useState("")
     const [docContentLoading, setDocContentLoading] = useState(false)
@@ -184,6 +280,7 @@ export default function ProjectChatPage() {
         () => isBrowserLocalRepoPath((project?.repo_path || "").trim()),
         [project?.repo_path]
     )
+    const docsTree = useMemo(() => buildDocTree(docsFiles), [docsFiles])
 
     useEffect(() => {
         selectedChatIdRef.current = selectedChatId
@@ -555,6 +652,14 @@ export default function ProjectChatPage() {
         async (path: string) => {
             setDocContentLoading(true)
             setDocsError(null)
+            const ancestors = docAncestorFolders(path)
+            if (ancestors.length) {
+                setExpandedDocFolders((prev) => {
+                    const next = new Set(prev)
+                    for (const folder of ancestors) next.add(folder)
+                    return Array.from(next)
+                })
+            }
             try {
                 if (browserLocalRepoMode) {
                     const content = readLocalDocumentationFile(projectId, path)
@@ -579,6 +684,72 @@ export default function ProjectChatPage() {
         [branch, browserLocalRepoMode, projectId]
     )
 
+    const toggleDocFolder = useCallback((folderPath: string) => {
+        setExpandedDocFolders((prev) => {
+            const next = new Set(prev)
+            if (next.has(folderPath)) {
+                next.delete(folderPath)
+            } else {
+                next.add(folderPath)
+            }
+            return Array.from(next)
+        })
+    }, [])
+
+    const renderDocTreeNodes = useCallback(
+        (nodes: DocTreeNode[], depth = 0) =>
+            nodes.map((node) => {
+                if (node.kind === "folder") {
+                    const isOpen = expandedDocFolders.includes(node.path)
+                    return (
+                        <Fragment key={node.path}>
+                            <ListItemButton
+                                onClick={() => toggleDocFolder(node.path)}
+                                sx={{ pl: 1 + depth * 1.6 }}
+                            >
+                                {isOpen ? (
+                                    <ExpandMoreRounded fontSize="small" color="action" />
+                                ) : (
+                                    <ChevronRightRounded fontSize="small" color="action" />
+                                )}
+                                <FolderRounded fontSize="small" color="action" sx={{ ml: 0.35, mr: 0.8 }} />
+                                <ListItemText
+                                    primary={node.name}
+                                    primaryTypographyProps={{ noWrap: true, fontWeight: 600 }}
+                                />
+                            </ListItemButton>
+                            <Collapse in={isOpen} timeout="auto" unmountOnExit>
+                                <List dense disablePadding>
+                                    {renderDocTreeNodes(node.children || [], depth + 1)}
+                                </List>
+                            </Collapse>
+                        </Fragment>
+                    )
+                }
+
+                const file = node.file
+                if (!file) return null
+                const selected = selectedDocPath === file.path
+                return (
+                    <ListItemButton
+                        key={file.path}
+                        selected={selected}
+                        onClick={() => void loadDocumentationFile(file.path)}
+                        sx={{ pl: 3.4 + depth * 1.6 }}
+                    >
+                        <DescriptionOutlined fontSize="small" color={selected ? "primary" : "action"} sx={{ mr: 0.9 }} />
+                        <ListItemText
+                            primary={node.name}
+                            secondary={file.size ? `${Math.max(1, Math.round(file.size / 1024))} KB` : undefined}
+                            primaryTypographyProps={{ noWrap: true }}
+                            secondaryTypographyProps={{ noWrap: true }}
+                        />
+                    </ListItemButton>
+                )
+            }),
+        [expandedDocFolders, loadDocumentationFile, selectedDocPath, toggleDocFolder]
+    )
+
     const loadDocumentationList = useCallback(
         async (preferredPath?: string | null) => {
             setDocsLoading(true)
@@ -596,6 +767,19 @@ export default function ProjectChatPage() {
                 setDocsFiles(files)
                 const target = (preferredPath && files.find((f) => f.path === preferredPath)?.path) || files[0]?.path || null
                 setSelectedDocPath(target)
+                setExpandedDocFolders((prev) => {
+                    const next = new Set(prev)
+                    if (!next.size) {
+                        for (const f of files) {
+                            const ancestors = docAncestorFolders(f.path)
+                            if (ancestors[0]) next.add(ancestors[0])
+                        }
+                    }
+                    if (target) {
+                        for (const ancestor of docAncestorFolders(target)) next.add(ancestor)
+                    }
+                    return Array.from(next)
+                })
                 if (target) {
                     await loadDocumentationFile(target)
                 } else {
@@ -966,20 +1150,7 @@ export default function ProjectChatPage() {
                         <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "280px 1fr" }, minHeight: 500 }}>
                             <Box sx={{ borderRight: { md: "1px solid" }, borderColor: "divider", bgcolor: "background.default" }}>
                                 <List dense sx={{ maxHeight: 560, overflowY: "auto" }}>
-                                    {docsFiles.map((file) => (
-                                        <ListItemButton
-                                            key={file.path}
-                                            selected={selectedDocPath === file.path}
-                                            onClick={() => void loadDocumentationFile(file.path)}
-                                        >
-                                            <ListItemText
-                                                primary={file.path.replace(/^documentation\//, "")}
-                                                secondary={file.size ? `${Math.round(file.size / 1024)} KB` : undefined}
-                                                primaryTypographyProps={{ noWrap: true }}
-                                                secondaryTypographyProps={{ noWrap: true }}
-                                            />
-                                        </ListItemButton>
-                                    ))}
+                                    {renderDocTreeNodes(docsTree)}
                                     {!docsFiles.length && !docsLoading && (
                                         <ListItemButton disabled>
                                             <ListItemText primary="No documentation files found." />
