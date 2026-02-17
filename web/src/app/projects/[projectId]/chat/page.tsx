@@ -230,6 +230,8 @@ type Token = {
     text: string
 }
 
+const SOURCE_PREVIEW_LIMIT = 5
+
 type LangRule = {
     kind: Exclude<TokenKind, "plain">
     re: RegExp
@@ -691,6 +693,7 @@ export default function ProjectChatPage() {
     const [llmProfiles, setLlmProfiles] = useState<LlmProfileDoc[]>([])
     const [selectedLlmProfileId, setSelectedLlmProfileId] = useState<string>("")
     const [savingLlmProfile, setSavingLlmProfile] = useState(false)
+    const [expandedSourceMessages, setExpandedSourceMessages] = useState<Record<string, boolean>>({})
 
     const scrollRef = useRef<HTMLDivElement | null>(null)
     const projectLabel = useMemo(() => project?.name || project?.key || projectId, [project, projectId])
@@ -722,6 +725,10 @@ export default function ProjectChatPage() {
         const el = scrollRef.current
         if (!el) return
         el.scrollTop = el.scrollHeight
+    }, [])
+
+    const toggleSourceList = useCallback((messageKey: string) => {
+        setExpandedSourceMessages((prev) => ({ ...prev, [messageKey]: !prev[messageKey] }))
     }, [])
 
     const ensureChat = useCallback(
@@ -1597,8 +1604,13 @@ export default function ProjectChatPage() {
                         {messages.map((m, idx) => {
                             const isUser = m.role === "user"
                             const sources = !isUser && m.role === "assistant" ? (m.meta?.sources || []) : []
+                            const messageKey = `${m.ts || "na"}-${idx}`
+                            const sourceExpanded = Boolean(expandedSourceMessages[messageKey])
+                            const hasManySources = sources.length > SOURCE_PREVIEW_LIMIT
+                            const previewSources = hasManySources ? sources.slice(0, SOURCE_PREVIEW_LIMIT) : sources
+                            const hiddenSources = hasManySources ? sources.slice(SOURCE_PREVIEW_LIMIT) : []
                             return (
-                                <Box key={`${m.ts || idx}-${idx}`} sx={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start" }}>
+                                <Box key={messageKey} sx={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start" }}>
                                     <Paper
                                         variant={isUser ? "elevation" : "outlined"}
                                         elevation={isUser ? 3 : 0}
@@ -1772,7 +1784,7 @@ export default function ProjectChatPage() {
                                                     </Typography>
                                                     <Stack spacing={0.2}>
                                                         {sources.length > 0 ? (
-                                                            sources.map((src, sidx) => {
+                                                            previewSources.map((src, sidx) => {
                                                                 const clickable = Boolean(
                                                                     (src.url && /^https?:\/\//i.test(src.url)) ||
                                                                     isDocumentationPath(src.path)
@@ -1803,6 +1815,60 @@ export default function ProjectChatPage() {
                                                             <Typography variant="caption" color="text.secondary">
                                                                 No explicit sources were captured for this answer.
                                                             </Typography>
+                                                        )}
+                                                        {hasManySources && (
+                                                            <>
+                                                                <Collapse in={sourceExpanded} timeout="auto" unmountOnExit>
+                                                                    <Stack spacing={0.2}>
+                                                                        {hiddenSources.map((src, sidx) => {
+                                                                            const clickable = Boolean(
+                                                                                (src.url && /^https?:\/\//i.test(src.url)) ||
+                                                                                isDocumentationPath(src.path)
+                                                                            )
+                                                                            return (
+                                                                                <Button
+                                                                                    key={`${sourceDisplayText(src)}-hidden-${sidx}`}
+                                                                                    variant="text"
+                                                                                    size="small"
+                                                                                    onClick={() => {
+                                                                                        void handleAnswerSourceClick(src)
+                                                                                    }}
+                                                                                    disabled={!clickable}
+                                                                                    sx={{
+                                                                                        justifyContent: "flex-start",
+                                                                                        textTransform: "none",
+                                                                                        px: 0,
+                                                                                        minHeight: "auto",
+                                                                                        fontSize: 12,
+                                                                                        lineHeight: 1.35,
+                                                                                    }}
+                                                                                >
+                                                                                    {sourceDisplayText(src)}
+                                                                                </Button>
+                                                                            )
+                                                                        })}
+                                                                    </Stack>
+                                                                </Collapse>
+                                                                <Button
+                                                                    variant="text"
+                                                                    size="small"
+                                                                    onClick={() => toggleSourceList(messageKey)}
+                                                                    endIcon={sourceExpanded ? <ExpandMoreRounded fontSize="small" /> : <ChevronRightRounded fontSize="small" />}
+                                                                    sx={{
+                                                                        justifyContent: "flex-start",
+                                                                        textTransform: "none",
+                                                                        px: 0,
+                                                                        minHeight: "auto",
+                                                                        mt: 0.2,
+                                                                        fontSize: 12,
+                                                                        lineHeight: 1.35,
+                                                                    }}
+                                                                >
+                                                                    {sourceExpanded
+                                                                        ? `Show less (${sources.length} total)`
+                                                                        : `Show ${hiddenSources.length} more (${sources.length} total)`}
+                                                                </Button>
+                                                            </>
                                                         )}
                                                     </Stack>
                                                 </Box>
