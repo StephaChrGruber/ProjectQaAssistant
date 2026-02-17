@@ -23,9 +23,14 @@ DOC_ROOT = "documentation"
 MAX_CONTEXT_FILES = 90
 MAX_TOTAL_CONTEXT_CHARS = 140_000
 MAX_FILE_CHARS = 8_000
-MAX_LLM_CONTEXT_CHARS = 120_000
-MAX_LLM_FILE_CONTEXT_CHARS = 50_000
+MAX_LLM_CONTEXT_CHARS = 42_000
+MAX_LLM_CONTEXT_CHARS_TIGHT = 22_000
+MAX_LLM_FILE_CONTEXT_CHARS = 24_000
 MAX_DOC_PLAN_FILES = 14
+MAX_PLAN_BLOCKS = 42
+MAX_PLAN_BLOCK_CHARS = 800
+MAX_FILE_BLOCKS = 18
+MAX_FILE_BLOCK_CHARS = 1400
 
 TEXT_EXTENSIONS = {
     ".py",
@@ -173,13 +178,14 @@ def _llm_chat(
     model: str,
     timeout_sec: int = 90,
     max_attempts: int = 10,
+    max_tokens: int = 2200,
 ) -> str:
     endpoint = urljoin(base_url, "chat/completions")
     payload = {
         "model": model,
         "messages": messages,
         "temperature": 0.1,
-        "max_tokens": 2200,
+        "max_tokens": max_tokens,
         "stream": False,
     }
     headers = {"Content-Type": "application/json"}
@@ -189,11 +195,12 @@ def _llm_chat(
     attempts = max(1, max_attempts)
     total_chars = sum(len((m.get("content") or "")) for m in messages)
     logger.info(
-        "docs.llm.request endpoint=%s model=%s attempts=%s timeout_sec=%s messages=%s chars=%s",
+        "docs.llm.request endpoint=%s model=%s attempts=%s timeout_sec=%s max_tokens=%s messages=%s chars=%s",
         endpoint,
         model,
         attempts,
         timeout_sec,
+        max_tokens,
         len(messages),
         total_chars,
     )
@@ -262,6 +269,114 @@ def _preview(text: str, max_chars: int = 400) -> str:
     if len(s) <= max_chars:
         return s
     return s[:max_chars] + "...(truncated)"
+
+
+def _keyword_terms(text: str) -> set[str]:
+    raw = re.findall(r"[a-zA-Z0-9_]{3,}", (text or "").lower())
+    stop = {
+        "the",
+        "and",
+        "for",
+        "with",
+        "that",
+        "this",
+        "from",
+        "file",
+        "docs",
+        "documentation",
+        "project",
+        "branch",
+    }
+    return {t for t in raw if t not in stop}
+
+
+def _parse_context_blocks(context: str) -> list[tuple[str, str]]:
+    lines = (context or "").splitlines()
+    out: list[tuple[str, str]] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if not line.startswith("FILE: "):
+            i += 1
+            continue
+        path = line[6:].strip()
+        i += 1
+        if i >= len(lines) or not lines[i].startswith("```"):
+            continue
+        i += 1
+        body_lines: list[str] = []
+        while i < len(lines):
+            if lines[i].strip() == "```":
+                i += 1
+                break
+            body_lines.append(lines[i])
+            i += 1
+        body = "\n".join(body_lines).strip()
+        if path and body:
+            out.append((path.replace("\\", "/"), body))
+    return out
+
+
+def _render_context_blocks(
+    blocks: list[tuple[str, str]],
+    *,
+    max_total_chars: int,
+    max_file_chars: int,
+) -> str:
+    chunks: list[str] = []
+    total = 0
+    for path, body in blocks:
+        snippet_body = body if len(body) <= max_file_chars else body[:max_file_chars] + "\n... (truncated)\n"
+        snippet = f"FILE: {path}\n```\n{snippet_body}\n```\n"
+        if total + len(snippet) > max_total_chars:
+            break
+        chunks.append(snippet)
+        total += len(snippet)
+    return "\n".join(chunks).strip()
+
+
+def _build_planning_context(context: str, max_chars: int) -> tuple[str, int]:
+    blocks = _parse_context_blocks(context)
+    if not blocks:
+        return _bounded_context(context, max_chars), 0
+
+    ranked = sorted(blocks, key=lambda item: _path_score(item[0]), reverse=True)
+    selected = ranked[:MAX_PLAN_BLOCKS]
+    rendered = _render_context_blocks(selected, max_total_chars=max_chars, max_file_chars=MAX_PLAN_BLOCK_CHARS)
+    return rendered, len(selected)
+
+
+def _build_targeted_file_context(
+    context: str,
+    *,
+    target_path: str,
+    purpose: str,
+    planned_paths: list[str],
+) -> tuple[str, int]:
+    blocks = _parse_context_blocks(context)
+    if not blocks:
+        return _bounded_context(context, MAX_LLM_FILE_CONTEXT_CHARS), 0
+
+    target_terms = _keyword_terms(target_path + " " + purpose + " " + " ".join(planned_paths))
+    target_segments = {p for p in target_path.lower().split("/") if p}
+
+    def score(item: tuple[str, str]) -> tuple[int, tuple[int, int]]:
+        path, body = item
+        low_path = path.lower()
+        path_terms = _keyword_terms(low_path)
+        body_terms = _keyword_terms(body[:1200])
+        path_segments = {p for p in low_path.split("/") if p}
+        overlap = len(target_terms.intersection(path_terms)) * 6
+        overlap += len(target_terms.intersection(body_terms)) * 2
+        overlap += len(target_segments.intersection(path_segments)) * 5
+        if Path(low_path).name in IMPORTANT_NAMES:
+            overlap += 15
+        return overlap, _path_score(path)
+
+    ranked = sorted(blocks, key=score, reverse=True)
+    selected = ranked[:MAX_FILE_BLOCKS]
+    rendered = _render_context_blocks(selected, max_total_chars=MAX_LLM_FILE_CONTEXT_CHARS, max_file_chars=MAX_FILE_BLOCK_CHARS)
+    return rendered, len(selected)
 
 
 def _extract_json_obj(text: str) -> dict[str, Any]:
@@ -630,13 +745,16 @@ def _generate_doc_plan_with_llm_from_context(
     llm_base: str,
     llm_key: str | None,
     llm_model: str,
+    max_context_chars: int = MAX_LLM_CONTEXT_CHARS,
 ) -> tuple[list[dict[str, str]], str]:
-    bounded_context = _bounded_context(context, MAX_LLM_CONTEXT_CHARS)
+    bounded_context, selected_blocks = _build_planning_context(context, max_context_chars)
     logger.info(
-        "docs.plan.start project=%s branch=%s context_chars=%s",
+        "docs.plan.start project=%s branch=%s context_chars=%s selected_blocks=%s budget=%s",
         project_name,
         branch,
         len(bounded_context),
+        selected_blocks,
+        max_context_chars,
     )
     system = (
         "You are a senior software architect and technical writer. "
@@ -670,6 +788,7 @@ def _generate_doc_plan_with_llm_from_context(
         model=llm_model,
         timeout_sec=150,
         max_attempts=2,
+        max_tokens=700,
     )
     summary = ""
     plan_raw: Any = None
@@ -716,13 +835,19 @@ def _generate_single_doc_with_llm_from_context(
     purpose: str,
     planned_paths: list[str],
 ) -> str:
-    bounded_context = _bounded_context(context, MAX_LLM_FILE_CONTEXT_CHARS)
+    bounded_context, selected_blocks = _build_targeted_file_context(
+        context,
+        target_path=target_path,
+        purpose=purpose,
+        planned_paths=planned_paths,
+    )
     logger.info(
-        "docs.file.start project=%s branch=%s target=%s context_chars=%s",
+        "docs.file.start project=%s branch=%s target=%s context_chars=%s selected_blocks=%s",
         project_name,
         branch,
         target_path,
         len(bounded_context),
+        selected_blocks,
     )
     plan_lines = "\n".join(f"- {p}" for p in planned_paths[:MAX_DOC_PLAN_FILES])
     effective_purpose = purpose.strip() or _default_doc_purpose(target_path)
@@ -754,6 +879,7 @@ def _generate_single_doc_with_llm_from_context(
         model=llm_model,
         timeout_sec=120,
         max_attempts=2,
+        max_tokens=1300,
     )
     content = _extract_markdown_from_llm_output(raw)
     if not content:
@@ -780,12 +906,35 @@ def _generate_docs_single_shot_with_llm_from_context(
     llm_key: str | None,
     llm_model: str,
 ) -> tuple[list[dict[str, str]], str]:
-    bounded_context = _bounded_context(context, MAX_LLM_CONTEXT_CHARS)
+    return _generate_docs_single_shot_with_llm_from_context_budget(
+        project_name=project_name,
+        branch=branch,
+        context=context,
+        llm_base=llm_base,
+        llm_key=llm_key,
+        llm_model=llm_model,
+        max_context_chars=MAX_LLM_CONTEXT_CHARS,
+    )
+
+
+def _generate_docs_single_shot_with_llm_from_context_budget(
+    *,
+    project_name: str,
+    branch: str,
+    context: str,
+    llm_base: str,
+    llm_key: str | None,
+    llm_model: str,
+    max_context_chars: int,
+) -> tuple[list[dict[str, str]], str]:
+    bounded_context, selected_blocks = _build_planning_context(context, max_context_chars)
     logger.info(
-        "docs.single_shot.start project=%s branch=%s context_chars=%s",
+        "docs.single_shot.start project=%s branch=%s context_chars=%s selected_blocks=%s budget=%s",
         project_name,
         branch,
         len(bounded_context),
+        selected_blocks,
+        max_context_chars,
     )
     system = (
         "You are a senior software architect and technical writer. "
@@ -820,6 +969,7 @@ def _generate_docs_single_shot_with_llm_from_context(
         model=llm_model,
         timeout_sec=180,
         max_attempts=2,
+        max_tokens=1800,
     )
     obj = _extract_json_obj(raw)
     files_raw = obj.get("files")
@@ -878,11 +1028,34 @@ def _generate_docs_with_llm_from_context(
             llm_base=llm_base,
             llm_key=llm_key,
             llm_model=llm_model,
+            max_context_chars=MAX_LLM_CONTEXT_CHARS,
         )
     except Exception as err:
         msg = f"planner failed: {err}"
         errors.append(msg)
         logger.warning("docs.generate.planner_failed project=%s branch=%s err=%s", project_name, branch, err)
+        err_lc = str(err).lower()
+        if "request too large" in err_lc or "tokens per min" in err_lc or "rate_limit_exceeded" in err_lc:
+            try:
+                logger.info(
+                    "docs.generate.planner_retry_tight project=%s branch=%s context_budget=%s",
+                    project_name,
+                    branch,
+                    MAX_LLM_CONTEXT_CHARS_TIGHT,
+                )
+                plan, summary = _generate_doc_plan_with_llm_from_context(
+                    project_name=project_name,
+                    branch=branch,
+                    context=context,
+                    llm_base=llm_base,
+                    llm_key=llm_key,
+                    llm_model=llm_model,
+                    max_context_chars=MAX_LLM_CONTEXT_CHARS_TIGHT,
+                )
+            except Exception as err2:
+                msg2 = f"planner tight retry failed: {err2}"
+                errors.append(msg2)
+                logger.warning("docs.generate.planner_retry_tight_failed project=%s branch=%s err=%s", project_name, branch, err2)
 
     files: list[dict[str, str]] = []
     if plan:
@@ -933,6 +1106,29 @@ def _generate_docs_with_llm_from_context(
         msg = f"single-shot failed: {err}"
         errors.append(msg)
         logger.warning("docs.generate.single_shot_failed project=%s branch=%s err=%s", project_name, branch, err)
+        err_lc = str(err).lower()
+        if "request too large" in err_lc or "tokens per min" in err_lc or "rate_limit_exceeded" in err_lc:
+            try:
+                logger.info(
+                    "docs.generate.single_shot_retry_tight project=%s branch=%s context_budget=%s",
+                    project_name,
+                    branch,
+                    MAX_LLM_CONTEXT_CHARS_TIGHT,
+                )
+                single_files, single_summary = _generate_docs_single_shot_with_llm_from_context_budget(
+                    project_name=project_name,
+                    branch=branch,
+                    context=context,
+                    llm_base=llm_base,
+                    llm_key=llm_key,
+                    llm_model=llm_model,
+                    max_context_chars=MAX_LLM_CONTEXT_CHARS_TIGHT,
+                )
+                return single_files, single_summary or summary
+            except Exception as err2:
+                msg2 = f"single-shot tight retry failed: {err2}"
+                errors.append(msg2)
+                logger.warning("docs.generate.single_shot_retry_tight_failed project=%s branch=%s err=%s", project_name, branch, err2)
 
     combined = "; ".join(errors) if errors else "unknown generation error"
     raise DocumentationError(combined)
