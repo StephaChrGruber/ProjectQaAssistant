@@ -36,6 +36,8 @@ from ..models.tools import (
     OpenFileRequest,
     OpenFileResponse,
     ProjectMetadataResponse,
+    ReadChatMessagesRequest,
+    ReadChatMessagesResponse,
     ReadDocsFile,
     ReadDocsFolderRequest,
     ReadDocsFolderResponse,
@@ -954,3 +956,45 @@ async def read_docs_folder(req: ReadDocsFolderRequest) -> ReadDocsFolderResponse
                 files.append(ReadDocsFile(path=rel, content=text))
 
     return ReadDocsFolderResponse(branch=branch, files=files)
+
+
+async def read_chat_messages(req: ReadChatMessagesRequest) -> ReadChatMessagesResponse:
+    req.limit = max(1, min(req.limit, 300))
+    req.max_chars_per_message = max(100, min(req.max_chars_per_message, 20_000))
+
+    db = get_db()
+    q: dict[str, Any] = {"chat_id": req.chat_id, "project_id": req.project_id}
+    if req.branch:
+        q["branch"] = req.branch
+    if req.user:
+        q["user"] = req.user
+
+    chat = await db["chats"].find_one(q, {"chat_id": 1, "messages": 1})
+    if not chat:
+        return ReadChatMessagesResponse(chat_id=req.chat_id, found=False)
+
+    include_roles = {str(r).strip().lower() for r in req.include_roles if str(r).strip()}
+    raw_messages = chat.get("messages") or []
+    filtered: list[dict[str, Any]] = []
+    for item in raw_messages:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip().lower()
+        if include_roles and role not in include_roles:
+            continue
+        content = str(item.get("content") or "")
+        if len(content) > req.max_chars_per_message:
+            content = content[: req.max_chars_per_message] + "\n... (truncated)\n"
+        ts_raw = item.get("ts")
+        ts = str(ts_raw) if ts_raw is not None else None
+        filtered.append({"role": role or "unknown", "content": content, "ts": ts})
+
+    total_messages = len(filtered)
+    selected = filtered[-req.limit :]
+    return ReadChatMessagesResponse(
+        chat_id=req.chat_id,
+        found=True,
+        total_messages=total_messages,
+        returned_messages=len(selected),
+        messages=selected,
+    )

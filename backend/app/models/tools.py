@@ -260,6 +260,30 @@ class ReadDocsFolderResponse(BaseModel):
     files: List[ReadDocsFile]
 
 
+class ReadChatMessagesRequest(BaseModel):
+    project_id: str
+    chat_id: str
+    branch: Optional[str] = None
+    user: Optional[str] = None
+    limit: int = 40
+    include_roles: List[str] = Field(default_factory=list)
+    max_chars_per_message: int = 6000
+
+
+class ChatMessageItem(BaseModel):
+    role: str
+    content: str
+    ts: Optional[str] = None
+
+
+class ReadChatMessagesResponse(BaseModel):
+    chat_id: str
+    found: bool
+    total_messages: int = 0
+    returned_messages: int = 0
+    messages: List[ChatMessageItem] = Field(default_factory=list)
+
+
 class ToolError(BaseModel):
     code: str
     message: str

@@ -185,6 +185,7 @@ async def ask_agent(req: AskReq):
             llm_base_url=req.llm_base_url or defaults["llm_base_url"],
             llm_api_key=req.llm_api_key or defaults["llm_api_key"],
             llm_model=req.llm_model or defaults["llm_model"],
+            chat_id=chat_id,
             tool_policy=(defaults.get("tool_policy") or {}),
             max_tool_calls=int(defaults.get("max_tool_calls") or 12),
             include_tool_events=True,

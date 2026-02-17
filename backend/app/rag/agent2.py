@@ -201,6 +201,7 @@ class Agent2:
         llm_base_url: str | None = None,
         llm_api_key: str | None = None,
         llm_model: str | None = None,
+        chat_id: str | None = None,
         tool_policy: dict[str, Any] | None = None,
         runtime: ToolRuntime | None = None,
     ):
@@ -213,6 +214,7 @@ class Agent2:
         self.llm_base_url = llm_base_url
         self.llm_api_key = llm_api_key
         self.llm_model = llm_model
+        self.chat_id = chat_id
         self.tool_policy = tool_policy or {}
         self.runtime = runtime or _RUNTIME
 
@@ -254,7 +256,13 @@ class Agent2:
 
             tool_name = tool_call["tool"]
             model_args = dict(tool_call["args"] or {})
-            ctx = ToolContext(project_id=self.project_id, branch=self.branch, user_id=self.user_id, policy=self.tool_policy)
+            ctx = ToolContext(
+                project_id=self.project_id,
+                branch=self.branch,
+                user_id=self.user_id,
+                chat_id=self.chat_id,
+                policy=self.tool_policy,
+            )
 
             logger.info("tool.execute.request tool=%s args=%s", tool_name, model_args)
             envelope = await self.runtime.execute(tool_name, model_args, ctx)
@@ -294,6 +302,7 @@ async def answer_with_agent(
     llm_base_url: str | None = None,
     llm_api_key: str | None = None,
     llm_model: str | None = None,
+    chat_id: str | None = None,
     tool_policy: dict[str, Any] | None = None,
     max_tool_calls: int = 12,
     include_tool_events: bool = False,
@@ -308,6 +317,7 @@ async def answer_with_agent(
         llm_base_url=llm_base_url,
         llm_api_key=llm_api_key,
         llm_model=llm_model,
+        chat_id=chat_id,
         tool_policy=tool_policy,
     )
     out = await agent.run(question)

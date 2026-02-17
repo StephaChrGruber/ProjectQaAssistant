@@ -23,6 +23,7 @@ from ..models.tools import (
     GitStatusRequest,
     KeywordSearchRequest,
     OpenFileRequest,
+    ReadChatMessagesRequest,
     ReadDocsFolderRequest,
     RepoGrepRequest,
     RepoTreeRequest,
@@ -43,6 +44,7 @@ from .tool_exec import (
     git_status,
     keyword_search,
     open_file,
+    read_chat_messages,
     read_docs_folder,
     repo_grep,
     repo_tree,
@@ -58,6 +60,7 @@ class ToolContext:
     project_id: str
     branch: str
     user_id: str
+    chat_id: str | None = None
     policy: dict[str, Any] | None = None
 
 
@@ -214,6 +217,9 @@ class ToolRuntime:
 
         if "branch" in names and "branch" not in out:
             out["branch"] = ctx.branch
+
+        if "chat_id" in names and "chat_id" not in out and ctx.chat_id:
+            out["chat_id"] = ctx.chat_id
 
         if "user_id" in names and "user_id" not in out:
             out["user_id"] = ctx.user_id
@@ -612,6 +618,18 @@ def build_default_tool_runtime() -> ToolRuntime:
             rate_limit_per_min=120,
             max_retries=1,
             cache_ttl_sec=20,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="read_chat_messages",
+            description="Reads recent messages from the current chat (for conversational context).",
+            model=ReadChatMessagesRequest,
+            handler=read_chat_messages,
+            timeout_sec=20,
+            rate_limit_per_min=120,
+            max_retries=1,
+            cache_ttl_sec=5,
         )
     )
     rt.register(
