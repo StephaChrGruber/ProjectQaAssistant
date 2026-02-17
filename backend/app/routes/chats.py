@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Header
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from ..db import get_db
 from ..models.chat import ChatDoc, AppendReq, ChatResponse, ChatMessage
@@ -22,6 +22,28 @@ class ChatToolPolicyReq(BaseModel):
 
 class ChatLlmProfileReq(BaseModel):
     llm_profile_id: str | None = None
+
+
+class ChatToolApprovalReq(BaseModel):
+    tool_name: str
+    ttl_minutes: int = 30
+
+
+def _norm_tool_name(v: str) -> str:
+    return str(v or "").strip()
+
+
+async def _get_chat_owner_or_403(chat_id: str, x_dev_user: str | None) -> dict[str, Any]:
+    chat = await get_db()[COLL].find_one({"chat_id": chat_id}, {"_id": 0, "chat_id": 1, "user": 1})
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    owner = str(chat.get("user") or "").strip().lower()
+    caller = str(x_dev_user or "").strip().lower()
+    if not caller:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header")
+    if caller and owner and caller != owner:
+        raise HTTPException(status_code=403, detail="Not allowed for this chat")
+    return chat
 
 
 def _clean_policy(req: ChatToolPolicyReq) -> dict[str, Any]:
@@ -214,3 +236,70 @@ async def put_chat_llm_profile(chat_id: str, req: ChatLlmProfileReq):
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Chat not found")
     return {"chat_id": chat_id, "llm_profile_id": profile_id}
+
+
+@router.get("/{chat_id}/tool-approvals")
+async def list_chat_tool_approvals(chat_id: str, x_dev_user: str | None = Header(default=None)):
+    await _get_chat_owner_or_403(chat_id, x_dev_user)
+    now = datetime.utcnow()
+    rows = await get_db()["chat_tool_approvals"].find(
+        {"chatId": chat_id, "expiresAt": {"$gt": now}},
+        {"_id": 0},
+    ).sort("createdAt", -1).limit(200).to_list(length=200)
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        for key in ("createdAt", "expiresAt"):
+            if isinstance(item.get(key), datetime):
+                item[key] = item[key].isoformat() + "Z"
+        items.append(item)
+    return {"chat_id": chat_id, "items": items}
+
+
+@router.post("/{chat_id}/tool-approvals")
+async def approve_chat_tool(chat_id: str, req: ChatToolApprovalReq, x_dev_user: str | None = Header(default=None)):
+    chat = await _get_chat_owner_or_403(chat_id, x_dev_user)
+    name = _norm_tool_name(req.tool_name)
+    if not name:
+        raise HTTPException(status_code=400, detail="tool_name is required")
+
+    ttl = max(1, min(int(req.ttl_minutes or 30), 24 * 60))
+    now = datetime.utcnow()
+    exp = now if ttl <= 0 else now.replace(microsecond=0)
+    exp = exp + timedelta(minutes=ttl)
+
+    await get_db()["chat_tool_approvals"].update_one(
+        {
+            "chatId": chat_id,
+            "toolName": name,
+            "userId": str(chat.get("user") or ""),
+        },
+        {
+            "$set": {
+                "approvedBy": str(x_dev_user or chat.get("user") or ""),
+                "createdAt": now,
+                "expiresAt": exp,
+            }
+        },
+        upsert=True,
+    )
+    return {
+        "chat_id": chat_id,
+        "tool_name": name,
+        "user_id": str(chat.get("user") or ""),
+        "approved_by": str(x_dev_user or chat.get("user") or ""),
+        "createdAt": now.isoformat() + "Z",
+        "expiresAt": exp.isoformat() + "Z",
+    }
+
+
+@router.delete("/{chat_id}/tool-approvals/{tool_name}")
+async def revoke_chat_tool_approval(chat_id: str, tool_name: str, x_dev_user: str | None = Header(default=None)):
+    chat = await _get_chat_owner_or_403(chat_id, x_dev_user)
+    name = _norm_tool_name(tool_name)
+    if not name:
+        raise HTTPException(status_code=400, detail="tool_name is required")
+    await get_db()["chat_tool_approvals"].delete_many(
+        {"chatId": chat_id, "toolName": name, "userId": str(chat.get("user") or "")}
+    )
+    return {"chat_id": chat_id, "tool_name": name, "revoked": True}

@@ -20,6 +20,7 @@ from .routes.chats import router as chats_router
 from .ollama_wait import wait_for_ollama
 from fastapi import FastAPI
 from .routes.tools import router as tools_router
+from .routes.custom_tools import router as custom_tools_router
 
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -90,3 +91,4 @@ app.include_router(ask_stream_router)
 app.include_router(projects_router)
 app.include_router(tools_router)
 app.include_router(chats_router)
+app.include_router(custom_tools_router)

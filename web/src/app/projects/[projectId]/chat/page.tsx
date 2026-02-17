@@ -6,6 +6,7 @@ import {
     Alert,
     Box,
     Button,
+    Chip,
     CircularProgress,
     Collapse,
     Dialog,
@@ -54,6 +55,7 @@ import {
     restoreLocalRepoSession,
     writeLocalDocumentationFiles,
 } from "@/lib/local-repo-bridge"
+import { executeLocalToolJob, type LocalToolJobPayload } from "@/lib/local-custom-tool-runner"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import {
@@ -130,6 +132,10 @@ type AskAgentResponse = {
     memory_summary?: ChatMemorySummary
 }
 
+type LocalToolClaimResponse = {
+    job: LocalToolJobPayload | null
+}
+
 type LlmProfileDoc = {
     id: string
     name: string
@@ -168,6 +174,10 @@ type ToolCatalogItem = {
     max_retries?: number
     cache_ttl_sec?: number
     read_only?: boolean
+    require_approval?: boolean
+    origin?: string
+    runtime?: string
+    version?: string
 }
 
 type ToolCatalogResponse = {
@@ -183,6 +193,16 @@ type ChatToolPolicy = {
 type ChatToolPolicyResponse = {
     chat_id: string
     tool_policy?: ChatToolPolicy
+}
+
+type ChatToolApproval = {
+    toolName: string
+    expiresAt?: string
+}
+
+type ChatToolApprovalsResponse = {
+    chat_id: string
+    items?: ChatToolApproval[]
 }
 
 type GenerateDocsResponse = {
@@ -703,6 +723,8 @@ export default function ProjectChatPage() {
     const [chatToolPolicy, setChatToolPolicy] = useState<ChatToolPolicy | null>(null)
     const [toolEnabledSet, setToolEnabledSet] = useState<Set<string>>(new Set())
     const [toolReadOnlyOnly, setToolReadOnlyOnly] = useState(false)
+    const [approvedTools, setApprovedTools] = useState<Set<string>>(new Set())
+    const [approvalBusyTool, setApprovalBusyTool] = useState<string | null>(null)
     const [llmProfiles, setLlmProfiles] = useState<LlmProfileDoc[]>([])
     const [selectedLlmProfileId, setSelectedLlmProfileId] = useState<string>("")
     const [savingLlmProfile, setSavingLlmProfile] = useState(false)
@@ -834,25 +856,32 @@ export default function ProjectChatPage() {
             setToolsLoading(true)
             setToolsError(null)
             try {
-                const [catalogRes, policyRes] = await Promise.all([
-                    backendJson<ToolCatalogResponse>("/api/tools/catalog"),
+                const [catalogRes, policyRes, approvalsRes] = await Promise.all([
+                    backendJson<ToolCatalogResponse>(`/api/tools/catalog?projectId=${encodeURIComponent(projectId)}`),
                     backendJson<ChatToolPolicyResponse>(`/api/chats/${encodeURIComponent(chatId)}/tool-policy`),
+                    backendJson<ChatToolApprovalsResponse>(`/api/chats/${encodeURIComponent(chatId)}/tool-approvals`),
                 ])
                 const catalog = (catalogRes.tools || []).filter((t) => !!t.name)
                 const policy = (policyRes.tool_policy || {}) as ChatToolPolicy
                 const enabled = enabledToolsFromPolicy(catalog, policy)
+                const approved = new Set(
+                    (approvalsRes.items || [])
+                        .map((row) => String(row.toolName || "").trim())
+                        .filter(Boolean)
+                )
 
                 setToolCatalog(catalog)
                 setChatToolPolicy(policy)
                 setToolEnabledSet(enabled)
                 setToolReadOnlyOnly(Boolean(policy.read_only_only))
+                setApprovedTools(approved)
             } catch (err) {
                 setToolsError(errText(err))
             } finally {
                 setToolsLoading(false)
             }
         },
-        []
+        [projectId]
     )
 
     const loadLlmProfiles = useCallback(async () => {
@@ -872,6 +901,56 @@ export default function ProjectChatPage() {
             setSelectedLlmProfileId("")
         }
     }, [])
+
+    useEffect(() => {
+        let stopped = false
+        let inFlight = false
+        const claimId = `webchat-${projectId}-${Math.random().toString(36).slice(2, 10)}`
+
+        async function tick() {
+            if (stopped || inFlight) return
+            inFlight = true
+            try {
+                const claim = await backendJson<LocalToolClaimResponse>("/api/local-tools/jobs/claim", {
+                    method: "POST",
+                    body: JSON.stringify({
+                        projectId,
+                        claimId,
+                        user: userId,
+                    }),
+                })
+                const job = claim.job
+                if (!job?.id) return
+
+                try {
+                    const result = await executeLocalToolJob(job)
+                    await backendJson(`/api/local-tools/jobs/${encodeURIComponent(job.id)}/complete`, {
+                        method: "POST",
+                        body: JSON.stringify({ claimId, result, user: userId }),
+                    })
+                } catch (err) {
+                    await backendJson(`/api/local-tools/jobs/${encodeURIComponent(job.id)}/fail`, {
+                        method: "POST",
+                        body: JSON.stringify({ claimId, error: errText(err), user: userId }),
+                    })
+                }
+            } catch {
+                // Silent background worker: avoid noisy UI when no jobs are pending.
+            } finally {
+                inFlight = false
+            }
+        }
+
+        const timer = window.setInterval(() => {
+            void tick()
+        }, 900)
+        void tick()
+
+        return () => {
+            stopped = true
+            window.clearInterval(timer)
+        }
+    }, [projectId, userId])
 
     const saveChatLlmProfile = useCallback(async (chatId: string, llmProfileId: string) => {
         setSavingLlmProfile(true)
@@ -1090,6 +1169,44 @@ export default function ProjectChatPage() {
             setToolsSaving(false)
         }
     }, [selectedChatId, toolCatalog, toolEnabledSet, toolReadOnlyOnly])
+
+    const setToolApproval = useCallback(
+        async (toolName: string, approve: boolean) => {
+            if (!selectedChatId) return
+            setApprovalBusyTool(toolName)
+            setToolsError(null)
+            try {
+                if (approve) {
+                    await backendJson(`/api/chats/${encodeURIComponent(selectedChatId)}/tool-approvals`, {
+                        method: "POST",
+                        body: JSON.stringify({
+                            tool_name: toolName,
+                            ttl_minutes: 60,
+                        }),
+                    })
+                    setApprovedTools((prev) => {
+                        const next = new Set(prev)
+                        next.add(toolName)
+                        return next
+                    })
+                } else {
+                    await backendJson(`/api/chats/${encodeURIComponent(selectedChatId)}/tool-approvals/${encodeURIComponent(toolName)}`, {
+                        method: "DELETE",
+                    })
+                    setApprovedTools((prev) => {
+                        const next = new Set(prev)
+                        next.delete(toolName)
+                        return next
+                    })
+                }
+            } catch (err) {
+                setToolsError(errText(err))
+            } finally {
+                setApprovalBusyTool(null)
+            }
+        },
+        [selectedChatId]
+    )
 
     const maybeAutoGenerateDocsFromQuestion = useCallback(
         async (question: string) => {
@@ -2095,6 +2212,8 @@ export default function ProjectChatPage() {
                             <List dense>
                                 {toolCatalog.map((tool) => {
                                     const enabled = toolEnabledSet.has(tool.name)
+                                    const requiresApproval = Boolean(tool.require_approval) && !Boolean(tool.read_only)
+                                    const isApproved = approvedTools.has(tool.name)
                                     return (
                                         <ListItemButton key={tool.name} onClick={() => toggleToolEnabled(tool.name)} sx={{ borderRadius: 1.5, mb: 0.35 }}>
                                             <ListItemIcon sx={{ minWidth: 34 }}>
@@ -2107,14 +2226,46 @@ export default function ProjectChatPage() {
                                             </ListItemIcon>
                                             <ListItemText
                                                 primary={
-                                                    <Stack direction="row" spacing={1} alignItems="center">
+                                                    <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
                                                         <Typography variant="body2" sx={{ fontWeight: 600 }}>
                                                             {tool.name}
                                                         </Typography>
                                                         {enabled && <CheckCircleRounded fontSize="inherit" color="success" />}
+                                                        {tool.origin === "custom" && (
+                                                            <Chip size="small" label="Custom" color="secondary" variant="outlined" />
+                                                        )}
+                                                        {tool.runtime === "local_typescript" && (
+                                                            <Chip size="small" label="Local TS" color="secondary" variant="outlined" />
+                                                        )}
+                                                        {requiresApproval && (
+                                                            <Chip
+                                                                size="small"
+                                                                label={isApproved ? "Approved" : "Approval required"}
+                                                                color={isApproved ? "success" : "warning"}
+                                                                variant={isApproved ? "filled" : "outlined"}
+                                                            />
+                                                        )}
+                                                        {requiresApproval && (
+                                                            <Button
+                                                                size="small"
+                                                                variant="text"
+                                                                onClick={(e) => {
+                                                                    e.preventDefault()
+                                                                    e.stopPropagation()
+                                                                    void setToolApproval(tool.name, !isApproved)
+                                                                }}
+                                                                disabled={approvalBusyTool === tool.name}
+                                                            >
+                                                                {approvalBusyTool === tool.name
+                                                                    ? "..."
+                                                                    : isApproved
+                                                                        ? "Revoke"
+                                                                        : "Approve 60m"}
+                                                            </Button>
+                                                        )}
                                                     </Stack>
                                                 }
-                                                secondary={`${tool.description || ""}${tool.read_only ? " · read-only" : " · write-enabled"}`}
+                                                secondary={`${tool.description || ""}${tool.read_only ? " · read-only" : " · write-enabled"}${tool.version ? ` · v${tool.version}` : ""}`}
                                             />
                                         </ListItemButton>
                                     )

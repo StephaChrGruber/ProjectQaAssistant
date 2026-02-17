@@ -10,6 +10,7 @@ from bson import ObjectId
 from ..rag.agent2 import LLMUpstreamError, answer_with_agent
 from ..rag.tool_runtime import ToolContext, build_default_tool_runtime
 from ..services.llm_profiles import resolve_project_llm_config
+from ..services.custom_tools import build_runtime_for_project
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -337,6 +338,28 @@ def _merge_tool_policies(base_policy: dict, chat_policy: dict) -> dict:
             merged[key] = out
 
     return merged
+
+
+def _active_approved_tools(rows: list[dict[str, Any]], *, user: str) -> list[str]:
+    now = datetime.utcnow()
+    user_norm = _as_text(user).lower()
+    out: list[str] = []
+    seen: set[str] = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        row_user = _as_text(row.get("userId")).lower()
+        if row_user and user_norm and row_user != user_norm:
+            continue
+        exp = row.get("expiresAt")
+        if isinstance(exp, datetime) and exp <= now:
+            continue
+        name = _as_text(row.get("toolName"))
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
 
 
 def _as_text(v: Any) -> str:
@@ -1063,6 +1086,13 @@ async def ask_agent(req: AskReq):
         role=user_role,
         security_policy=defaults.get("security_policy") or {},
     )
+    approval_rows = await get_db()["chat_tool_approvals"].find(
+        {"chatId": chat_id, "expiresAt": {"$gt": datetime.utcnow()}},
+        {"toolName": 1, "userId": 1, "expiresAt": 1},
+    ).to_list(length=400)
+    approved_tools = _active_approved_tools(approval_rows, user=req.user)
+    if approved_tools:
+        effective_tool_policy["approved_tools"] = approved_tools
     grounding_policy = defaults.get("grounding_policy") or {"require_sources": True, "min_sources": 1}
 
     effective_question = req.question
@@ -1081,6 +1111,7 @@ async def ask_agent(req: AskReq):
         "profile_id": selected_profile_id or defaults.get("llm_profile_id"),
         "provider": defaults.get("provider"),
     }
+    runtime = await build_runtime_for_project(req.project_id)
     routing_mode = None
     if routed_profile_id:
         routing_mode = _route_intent(req.question, routing_cfg)
@@ -1098,6 +1129,7 @@ async def ask_agent(req: AskReq):
             tool_policy=effective_tool_policy,
             max_tool_calls=int(defaults.get("max_tool_calls") or 12),
             include_tool_events=True,
+            runtime=runtime,
         )
 
     failover_used = False

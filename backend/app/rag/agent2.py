@@ -310,6 +310,7 @@ async def answer_with_agent(
     tool_policy: dict[str, Any] | None = None,
     max_tool_calls: int = 12,
     include_tool_events: bool = False,
+    runtime: ToolRuntime | None = None,
 ) -> Any:
     agent = Agent2(
         project_id=project_id,
@@ -323,6 +324,7 @@ async def answer_with_agent(
         llm_model=llm_model,
         chat_id=chat_id,
         tool_policy=tool_policy,
+        runtime=runtime,
     )
     out = await agent.run(question)
     if include_tool_events:

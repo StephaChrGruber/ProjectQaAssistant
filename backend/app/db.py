@@ -2,7 +2,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from beanie import init_beanie
 from .settings import settings
 from .models.base_mongo_models import (
-    User, Group, GroupMembership, Project, Membership, Connector, AuditLog, LlmProfile
+    User, Group, GroupMembership, Project, Membership, Connector, AuditLog, LlmProfile,
+    CustomTool, CustomToolVersion, CustomToolAudit, LocalToolJob, ChatToolApproval,
 )
 import os
 
@@ -14,7 +15,21 @@ async def init_db():
     db = _client[settings.MONGODB_DB]
     await init_beanie(
         database=db,
-        document_models=[User, Group, GroupMembership, Project, Membership, Connector, LlmProfile, AuditLog],
+        document_models=[
+            User,
+            Group,
+            GroupMembership,
+            Project,
+            Membership,
+            Connector,
+            LlmProfile,
+            AuditLog,
+            CustomTool,
+            CustomToolVersion,
+            CustomToolAudit,
+            LocalToolJob,
+            ChatToolApproval,
+        ],
     )
 
 def get_client() -> AsyncIOMotorClient:

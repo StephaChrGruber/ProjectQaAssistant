@@ -121,7 +121,6 @@ class DocumentationError(RuntimeError):
     pass
 
 
-_DOC_TOOL_RUNTIME: Any = None
 
 
 def _run_git(repo_path: str, args: list[str], timeout: int = 40) -> subprocess.CompletedProcess:
@@ -277,14 +276,17 @@ def _preview(text: str, max_chars: int = 400) -> str:
     return s[:max_chars] + "...(truncated)"
 
 
-def _get_doc_tool_runtime() -> Any:
-    global _DOC_TOOL_RUNTIME
-    if _DOC_TOOL_RUNTIME is None:
-        # Imported lazily to avoid import cycles at module load time.
+async def _get_doc_tool_runtime(project_id: str) -> Any:
+    # Imported lazily to avoid import cycles.
+    from ..services.custom_tools import build_runtime_for_project
+
+    pid = str(project_id or "").strip()
+    if not pid:
         from ..rag.tool_runtime import build_default_tool_runtime
 
-        _DOC_TOOL_RUNTIME = build_default_tool_runtime()
-    return _DOC_TOOL_RUNTIME
+        return build_default_tool_runtime()
+
+    return await build_runtime_for_project(pid)
 
 
 def _try_parse_tool_call(text: str) -> Optional[dict[str, Any]]:
@@ -342,7 +344,7 @@ async def _llm_chat_with_tools(
     max_tokens: int,
     max_tool_calls: int = MAX_DOC_TOOL_CALLS,
 ) -> str:
-    runtime = _get_doc_tool_runtime()
+    runtime = await _get_doc_tool_runtime(project_id)
     tool_schema = runtime.schema_text()
     convo: list[dict[str, str]] = [{"role": "system", "content": _doc_tool_system_prompt(tool_schema)}]
     convo.extend(messages)
@@ -1371,7 +1373,11 @@ def _branch_exists(repo_path: str, branch: str) -> bool:
     return proc.returncode == 0
 
 
-async def generate_project_documentation(project_id: str, branch: Optional[str] = None) -> dict[str, Any]:
+async def generate_project_documentation(
+    project_id: str,
+    branch: Optional[str] = None,
+    user_id: str | None = None,
+) -> dict[str, Any]:
     project = await _load_project(project_id)
     repo_path = (project.get("repo_path") or "").strip()
     if not repo_path:
@@ -1445,11 +1451,12 @@ async def generate_project_documentation(project_id: str, branch: Optional[str] 
     summary = ""
     mode = "fallback"
     llm_error: str | None = None
+    effective_user_id = (user_id or "").strip() or DOC_TOOL_USER_ID
     if context:
         try:
             generated_files, summary = await _generate_docs_with_llm_from_context(
                 project_id=project_id,
-                user_id=DOC_TOOL_USER_ID,
+                user_id=effective_user_id,
                 project_name=project_name,
                 branch=chosen_branch,
                 context=context,
@@ -1503,6 +1510,7 @@ async def generate_project_documentation_from_local_context(
     local_repo_root: str,
     local_repo_file_paths: list[str],
     local_repo_context: str,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     project = await _load_project(project_id)
     chosen_branch = (branch or project.get("default_branch") or "main").strip() or "main"
@@ -1547,12 +1555,13 @@ async def generate_project_documentation_from_local_context(
     summary = ""
     mode = "fallback"
     llm_error: str | None = None
+    effective_user_id = (user_id or "").strip() or DOC_TOOL_USER_ID
 
     if local_repo_context and local_repo_context.strip():
         try:
             generated_files, summary = await _generate_docs_with_llm_from_context(
                 project_id=project_id,
-                user_id=DOC_TOOL_USER_ID,
+                user_id=effective_user_id,
                 project_name=project_name,
                 branch=chosen_branch,
                 context=local_repo_context.strip(),

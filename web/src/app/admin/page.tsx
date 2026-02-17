@@ -1049,14 +1049,24 @@ export default function AdminPage() {
                                 </Typography>
                             </Box>
 
-                            <Button
-                                component={Link}
-                                href="/projects"
-                                variant="outlined"
-                                startIcon={<ArrowBackRounded />}
-                            >
-                                Back to projects
-                            </Button>
+                            <Stack direction="row" spacing={1}>
+                                <Button
+                                    component={Link}
+                                    href="/admin/custom-tools"
+                                    variant="contained"
+                                    startIcon={<AddRounded />}
+                                >
+                                    Custom Tools
+                                </Button>
+                                <Button
+                                    component={Link}
+                                    href="/projects"
+                                    variant="outlined"
+                                    startIcon={<ArrowBackRounded />}
+                                >
+                                    Back to projects
+                                </Button>
+                            </Stack>
                         </Stack>
                     </Paper>
 

@@ -6,6 +6,9 @@ from pydantic import Field
 Role = Literal["admin", "member", "viewer"]
 ConnectorType = Literal["confluence", "jira", "github", "bitbucket", "azure_devops", "local"]
 JobStatus = Literal["queued", "running", "succeeded", "failed"]
+CustomToolRuntime = Literal["backend_python", "local_typescript"]
+CustomToolVersionStatus = Literal["draft", "published", "archived"]
+LocalToolJobStatus = Literal["queued", "running", "completed", "failed", "timeout", "cancelled"]
 
 class User(Document):
     email: str
@@ -97,3 +100,118 @@ class AuditLog(Document):
 
     class Settings:
         name = "audit_logs"
+
+
+class CustomTool(Document):
+    projectId: Optional[str] = None  # None => global tool
+    name: str
+    slug: str
+    description: Optional[str] = None
+    runtime: CustomToolRuntime = "backend_python"
+    isEnabled: bool = True
+    readOnly: bool = True
+    requireApproval: bool = False
+    timeoutSec: int = 45
+    rateLimitPerMin: int = 40
+    maxRetries: int = 0
+    cacheTtlSec: int = 0
+    inputSchema: Dict[str, Any] = Field(default_factory=dict)
+    outputSchema: Dict[str, Any] = Field(default_factory=dict)
+    secrets: Dict[str, str] = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
+    latestVersion: int = 0
+    publishedVersion: Optional[int] = None
+    createdBy: Optional[str] = None
+    createdAt: datetime = Field(default_factory=datetime.utcnow)
+    updatedAt: datetime = Field(default_factory=datetime.utcnow)
+
+    class Settings:
+        name = "custom_tools"
+        indexes = [
+            [("projectId", 1), ("slug", 1)],
+            [("isEnabled", 1), ("projectId", 1)],
+        ]
+
+
+class CustomToolVersion(Document):
+    toolId: str
+    version: int
+    status: CustomToolVersionStatus = "draft"
+    code: str
+    checksum: str
+    changelog: Optional[str] = None
+    createdBy: Optional[str] = None
+    createdAt: datetime = Field(default_factory=datetime.utcnow)
+
+    class Settings:
+        name = "custom_tool_versions"
+        indexes = [
+            [("toolId", 1), ("version", -1)],
+            [("toolId", 1), ("status", 1)],
+        ]
+
+
+class CustomToolAudit(Document):
+    toolId: Optional[str] = None
+    toolName: Optional[str] = None
+    projectId: Optional[str] = None
+    chatId: Optional[str] = None
+    userId: Optional[str] = None
+    action: str
+    ok: bool = True
+    details: Dict[str, Any] = Field(default_factory=dict)
+    createdAt: datetime = Field(default_factory=datetime.utcnow)
+
+    class Settings:
+        name = "custom_tool_audit"
+        indexes = [
+            [("toolId", 1), ("createdAt", -1)],
+            [("projectId", 1), ("createdAt", -1)],
+            [("chatId", 1), ("createdAt", -1)],
+        ]
+
+
+class LocalToolJob(Document):
+    toolId: str
+    toolName: str
+    projectId: str
+    branch: str
+    userId: str
+    chatId: Optional[str] = None
+    runtime: CustomToolRuntime = "local_typescript"
+    version: Optional[int] = None
+    code: str
+    args: Dict[str, Any] = Field(default_factory=dict)
+    context: Dict[str, Any] = Field(default_factory=dict)
+    status: LocalToolJobStatus = "queued"
+    result: Optional[Any] = None
+    error: Optional[str] = None
+    claimedBy: Optional[str] = None
+    createdAt: datetime = Field(default_factory=datetime.utcnow)
+    updatedAt: datetime = Field(default_factory=datetime.utcnow)
+    expiresAt: Optional[datetime] = None
+    completedAt: Optional[datetime] = None
+
+    class Settings:
+        name = "local_tool_jobs"
+        indexes = [
+            [("status", 1), ("userId", 1), ("projectId", 1), ("createdAt", 1)],
+            [("status", 1), ("expiresAt", 1)],
+            [("chatId", 1), ("createdAt", -1)],
+        ]
+
+
+class ChatToolApproval(Document):
+    chatId: str
+    toolName: str
+    userId: str
+    approvedBy: Optional[str] = None
+    createdAt: datetime = Field(default_factory=datetime.utcnow)
+    expiresAt: datetime
+
+    class Settings:
+        name = "chat_tool_approvals"
+        indexes = [
+            [("chatId", 1), ("toolName", 1), ("userId", 1)],
+            [("expiresAt", 1)],
+        ]

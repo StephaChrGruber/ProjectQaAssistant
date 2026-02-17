@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import time
@@ -77,12 +78,17 @@ class ToolSpec:
     name: str
     description: str
     model: type[BaseModel]
-    handler: Callable[[BaseModel], Awaitable[Any]]
+    handler: Callable[..., Awaitable[Any]]
     timeout_sec: int = 45
     rate_limit_per_min: int = 40
     read_only: bool = True
     max_retries: int = 0
     cache_ttl_sec: int = 0
+    require_approval: bool = False
+    origin: str = "builtin"
+    runtime: str = "backend"
+    version: str = ""
+    allow_extra_args: bool = False
 
 
 class ToolRuntime:
@@ -150,6 +156,7 @@ class ToolRuntime:
     def _is_tool_allowed(self, name: str, spec: ToolSpec, policy: dict[str, Any]) -> tuple[bool, str]:
         allowed = self._as_tool_name_set(policy.get("allowed_tools") or policy.get("allow_tools"))
         blocked = self._as_tool_name_set(policy.get("blocked_tools") or policy.get("deny_tools"))
+        approved = self._as_tool_name_set(policy.get("approved_tools"))
 
         if name in blocked:
             return False, "blocked_by_policy"
@@ -159,8 +166,20 @@ class ToolRuntime:
         read_only_only = bool(policy.get("read_only_only"))
         if read_only_only and not spec.read_only:
             return False, "read_only_only_mode"
+        if spec.require_approval and name not in approved:
+            return False, "approval_required"
 
         return True, ""
+
+    async def _invoke_handler(self, spec: ToolSpec, payload: BaseModel, ctx: ToolContext) -> Any:
+        try:
+            sig = inspect.signature(spec.handler)
+            param_count = len(sig.parameters)
+        except Exception:
+            param_count = 1
+        if param_count >= 2:
+            return await spec.handler(payload, ctx)
+        return await spec.handler(payload)
 
     def _forbidden_error(self, name: str, reason: str) -> ToolEnvelope:
         return ToolEnvelope(
@@ -314,7 +333,7 @@ class ToolRuntime:
         started = time.perf_counter()
 
         unknown_keys = sorted(set(merged.keys()) - self._allowed_arg_names(spec.model))
-        if unknown_keys:
+        if unknown_keys and not spec.allow_extra_args:
             duration_ms = int((time.perf_counter() - started) * 1000)
             details = {"unknown_args": unknown_keys}
             logger.warning("tool.validation_failed tool=%s unknown_args=%s", name, unknown_keys)
@@ -374,7 +393,7 @@ class ToolRuntime:
         while True:
             attempts += 1
             try:
-                result_obj = await asyncio.wait_for(spec.handler(payload), timeout=max(1, effective_timeout))
+                result_obj = await asyncio.wait_for(self._invoke_handler(spec, payload, ctx), timeout=max(1, effective_timeout))
                 break
             except asyncio.TimeoutError:
                 duration_ms = int((time.perf_counter() - started) * 1000)
@@ -468,6 +487,15 @@ class ToolRuntime:
             lines.append(f"  Timeout: {spec.timeout_sec}s")
             lines.append(f"  Rate limit: {spec.rate_limit_per_min}/min")
             lines.append(f"  Retries: {spec.max_retries}")
+            lines.append(f"  Read only: {str(bool(spec.read_only)).lower()}")
+            if spec.require_approval:
+                lines.append("  Requires approval: true")
+            if spec.origin != "builtin":
+                lines.append(f"  Origin: {spec.origin}")
+            if spec.runtime:
+                lines.append(f"  Runtime: {spec.runtime}")
+            if spec.version:
+                lines.append(f"  Version: {spec.version}")
             if spec.cache_ttl_sec > 0:
                 lines.append(f"  Cache TTL: {spec.cache_ttl_sec}s")
             lines.append("  Parameters:")
@@ -527,6 +555,10 @@ class ToolRuntime:
                     "max_retries": spec.max_retries,
                     "cache_ttl_sec": spec.cache_ttl_sec,
                     "read_only": spec.read_only,
+                    "require_approval": spec.require_approval,
+                    "origin": spec.origin,
+                    "runtime": spec.runtime,
+                    "version": spec.version,
                     "parameters": fields_meta,
                 }
             )

@@ -154,7 +154,11 @@ async def generate_documentation(
         raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
 
     try:
-        return await generate_project_documentation(project_id=project_id, branch=req.branch)
+        return await generate_project_documentation(
+            project_id=project_id,
+            branch=req.branch,
+            user_id=x_dev_user,
+        )
     except DocumentationError as err:
         raise HTTPException(status_code=400, detail=str(err))
 
@@ -175,6 +179,7 @@ async def generate_documentation_local(
             local_repo_root=req.local_repo_root or "",
             local_repo_file_paths=req.local_repo_file_paths or [],
             local_repo_context=req.local_repo_context or "",
+            user_id=x_dev_user,
         )
     except DocumentationError as err:
         raise HTTPException(status_code=400, detail=str(err))
