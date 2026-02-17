@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useCallback, useEffect, useState } from "react"
+import { type KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react"
 import {
     Alert,
     Box,
@@ -17,6 +17,7 @@ import {
     Paper,
     Select,
     Stack,
+    Tooltip,
     Switch,
     TextField,
     Typography,
@@ -26,6 +27,10 @@ import SaveRounded from "@mui/icons-material/SaveRounded"
 import PublishRounded from "@mui/icons-material/PublishRounded"
 import ScienceRounded from "@mui/icons-material/ScienceRounded"
 import AddRounded from "@mui/icons-material/AddRounded"
+import AutoFixHighRounded from "@mui/icons-material/AutoFixHighRounded"
+import UploadFileRounded from "@mui/icons-material/UploadFileRounded"
+import ContentCopyRounded from "@mui/icons-material/ContentCopyRounded"
+import RefreshRounded from "@mui/icons-material/RefreshRounded"
 import { backendJson } from "@/lib/backend"
 import { executeLocalToolJob, type LocalToolJobPayload } from "@/lib/local-custom-tool-runner"
 
@@ -63,6 +68,7 @@ type ToolVersionRow = {
     status: "draft" | "published" | "archived"
     checksum: string
     changelog?: string
+    code?: string
     createdAt?: string
 }
 
@@ -115,6 +121,419 @@ const DEFAULT_SCHEMA = `{
   "required": [],
   "additionalProperties": true
 }`
+
+type ToolTemplate = {
+    id: string
+    runtime: "backend_python" | "local_typescript"
+    name: string
+    description: string
+    code: string
+    inputSchema?: Record<string, unknown>
+    outputSchema?: Record<string, unknown>
+    testArgs?: Record<string, unknown>
+}
+
+const TOOL_TEMPLATES: ToolTemplate[] = [
+    {
+        id: "py-echo",
+        runtime: "backend_python",
+        name: "Python: Echo + Metadata",
+        description: "Safe starter template that echoes args and core chat/project metadata.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                message: { type: "string" },
+            },
+            additionalProperties: true,
+        },
+        outputSchema: {
+            type: "object",
+            properties: {
+                ok: { type: "boolean" },
+                echo: { type: "object" },
+                meta: { type: "object" },
+            },
+            additionalProperties: true,
+        },
+        testArgs: { message: "hello from custom tool" },
+        code: `def run(args, context):
+    return {
+        "ok": True,
+        "echo": args,
+        "meta": {
+            "project_id": context.get("project_id"),
+            "branch": context.get("branch"),
+            "chat_id": context.get("chat_id"),
+            "user_id": context.get("user_id"),
+        },
+    }
+`,
+    },
+    {
+        id: "py-http-get",
+        runtime: "backend_python",
+        name: "Python: HTTP GET JSON",
+        description: "Fetches JSON from a URL and returns status + parsed payload snippet.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                url: { type: "string" },
+                timeout_sec: { type: "number" },
+            },
+            required: ["url"],
+            additionalProperties: false,
+        },
+        outputSchema: {
+            type: "object",
+            properties: {
+                ok: { type: "boolean" },
+                status: { type: "number" },
+                data: {},
+            },
+            additionalProperties: true,
+        },
+        testArgs: { url: "https://httpbin.org/json", timeout_sec: 8 },
+        code: `import json
+from urllib.request import Request, urlopen
+
+
+def run(args, context):
+    url = str(args.get("url") or "").strip()
+    if not url:
+        raise ValueError("args.url is required")
+
+    timeout_sec = float(args.get("timeout_sec") or 8)
+    req = Request(url, headers={"User-Agent": "ProjectQaAssistant/1.0"})
+    with urlopen(req, timeout=timeout_sec) as resp:
+        status = int(getattr(resp, "status", 200))
+        raw = resp.read().decode("utf-8", errors="replace")
+
+    try:
+        data = json.loads(raw)
+    except Exception:
+        data = {"raw": raw[:2000]}
+
+    return {"ok": True, "status": status, "data": data}
+`,
+    },
+    {
+        id: "ts-local-grep",
+        runtime: "local_typescript",
+        name: "Local TS: Repo Grep",
+        description: "Searches the browser-local repository snapshot with helper grep().",
+        inputSchema: {
+            type: "object",
+            properties: {
+                pattern: { type: "string" },
+                glob: { type: "string" },
+                maxResults: { type: "number" },
+            },
+            required: ["pattern"],
+            additionalProperties: true,
+        },
+        outputSchema: {
+            type: "object",
+            properties: {
+                ok: { type: "boolean" },
+                total: { type: "number" },
+                hits: { type: "array" },
+            },
+            additionalProperties: true,
+        },
+        testArgs: { pattern: "TODO", glob: "src/*", maxResults: 20 },
+        code: `async function run(args, context, helpers) {
+  const pattern = String(args?.pattern || "").trim();
+  if (!pattern) throw new Error("args.pattern is required");
+
+  const hits = helpers.localRepo.grep(pattern, {
+    regex: args?.regex !== false,
+    caseSensitive: !!args?.caseSensitive,
+    glob: typeof args?.glob === "string" ? args.glob : undefined,
+    maxResults: Number(args?.maxResults || 60),
+    contextLines: Number(args?.contextLines || 2),
+  });
+
+  return {
+    ok: true,
+    total: hits.length,
+    hits,
+    at: helpers.nowIso(),
+  };
+}
+`,
+    },
+    {
+        id: "ts-read-file",
+        runtime: "local_typescript",
+        name: "Local TS: Read File",
+        description: "Reads one file from browser-local snapshot and returns content.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                path: { type: "string" },
+                maxChars: { type: "number" },
+            },
+            required: ["path"],
+            additionalProperties: false,
+        },
+        outputSchema: {
+            type: "object",
+            properties: {
+                ok: { type: "boolean" },
+                path: { type: "string" },
+                content: { type: "string" },
+            },
+            additionalProperties: true,
+        },
+        testArgs: { path: "README.md", maxChars: 5000 },
+        code: `async function run(args, context, helpers) {
+  const path = String(args?.path || "").trim();
+  if (!path) throw new Error("args.path is required");
+  const maxChars = Math.max(200, Math.min(Number(args?.maxChars || 200000), 2000000));
+
+  const content = helpers.localRepo.readFile(path, maxChars);
+  return {
+    ok: true,
+    path,
+    content,
+    at: helpers.nowIso(),
+  };
+}
+`,
+    },
+]
+
+type TokenKind = "plain" | "keyword" | "string" | "number" | "comment" | "operator" | "builtin"
+type Token = { kind: TokenKind; text: string }
+type LangRule = { kind: TokenKind; re: RegExp }
+
+function normalizeEditorLanguage(runtime: ToolForm["runtime"] | "json"): "python" | "typescript" | "json" {
+    if (runtime === "backend_python") return "python"
+    if (runtime === "local_typescript") return "typescript"
+    return "json"
+}
+
+function editorKeywordRegex(words: string[]): RegExp {
+    return new RegExp(`\\b(?:${words.join("|")})\\b`, "y")
+}
+
+function editorRulesForLanguage(language: "python" | "typescript" | "json"): LangRule[] {
+    const common = {
+        strings: [
+            { kind: "string" as const, re: /"(?:\\.|[^"\\])*"/y },
+            { kind: "string" as const, re: /'(?:\\.|[^'\\])*'/y },
+            { kind: "string" as const, re: /`(?:\\.|[^`\\])*`/y },
+        ],
+        numbers: [{ kind: "number" as const, re: /\b\d+(?:\.\d+)?\b/y }],
+        operators: [{ kind: "operator" as const, re: /[{}()[\].,;:+\-*/%=<>!&|^~?]+/y }],
+    }
+
+    if (language === "python") {
+        return [
+            { kind: "comment", re: /#[^\n]*/y },
+            ...common.strings,
+            {
+                kind: "keyword",
+                re: editorKeywordRegex([
+                    "def",
+                    "class",
+                    "if",
+                    "elif",
+                    "else",
+                    "for",
+                    "while",
+                    "try",
+                    "except",
+                    "finally",
+                    "return",
+                    "import",
+                    "from",
+                    "as",
+                    "with",
+                    "lambda",
+                    "pass",
+                    "break",
+                    "continue",
+                    "yield",
+                    "raise",
+                    "in",
+                    "is",
+                    "not",
+                    "and",
+                    "or",
+                ]),
+            },
+            { kind: "builtin", re: editorKeywordRegex(["True", "False", "None"]) },
+            ...common.numbers,
+            ...common.operators,
+        ]
+    }
+
+    if (language === "json") {
+        return [
+            { kind: "string", re: /"(?:\\.|[^"\\])*"(?=\s*:)/y },
+            { kind: "string", re: /"(?:\\.|[^"\\])*"/y },
+            { kind: "builtin", re: editorKeywordRegex(["true", "false", "null"]) },
+            ...common.numbers,
+            ...common.operators,
+        ]
+    }
+
+    return [
+        { kind: "comment", re: /\/\/[^\n]*/y },
+        { kind: "comment", re: /\/\*[\s\S]*?\*\//y },
+        ...common.strings,
+        {
+            kind: "keyword",
+            re: editorKeywordRegex([
+                "function",
+                "const",
+                "let",
+                "var",
+                "class",
+                "interface",
+                "type",
+                "if",
+                "else",
+                "switch",
+                "case",
+                "for",
+                "while",
+                "do",
+                "return",
+                "import",
+                "from",
+                "export",
+                "async",
+                "await",
+                "try",
+                "catch",
+                "finally",
+                "new",
+            ]),
+        },
+        { kind: "builtin", re: editorKeywordRegex(["true", "false", "null", "undefined"]) },
+        ...common.numbers,
+        ...common.operators,
+    ]
+}
+
+function tokenizeEditorCode(code: string, language: "python" | "typescript" | "json"): Token[] {
+    const rules = editorRulesForLanguage(language)
+    const out: Token[] = []
+    let i = 0
+    while (i < code.length) {
+        let matched = false
+        for (const rule of rules) {
+            rule.re.lastIndex = i
+            const m = rule.re.exec(code)
+            if (m && m.index === i && m[0].length > 0) {
+                out.push({ kind: rule.kind, text: m[0] })
+                i += m[0].length
+                matched = true
+                break
+            }
+        }
+        if (!matched) {
+            out.push({ kind: "plain", text: code[i] })
+            i += 1
+        }
+    }
+    return out
+}
+
+function editorTokenColor(kind: TokenKind): string {
+    if (kind === "keyword") return "#5C6BC0"
+    if (kind === "string") return "#2E7D32"
+    if (kind === "number") return "#EF6C00"
+    if (kind === "comment") return "#607D8B"
+    if (kind === "operator") return "#C2185B"
+    if (kind === "builtin") return "#6A1B9A"
+    return "inherit"
+}
+
+function normalizeCodeText(raw: string): string {
+    const normalized = String(raw || "").replace(/\r\n?/g, "\n")
+    const trimmedLines = normalized.split("\n").map((line) => line.replace(/[ \t]+$/g, ""))
+    return `${trimmedLines.join("\n").trimEnd()}\n`
+}
+
+function formatTypescriptLike(raw: string): string {
+    const lines = normalizeCodeText(raw).split("\n")
+    const out: string[] = []
+    let depth = 0
+    for (const src of lines) {
+        const line = src.trim()
+        if (!line) {
+            out.push("")
+            continue
+        }
+        if (/^[\]\})]/.test(line)) depth = Math.max(0, depth - 1)
+        out.push(`${"  ".repeat(depth)}${line}`)
+        const opens = (line.match(/[\[{(]/g) || []).length
+        const closes = (line.match(/[\]})]/g) || []).length
+        depth = Math.max(0, depth + opens - closes)
+    }
+    return `${out.join("\n").trimEnd()}\n`
+}
+
+function formatCodeForRuntime(runtime: ToolForm["runtime"], code: string): string {
+    if (!code.trim()) return ""
+    if (runtime === "local_typescript") {
+        return formatTypescriptLike(code)
+    }
+    return normalizeCodeText(code)
+}
+
+function prettifyJsonObjectText(raw: string): string {
+    const parsed = parseJsonObject("JSON", raw)
+    return `${JSON.stringify(parsed, null, 2)}\n`
+}
+
+function EditorCodePreview({
+    code,
+    language,
+    minHeight = 260,
+}: {
+    code: string
+    language: "python" | "typescript" | "json"
+    minHeight?: number
+}) {
+    const tokens = useMemo(() => tokenizeEditorCode(code || "", language), [code, language])
+    return (
+        <Paper
+            variant="outlined"
+            sx={{
+                minHeight,
+                maxHeight: 520,
+                overflow: "auto",
+                p: 1.2,
+                bgcolor: "#fbfcff",
+                borderStyle: "dashed",
+            }}
+        >
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.8 }}>
+                Syntax preview
+            </Typography>
+            <Box
+                component="pre"
+                sx={{
+                    m: 0,
+                    whiteSpace: "pre-wrap",
+                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                    fontSize: 12.5,
+                    lineHeight: 1.55,
+                }}
+            >
+                {tokens.map((tok, idx) => (
+                    <Box key={`${idx}-${tok.kind}`} component="span" sx={{ color: editorTokenColor(tok.kind) }}>
+                        {tok.text}
+                    </Box>
+                ))}
+            </Box>
+        </Paper>
+    )
+}
 
 function emptyForm(): ToolForm {
     return {
@@ -169,6 +588,20 @@ export default function AdminCustomToolsPage() {
     const [testArgsText, setTestArgsText] = useState<string>('{}')
     const [testResult, setTestResult] = useState<string>("")
     const [systemTools, setSystemTools] = useState<SystemToolRow[]>([])
+    const [templateId, setTemplateId] = useState<string>("")
+    const [versionCodeRows, setVersionCodeRows] = useState<ToolVersionRow[]>([])
+    const [versionCodeLoading, setVersionCodeLoading] = useState(false)
+    const [selectedVersionCode, setSelectedVersionCode] = useState<number>(0)
+
+    const runtimeTemplates = useMemo(
+        () => TOOL_TEMPLATES.filter((t) => t.runtime === form.runtime),
+        [form.runtime]
+    )
+    const codeLanguage = useMemo(() => normalizeEditorLanguage(form.runtime), [form.runtime])
+    const selectedVersionCodeRow = useMemo(
+        () => versionCodeRows.find((v) => v.version === selectedVersionCode) || null,
+        [versionCodeRows, selectedVersionCode]
+    )
 
     useEffect(() => {
         let stopped = false
@@ -246,14 +679,38 @@ export default function AdminCustomToolsPage() {
         setSystemTools((out.items || []).sort((a, b) => a.name.localeCompare(b.name)))
     }, [projectFilter])
 
+    const loadVersionCodes = useCallback(async (toolId: string) => {
+        if (!toolId) {
+            setVersionCodeRows([])
+            setSelectedVersionCode(0)
+            return
+        }
+        setVersionCodeLoading(true)
+        try {
+            const out = await backendJson<{ items: ToolVersionRow[] }>(
+                `/api/admin/custom-tools/${encodeURIComponent(toolId)}/versions?include_code=true`
+            )
+            const rows = (out.items || []).sort((a, b) => b.version - a.version)
+            setVersionCodeRows(rows)
+            setSelectedVersionCode(rows[0]?.version || 0)
+        } finally {
+            setVersionCodeLoading(false)
+        }
+    }, [])
+
     const loadToolDetail = useCallback(async (toolId: string) => {
         if (!toolId) {
             setVersions([])
+            setVersionCodeRows([])
+            setSelectedVersionCode(0)
             return
         }
         const detail = await backendJson<ToolDetailResponse>(`/api/admin/custom-tools/${encodeURIComponent(toolId)}`)
         const t = detail.tool
-        setVersions(detail.versions || [])
+        const rows = detail.versions || []
+        setVersions(rows)
+        setSelectedVersionCode(rows[0]?.version || 0)
+        setVersionCodeRows([])
         setForm({
             id: t.id,
             projectId: t.projectId || "",
@@ -273,7 +730,10 @@ export default function AdminCustomToolsPage() {
             tagsText: Array.isArray(t.tags) ? t.tags.join(", ") : "",
             codeText: "",
         })
-    }, [])
+        if (rows.length) {
+            void loadVersionCodes(toolId).catch((err) => setError(err instanceof Error ? err.message : String(err)))
+        }
+    }, [loadVersionCodes])
 
     useEffect(() => {
         void loadProjects()
@@ -291,6 +751,80 @@ export default function AdminCustomToolsPage() {
         if (!selectedToolId) return
         void loadToolDetail(selectedToolId).catch((err) => setError(String(err)))
     }, [loadToolDetail, selectedToolId])
+
+    useEffect(() => {
+        if (!runtimeTemplates.length) {
+            setTemplateId("")
+            return
+        }
+        if (runtimeTemplates.some((t) => t.id === templateId)) return
+        setTemplateId(runtimeTemplates[0].id)
+    }, [runtimeTemplates, templateId])
+
+    function applyTemplate() {
+        const template = runtimeTemplates.find((t) => t.id === templateId)
+        if (!template) return
+        setForm((f) => ({
+            ...f,
+            codeText: template.code,
+            inputSchemaText: template.inputSchema ? JSON.stringify(template.inputSchema, null, 2) : f.inputSchemaText,
+            outputSchemaText: template.outputSchema ? JSON.stringify(template.outputSchema, null, 2) : f.outputSchemaText,
+        }))
+        if (template.testArgs) {
+            setTestArgsText(JSON.stringify(template.testArgs, null, 2))
+        }
+        setNotice(`Applied template: ${template.name}`)
+    }
+
+    function formatCode() {
+        try {
+            const formatted = formatCodeForRuntime(form.runtime, form.codeText)
+            setForm((f) => ({ ...f, codeText: formatted }))
+            setNotice(formatted ? "Code formatted." : "Code editor is empty.")
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err))
+        }
+    }
+
+    function formatJsonField(field: "inputSchemaText" | "outputSchemaText" | "secretsText" | "testArgsText") {
+        try {
+            if (field === "testArgsText") {
+                setTestArgsText(prettifyJsonObjectText(testArgsText))
+            } else if (field === "inputSchemaText") {
+                setForm((f) => ({ ...f, inputSchemaText: prettifyJsonObjectText(f.inputSchemaText) }))
+            } else if (field === "outputSchemaText") {
+                setForm((f) => ({ ...f, outputSchemaText: prettifyJsonObjectText(f.outputSchemaText) }))
+            } else {
+                setForm((f) => ({ ...f, secretsText: prettifyJsonObjectText(f.secretsText) }))
+            }
+            setNotice("JSON formatted.")
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err))
+        }
+    }
+
+    function loadSelectedVersionIntoEditor() {
+        const code = String(selectedVersionCodeRow?.code || "")
+        if (!code.trim()) {
+            setError("Selected version has no code payload available.")
+            return
+        }
+        setForm((f) => ({ ...f, codeText: code }))
+        setNotice(`Loaded version v${selectedVersionCode} into editor.`)
+    }
+
+    function onCodeEditorKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+        if (e.key !== "Tab") return
+        e.preventDefault()
+        const target = e.target as HTMLTextAreaElement
+        const start = target.selectionStart ?? 0
+        const end = target.selectionEnd ?? 0
+        const next = `${form.codeText.slice(0, start)}    ${form.codeText.slice(end)}`
+        setForm((f) => ({ ...f, codeText: next }))
+        window.requestAnimationFrame(() => {
+            target.selectionStart = target.selectionEnd = start + 4
+        })
+    }
 
     async function createTool() {
         setBusy(true)
@@ -514,6 +1048,8 @@ export default function AdminCustomToolsPage() {
                                         onClick={() => {
                                             setSelectedToolId("")
                                             setVersions([])
+                                            setVersionCodeRows([])
+                                            setSelectedVersionCode(0)
                                             setForm(emptyForm())
                                         }}
                                     >
@@ -656,35 +1192,72 @@ export default function AdminCustomToolsPage() {
                                     </Stack>
                                 </Stack>
 
-                                <TextField
-                                    label="Input JSON Schema"
-                                    size="small"
-                                    value={form.inputSchemaText}
-                                    onChange={(e) => setForm((f) => ({ ...f, inputSchemaText: e.target.value }))}
-                                    fullWidth
-                                    multiline
-                                    minRows={6}
-                                    sx={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}
-                                />
-                                <TextField
-                                    label="Output JSON Schema"
-                                    size="small"
-                                    value={form.outputSchemaText}
-                                    onChange={(e) => setForm((f) => ({ ...f, outputSchemaText: e.target.value }))}
-                                    fullWidth
-                                    multiline
-                                    minRows={4}
-                                    sx={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}
-                                />
-                                <TextField
-                                    label="Secrets (JSON object)"
-                                    size="small"
-                                    value={form.secretsText}
-                                    onChange={(e) => setForm((f) => ({ ...f, secretsText: e.target.value }))}
-                                    fullWidth
-                                    multiline
-                                    minRows={3}
-                                />
+                                <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", lg: "1fr 1fr" }, gap: 1 }}>
+                                    <Box>
+                                        <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.5 }}>
+                                            <Typography variant="caption" color="text.secondary">
+                                                Input JSON Schema
+                                            </Typography>
+                                            <Tooltip title="Auto-format JSON">
+                                                <Button size="small" startIcon={<AutoFixHighRounded />} onClick={() => formatJsonField("inputSchemaText")}>
+                                                    Format
+                                                </Button>
+                                            </Tooltip>
+                                        </Stack>
+                                        <TextField
+                                            size="small"
+                                            value={form.inputSchemaText}
+                                            onChange={(e) => setForm((f) => ({ ...f, inputSchemaText: e.target.value }))}
+                                            fullWidth
+                                            multiline
+                                            minRows={10}
+                                            sx={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}
+                                        />
+                                    </Box>
+                                    <Box>
+                                        <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.5 }}>
+                                            <Typography variant="caption" color="text.secondary">
+                                                Output JSON Schema
+                                            </Typography>
+                                            <Tooltip title="Auto-format JSON">
+                                                <Button size="small" startIcon={<AutoFixHighRounded />} onClick={() => formatJsonField("outputSchemaText")}>
+                                                    Format
+                                                </Button>
+                                            </Tooltip>
+                                        </Stack>
+                                        <TextField
+                                            size="small"
+                                            value={form.outputSchemaText}
+                                            onChange={(e) => setForm((f) => ({ ...f, outputSchemaText: e.target.value }))}
+                                            fullWidth
+                                            multiline
+                                            minRows={10}
+                                            sx={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}
+                                        />
+                                    </Box>
+                                </Box>
+
+                                <Box>
+                                    <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.5 }}>
+                                        <Typography variant="caption" color="text.secondary">
+                                            Secrets (JSON object)
+                                        </Typography>
+                                        <Tooltip title="Auto-format JSON">
+                                            <Button size="small" startIcon={<AutoFixHighRounded />} onClick={() => formatJsonField("secretsText")}>
+                                                Format
+                                            </Button>
+                                        </Tooltip>
+                                    </Stack>
+                                    <TextField
+                                        size="small"
+                                        value={form.secretsText}
+                                        onChange={(e) => setForm((f) => ({ ...f, secretsText: e.target.value }))}
+                                        fullWidth
+                                        multiline
+                                        minRows={4}
+                                        sx={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}
+                                    />
+                                </Box>
 
                                 <Stack direction="row" spacing={1}>
                                     <Button
@@ -707,15 +1280,50 @@ export default function AdminCustomToolsPage() {
                                 <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
                                     New Version Code
                                 </Typography>
-                                <TextField
-                                    label={form.runtime === "local_typescript" ? "TypeScript code (define function run(args, context, helpers))" : "Python code (define run(args, context))"}
-                                    size="small"
-                                    value={form.codeText}
-                                    onChange={(e) => setForm((f) => ({ ...f, codeText: e.target.value }))}
-                                    fullWidth
-                                    multiline
-                                    minRows={10}
-                                />
+                                <Paper variant="outlined" sx={{ p: 1 }}>
+                                    <Stack direction={{ xs: "column", md: "row" }} spacing={1} alignItems={{ xs: "stretch", md: "center" }}>
+                                        <FormControl size="small" sx={{ minWidth: { xs: "100%", md: 340 } }}>
+                                            <InputLabel id="tool-template-label">Code Template</InputLabel>
+                                            <Select
+                                                labelId="tool-template-label"
+                                                label="Code Template"
+                                                value={templateId}
+                                                onChange={(e) => setTemplateId(e.target.value)}
+                                            >
+                                                {runtimeTemplates.map((tpl) => (
+                                                    <MenuItem key={tpl.id} value={tpl.id}>
+                                                        {tpl.name}
+                                                    </MenuItem>
+                                                ))}
+                                            </Select>
+                                        </FormControl>
+                                        <Button variant="outlined" startIcon={<UploadFileRounded />} onClick={applyTemplate} disabled={!templateId}>
+                                            Apply Template
+                                        </Button>
+                                        <Button variant="outlined" startIcon={<AutoFixHighRounded />} onClick={formatCode}>
+                                            Format Code
+                                        </Button>
+                                    </Stack>
+                                    {templateId && (
+                                        <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: "block" }}>
+                                            {runtimeTemplates.find((t) => t.id === templateId)?.description || ""}
+                                        </Typography>
+                                    )}
+                                </Paper>
+                                <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", xl: "1fr 1fr" }, gap: 1 }}>
+                                    <TextField
+                                        label={form.runtime === "local_typescript" ? "TypeScript code (define function run(args, context, helpers))" : "Python code (define run(args, context))"}
+                                        size="small"
+                                        value={form.codeText}
+                                        onChange={(e) => setForm((f) => ({ ...f, codeText: e.target.value }))}
+                                        onKeyDown={onCodeEditorKeyDown}
+                                        fullWidth
+                                        multiline
+                                        minRows={16}
+                                        sx={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}
+                                    />
+                                    <EditorCodePreview code={form.codeText} language={codeLanguage} minHeight={360} />
+                                </Box>
                                 <Stack direction="row" spacing={1}>
                                     <Button
                                         variant="outlined"
@@ -746,6 +1354,7 @@ export default function AdminCustomToolsPage() {
                                                 label={`v${v.version} · ${v.status}`}
                                                 color={v.status === "published" ? "primary" : "default"}
                                                 variant={v.status === "published" ? "filled" : "outlined"}
+                                                onClick={() => setSelectedVersionCode(v.version)}
                                             />
                                         ))}
                                         {!versions.length && (
@@ -756,19 +1365,85 @@ export default function AdminCustomToolsPage() {
                                     </Stack>
                                 </Box>
 
+                                <Paper variant="outlined" sx={{ p: 1.2 }}>
+                                    <Stack direction={{ xs: "column", md: "row" }} spacing={1} alignItems={{ xs: "stretch", md: "center" }}>
+                                        <FormControl size="small" sx={{ minWidth: { xs: "100%", md: 220 } }}>
+                                            <InputLabel id="tool-version-code-label">Version Code</InputLabel>
+                                            <Select
+                                                labelId="tool-version-code-label"
+                                                label="Version Code"
+                                                value={selectedVersionCode || ""}
+                                                onChange={(e) => setSelectedVersionCode(Number(e.target.value || 0))}
+                                                disabled={!versions.length}
+                                            >
+                                                {versions.map((v) => (
+                                                    <MenuItem key={`view-${v.id}`} value={v.version}>
+                                                        v{v.version} ({v.status})
+                                                    </MenuItem>
+                                                ))}
+                                            </Select>
+                                        </FormControl>
+                                        <Button
+                                            variant="outlined"
+                                            startIcon={<RefreshRounded />}
+                                            onClick={() =>
+                                                void loadVersionCodes(form.id || "").catch((err) =>
+                                                    setError(err instanceof Error ? err.message : String(err))
+                                                )
+                                            }
+                                            disabled={!form.id || versionCodeLoading}
+                                        >
+                                            Refresh Uploaded Code
+                                        </Button>
+                                        <Button
+                                            variant="outlined"
+                                            startIcon={<ContentCopyRounded />}
+                                            onClick={loadSelectedVersionIntoEditor}
+                                            disabled={!selectedVersionCodeRow?.code}
+                                        >
+                                            Load Into Editor
+                                        </Button>
+                                    </Stack>
+                                    {versionCodeLoading && (
+                                        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                                            Loading uploaded version code...
+                                        </Typography>
+                                    )}
+                                    {!versionCodeLoading && !!selectedVersionCodeRow?.code && (
+                                        <Box sx={{ mt: 1 }}>
+                                            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.6 }}>
+                                                Uploaded version v{selectedVersionCodeRow.version}
+                                            </Typography>
+                                            <EditorCodePreview code={String(selectedVersionCodeRow.code || "")} language={codeLanguage} minHeight={220} />
+                                        </Box>
+                                    )}
+                                </Paper>
+
                                 <Divider />
                                 <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
                                     Test Run
                                 </Typography>
-                                <TextField
-                                    label="Test Args (JSON object)"
-                                    size="small"
-                                    value={testArgsText}
-                                    onChange={(e) => setTestArgsText(e.target.value)}
-                                    fullWidth
-                                    multiline
-                                    minRows={3}
-                                />
+                                <Box>
+                                    <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.5 }}>
+                                        <Typography variant="caption" color="text.secondary">
+                                            Test Args (JSON object)
+                                        </Typography>
+                                        <Tooltip title="Auto-format JSON">
+                                            <Button size="small" startIcon={<AutoFixHighRounded />} onClick={() => formatJsonField("testArgsText")}>
+                                                Format
+                                            </Button>
+                                        </Tooltip>
+                                    </Stack>
+                                    <TextField
+                                        size="small"
+                                        value={testArgsText}
+                                        onChange={(e) => setTestArgsText(e.target.value)}
+                                        fullWidth
+                                        multiline
+                                        minRows={3}
+                                        sx={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}
+                                    />
+                                </Box>
                                 <Button
                                     variant="outlined"
                                     startIcon={<ScienceRounded />}
