@@ -104,6 +104,17 @@ export function ProjectDrawerLayout(props: Props) {
     const [mobileOpen, setMobileOpen] = useState(false)
 
     const userLabel = useMemo(() => user?.displayName || user?.email || "Developer", [user])
+    const uniqueChats = useMemo(() => {
+        const out: DrawerChat[] = []
+        const seen = new Set<string>()
+        for (const chat of chats || []) {
+            const id = (chat?.chat_id || "").trim()
+            if (!id || seen.has(id)) continue
+            seen.add(id)
+            out.push(chat)
+        }
+        return out
+    }, [chats])
 
     useEffect(() => {
         setMobileOpen(false)
@@ -197,13 +208,13 @@ export function ProjectDrawerLayout(props: Props) {
                         </ListItemButton>
                     )}
 
-                    {!loadingChats && chats.length === 0 && (
+                    {!loadingChats && uniqueChats.length === 0 && (
                         <ListItemButton disabled sx={{ borderRadius: 2 }}>
                             <ListItemText primary="No chats for this branch" />
                         </ListItemButton>
                     )}
 
-                    {chats.map((chat) => {
+                    {uniqueChats.map((chat) => {
                         const selected = chat.chat_id === selectedChatId
                         return (
                             <ListItemButton

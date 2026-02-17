@@ -129,6 +129,46 @@ def _extract_max_tool_calls(project: dict) -> int:
     return max(1, min(value, 80))
 
 
+def _merge_tool_policies(base_policy: dict, chat_policy: dict) -> dict:
+    base = base_policy if isinstance(base_policy, dict) else {}
+    chat = chat_policy if isinstance(chat_policy, dict) else {}
+    merged: dict[str, Any] = {}
+
+    base_allowed = _as_tool_name_list(base.get("allowed_tools") or base.get("allow_tools"))
+    chat_allowed = _as_tool_name_list(chat.get("allowed_tools") or chat.get("allow_tools"))
+    if chat_allowed:
+        if base_allowed:
+            allowed_set = set(base_allowed)
+            merged["allowed_tools"] = [t for t in chat_allowed if t in allowed_set]
+        else:
+            merged["allowed_tools"] = chat_allowed
+    elif base_allowed:
+        merged["allowed_tools"] = base_allowed
+
+    base_blocked = set(_as_tool_name_list(base.get("blocked_tools") or base.get("deny_tools")))
+    chat_blocked = set(_as_tool_name_list(chat.get("blocked_tools") or chat.get("deny_tools")))
+    blocked = sorted(base_blocked.union(chat_blocked))
+    if blocked:
+        merged["blocked_tools"] = blocked
+
+    merged["read_only_only"] = bool(base.get("read_only_only")) or bool(chat.get("read_only_only"))
+
+    for key in ("timeout_overrides", "rate_limit_overrides", "retry_overrides", "cache_ttl_overrides"):
+        out: dict[str, int] = {}
+        for source in (base.get(key), chat.get(key)):
+            if not isinstance(source, dict):
+                continue
+            for k, v in source.items():
+                try:
+                    out[str(k)] = int(v)
+                except Exception:
+                    continue
+        if out:
+            merged[key] = out
+
+    return merged
+
+
 @router.post("/ask_agent")
 async def ask_agent(req: AskReq):
     chat_id = req.chat_id or f"{req.project_id}::{req.branch}::{req.user}"
@@ -144,6 +184,7 @@ async def ask_agent(req: AskReq):
             "user": req.user,
             "title": "New chat",
             "messages": [],
+            "tool_policy": {},
             "created_at": now,
             "updated_at": now,
         }},
@@ -167,6 +208,9 @@ async def ask_agent(req: AskReq):
 
     # run retrieval + llm
     defaults = await _project_llm_defaults(req.project_id)
+    chat_doc = await get_db()["chats"].find_one({"chat_id": chat_id}, {"tool_policy": 1})
+    chat_policy = (chat_doc or {}).get("tool_policy") if isinstance(chat_doc, dict) else {}
+    effective_tool_policy = _merge_tool_policies(defaults.get("tool_policy") or {}, chat_policy if isinstance(chat_policy, dict) else {})
     effective_question = req.question
     if req.local_repo_context and req.local_repo_context.strip():
         effective_question = (
@@ -186,7 +230,7 @@ async def ask_agent(req: AskReq):
             llm_api_key=req.llm_api_key or defaults["llm_api_key"],
             llm_model=req.llm_model or defaults["llm_model"],
             chat_id=chat_id,
-            tool_policy=(defaults.get("tool_policy") or {}),
+            tool_policy=effective_tool_policy,
             max_tool_calls=int(defaults.get("max_tool_calls") or 12),
             include_tool_events=True,
         )

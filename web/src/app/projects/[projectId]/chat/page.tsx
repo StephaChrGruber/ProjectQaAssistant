@@ -9,14 +9,18 @@ import {
     CircularProgress,
     Collapse,
     Dialog,
+    DialogActions,
     DialogContent,
     DialogTitle,
     Divider,
+    FormControlLabel,
     List,
     ListItemButton,
+    ListItemIcon,
     ListItemText,
     Paper,
     Stack,
+    Switch,
     TextField,
     Typography,
 } from "@mui/material"
@@ -29,6 +33,8 @@ import FolderRounded from "@mui/icons-material/FolderRounded"
 import DescriptionOutlined from "@mui/icons-material/DescriptionOutlined"
 import ExpandMoreRounded from "@mui/icons-material/ExpandMoreRounded"
 import ChevronRightRounded from "@mui/icons-material/ChevronRightRounded"
+import BuildRounded from "@mui/icons-material/BuildRounded"
+import CheckCircleRounded from "@mui/icons-material/CheckCircleRounded"
 import { backendJson } from "@/lib/backend"
 import { ProjectDrawerLayout, type DrawerChat, type DrawerUser } from "@/components/ProjectDrawerLayout"
 import { buildChatPath, saveLastChat } from "@/lib/last-chat"
@@ -46,6 +52,18 @@ import {
 } from "@/lib/local-repo-bridge"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
+import {
+    Bar,
+    BarChart,
+    CartesianGrid,
+    Legend,
+    Line,
+    LineChart,
+    ResponsiveContainer,
+    Tooltip,
+    XAxis,
+    YAxis,
+} from "recharts"
 
 type ChatMessage = {
     role: "user" | "assistant" | "system" | "tool"
@@ -94,6 +112,31 @@ type AskAgentResponse = {
     }>
 }
 
+type ToolCatalogItem = {
+    name: string
+    description?: string
+    timeout_sec?: number
+    rate_limit_per_min?: number
+    max_retries?: number
+    cache_ttl_sec?: number
+    read_only?: boolean
+}
+
+type ToolCatalogResponse = {
+    tools: ToolCatalogItem[]
+}
+
+type ChatToolPolicy = {
+    allowed_tools?: string[]
+    blocked_tools?: string[]
+    read_only_only?: boolean
+}
+
+type ChatToolPolicyResponse = {
+    chat_id: string
+    tool_policy?: ChatToolPolicy
+}
+
 type GenerateDocsResponse = {
     branch?: string
     current_branch?: string
@@ -128,6 +171,21 @@ type DocTreeNode = {
     path: string
     file?: DocumentationFileEntry
     children?: DocTreeNode[]
+}
+
+type ChatChartSeries = {
+    key: string
+    label?: string
+    color?: string
+}
+
+type ChatChartSpec = {
+    type: "line" | "bar"
+    title?: string
+    data: Array<Record<string, string | number>>
+    xKey: string
+    series: ChatChartSeries[]
+    height?: number
 }
 
 function relDocPath(path: string): string {
@@ -253,6 +311,69 @@ function makeChatId(projectId: string, branch: string, user: string): string {
     return `${projectId}::${branch}::${user}::${Date.now().toString(36)}`
 }
 
+function dedupeChatsById(items: DrawerChat[]): DrawerChat[] {
+    const out: DrawerChat[] = []
+    const seen = new Set<string>()
+    for (const item of items || []) {
+        const id = (item?.chat_id || "").trim()
+        if (!id || seen.has(id)) continue
+        seen.add(id)
+        out.push(item)
+    }
+    return out
+}
+
+function sanitizeToolNames(values: string[] | undefined): string[] {
+    const out: string[] = []
+    const seen = new Set<string>()
+    for (const raw of values || []) {
+        const s = String(raw || "").trim()
+        if (!s || seen.has(s)) continue
+        seen.add(s)
+        out.push(s)
+    }
+    return out
+}
+
+function enabledToolsFromPolicy(catalog: ToolCatalogItem[], policy: ChatToolPolicy | null): Set<string> {
+    const all = new Set(catalog.map((t) => t.name))
+    if (!policy) return all
+    const allowed = sanitizeToolNames(policy.allowed_tools)
+    const blocked = new Set(sanitizeToolNames(policy.blocked_tools))
+    if (!allowed.length) {
+        return new Set(Array.from(all).filter((name) => !blocked.has(name)))
+    }
+    return new Set(allowed.filter((name) => all.has(name) && !blocked.has(name)))
+}
+
+function parseChartSpec(raw: string): ChatChartSpec | null {
+    const text = (raw || "").trim()
+    if (!text) return null
+    try {
+        const obj = JSON.parse(text)
+        if (!obj || typeof obj !== "object") return null
+        const rec = obj as Record<string, unknown>
+        const type = rec.type === "bar" ? "bar" : rec.type === "line" ? "line" : null
+        const xKey = typeof rec.xKey === "string" ? rec.xKey : ""
+        const data = Array.isArray(rec.data) ? rec.data.filter((d) => d && typeof d === "object") as Array<Record<string, string | number>> : []
+        const rawSeries = Array.isArray(rec.series) ? rec.series : []
+        const series: ChatChartSeries[] = rawSeries
+            .map((s) => (s && typeof s === "object" ? s as Record<string, unknown> : null))
+            .filter((s): s is Record<string, unknown> => !!s)
+            .map((s) => ({
+                key: typeof s.key === "string" ? s.key : "",
+                label: typeof s.label === "string" ? s.label : undefined,
+                color: typeof s.color === "string" ? s.color : undefined,
+            }))
+            .filter((s) => !!s.key)
+        const height = typeof rec.height === "number" ? Math.max(180, Math.min(520, Math.round(rec.height))) : 280
+        const title = typeof rec.title === "string" ? rec.title : undefined
+        if (!type || !xKey || !data.length || !series.length) return null
+        return { type, title, data, xKey, series, height }
+    } catch {}
+    return null
+}
+
 export default function ProjectChatPage() {
     const { projectId } = useParams<{ projectId: string }>()
     const router = useRouter()
@@ -287,6 +408,14 @@ export default function ProjectChatPage() {
     const [selectedDocPath, setSelectedDocPath] = useState<string | null>(null)
     const [selectedDocContent, setSelectedDocContent] = useState("")
     const [docContentLoading, setDocContentLoading] = useState(false)
+    const [toolsOpen, setToolsOpen] = useState(false)
+    const [toolsLoading, setToolsLoading] = useState(false)
+    const [toolsSaving, setToolsSaving] = useState(false)
+    const [toolsError, setToolsError] = useState<string | null>(null)
+    const [toolCatalog, setToolCatalog] = useState<ToolCatalogItem[]>([])
+    const [chatToolPolicy, setChatToolPolicy] = useState<ChatToolPolicy | null>(null)
+    const [toolEnabledSet, setToolEnabledSet] = useState<Set<string>>(new Set())
+    const [toolReadOnlyOnly, setToolReadOnlyOnly] = useState(false)
 
     const scrollRef = useRef<HTMLDivElement | null>(null)
     const projectLabel = useMemo(() => project?.name || project?.key || projectId, [project, projectId])
@@ -296,6 +425,7 @@ export default function ProjectChatPage() {
         [project?.repo_path]
     )
     const docsTree = useMemo(() => buildDocTree(docsFiles), [docsFiles])
+    const enabledToolCount = useMemo(() => toolEnabledSet.size, [toolEnabledSet])
 
     useEffect(() => {
         selectedChatIdRef.current = selectedChatId
@@ -343,9 +473,10 @@ export default function ProjectChatPage() {
                 const docs = await backendJson<DrawerChat[]>(
                     `/api/projects/${projectId}/chats?branch=${encodeURIComponent(activeBranch)}&limit=100&user=${encodeURIComponent(userId)}`
                 )
+                const uniqueDocs = dedupeChatsById(docs || [])
 
                 const current = preferredChatId || selectedChatIdRef.current
-                if (current && !docs.some((c) => c.chat_id === current)) {
+                if (current && !uniqueDocs.some((c) => c.chat_id === current)) {
                     await ensureChat(current, activeBranch)
                     const now = new Date().toISOString()
                     const merged: DrawerChat[] = [
@@ -356,14 +487,14 @@ export default function ProjectChatPage() {
                             updated_at: now,
                             created_at: now,
                         },
-                        ...docs.filter((c) => c.chat_id !== current),
+                        ...uniqueDocs.filter((c) => c.chat_id !== current),
                     ]
-                    setChats(merged)
+                    setChats(dedupeChatsById(merged))
                     setSelectedChatId(current)
                     return current
                 }
 
-                if (!docs.length) {
+                if (!uniqueDocs.length) {
                     const fallback = preferredChatId || `${projectId}::${activeBranch}::${userId}`
                     await ensureChat(fallback, activeBranch)
                     const now = new Date().toISOString()
@@ -379,8 +510,9 @@ export default function ProjectChatPage() {
                     return fallback
                 }
 
-                setChats(docs)
-                const next = (current && docs.some((c) => c.chat_id === current) && current) || docs[0]?.chat_id || null
+                setChats(uniqueDocs)
+                const next =
+                    (current && uniqueDocs.some((c) => c.chat_id === current) && current) || uniqueDocs[0]?.chat_id || null
                 setSelectedChatId(next)
                 return next
             } finally {
@@ -388,6 +520,32 @@ export default function ProjectChatPage() {
             }
         },
         [ensureChat, projectId, projectLabel, userId]
+    )
+
+    const loadChatToolConfig = useCallback(
+        async (chatId: string) => {
+            setToolsLoading(true)
+            setToolsError(null)
+            try {
+                const [catalogRes, policyRes] = await Promise.all([
+                    backendJson<ToolCatalogResponse>("/api/tools/catalog"),
+                    backendJson<ChatToolPolicyResponse>(`/api/chats/${encodeURIComponent(chatId)}/tool-policy`),
+                ])
+                const catalog = (catalogRes.tools || []).filter((t) => !!t.name)
+                const policy = (policyRes.tool_policy || {}) as ChatToolPolicy
+                const enabled = enabledToolsFromPolicy(catalog, policy)
+
+                setToolCatalog(catalog)
+                setChatToolPolicy(policy)
+                setToolEnabledSet(enabled)
+                setToolReadOnlyOnly(Boolean(policy.read_only_only))
+            } catch (err) {
+                setToolsError(errText(err))
+            } finally {
+                setToolsLoading(false)
+            }
+        },
+        []
     )
 
     useEffect(() => {
@@ -498,6 +656,11 @@ export default function ProjectChatPage() {
     }, [branch, ensureChat, loadMessages, selectedChatId])
 
     useEffect(() => {
+        if (!selectedChatId) return
+        void loadChatToolConfig(selectedChatId)
+    }, [loadChatToolConfig, selectedChatId])
+
+    useEffect(() => {
         scrollToBottom()
     }, [messages, sending, loadingMessages, scrollToBottom])
 
@@ -539,6 +702,52 @@ export default function ProjectChatPage() {
             setError(errText(err))
         }
     }, [branch, ensureChat, loadChats, projectId, userId])
+
+    const toggleToolEnabled = useCallback((toolName: string) => {
+        setToolEnabledSet((prev) => {
+            const next = new Set(prev)
+            if (next.has(toolName)) next.delete(toolName)
+            else next.add(toolName)
+            return next
+        })
+    }, [])
+
+    const openToolDialog = useCallback(async () => {
+        setToolsOpen(true)
+        if (selectedChatId) {
+            await loadChatToolConfig(selectedChatId)
+        }
+    }, [loadChatToolConfig, selectedChatId])
+
+    const saveChatToolPolicy = useCallback(async () => {
+        if (!selectedChatId) return
+        setToolsSaving(true)
+        setToolsError(null)
+        try {
+            const allNames = toolCatalog.map((t) => t.name)
+            const enabled = Array.from(toolEnabledSet).filter((name) => allNames.includes(name)).sort((a, b) => a.localeCompare(b))
+            const blocked = allNames.filter((name) => !toolEnabledSet.has(name)).sort((a, b) => a.localeCompare(b))
+
+            const body: ChatToolPolicy = {
+                allowed_tools: enabled,
+                blocked_tools: blocked,
+                read_only_only: toolReadOnlyOnly,
+            }
+            const out = await backendJson<ChatToolPolicyResponse>(
+                `/api/chats/${encodeURIComponent(selectedChatId)}/tool-policy`,
+                {
+                    method: "PUT",
+                    body: JSON.stringify(body),
+                }
+            )
+            setChatToolPolicy(out.tool_policy || body)
+            setDocsNotice(`Tool configuration saved for chat ${selectedChatId}.`)
+        } catch (err) {
+            setToolsError(errText(err))
+        } finally {
+            setToolsSaving(false)
+        }
+    }, [selectedChatId, toolCatalog, toolEnabledSet, toolReadOnlyOnly])
 
     const maybeAutoGenerateDocsFromQuestion = useCallback(
         async (question: string) => {
@@ -941,6 +1150,15 @@ export default function ProjectChatPage() {
                         <Button
                             size="small"
                             variant="outlined"
+                            startIcon={<BuildRounded />}
+                            onClick={() => void openToolDialog()}
+                            disabled={!selectedChatId}
+                        >
+                            Tools ({enabledToolCount})
+                        </Button>
+                        <Button
+                            size="small"
+                            variant="outlined"
                             startIcon={<DescriptionRounded />}
                             onClick={openDocumentationViewer}
                         >
@@ -1028,32 +1246,107 @@ export default function ProjectChatPage() {
                                         <Stack spacing={1}>
                                             {splitChartBlocks(m.content || "").map((part, i) => {
                                                 if (part.type === "chart") {
+                                                    const spec = parseChartSpec(part.value)
                                                     return (
-                                                        <Paper key={i} variant="outlined" sx={{ p: 1.2, bgcolor: "rgba(0,0,0,0.24)" }}>
+                                                        <Paper key={i} variant="outlined" sx={{ p: 1.2, bgcolor: "rgba(0,0,0,0.16)" }}>
                                                             <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.12em" }}>
                                                                 CHART BLOCK
                                                             </Typography>
-                                                            <Box
-                                                                component="pre"
-                                                                sx={{
-                                                                    mt: 0.8,
-                                                                    mb: 0,
-                                                                    overflowX: "auto",
-                                                                    whiteSpace: "pre",
-                                                                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                                                                    fontSize: 12,
-                                                                }}
-                                                            >
-                                                                {part.value}
-                                                            </Box>
+                                                            {spec ? (
+                                                                <Box sx={{ mt: 1.1, width: "100%", minWidth: 280 }}>
+                                                                    {spec.title && (
+                                                                        <Typography variant="subtitle2" sx={{ mb: 0.8 }}>
+                                                                            {spec.title}
+                                                                        </Typography>
+                                                                    )}
+                                                                    <ResponsiveContainer width="100%" height={spec.height || 280}>
+                                                                        {spec.type === "bar" ? (
+                                                                            <BarChart data={spec.data}>
+                                                                                <CartesianGrid strokeDasharray="3 3" />
+                                                                                <XAxis dataKey={spec.xKey} />
+                                                                                <YAxis />
+                                                                                <Tooltip />
+                                                                                <Legend />
+                                                                                {spec.series.map((s, sidx) => (
+                                                                                    <Bar
+                                                                                        key={s.key}
+                                                                                        dataKey={s.key}
+                                                                                        name={s.label || s.key}
+                                                                                        fill={s.color || ["#0088FE", "#00C49F", "#FFBB28", "#FF8042"][sidx % 4]}
+                                                                                    />
+                                                                                ))}
+                                                                            </BarChart>
+                                                                        ) : (
+                                                                            <LineChart data={spec.data}>
+                                                                                <CartesianGrid strokeDasharray="3 3" />
+                                                                                <XAxis dataKey={spec.xKey} />
+                                                                                <YAxis />
+                                                                                <Tooltip />
+                                                                                <Legend />
+                                                                                {spec.series.map((s, sidx) => (
+                                                                                    <Line
+                                                                                        key={s.key}
+                                                                                        type="monotone"
+                                                                                        dataKey={s.key}
+                                                                                        name={s.label || s.key}
+                                                                                        stroke={s.color || ["#0088FE", "#00C49F", "#FFBB28", "#FF8042"][sidx % 4]}
+                                                                                        strokeWidth={2}
+                                                                                        dot={false}
+                                                                                    />
+                                                                                ))}
+                                                                            </LineChart>
+                                                                        )}
+                                                                    </ResponsiveContainer>
+                                                                </Box>
+                                                            ) : (
+                                                                <Box
+                                                                    component="pre"
+                                                                    sx={{
+                                                                        mt: 0.8,
+                                                                        mb: 0,
+                                                                        overflowX: "auto",
+                                                                        whiteSpace: "pre",
+                                                                        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                                                                        fontSize: 12,
+                                                                    }}
+                                                                >
+                                                                    {part.value}
+                                                                </Box>
+                                                            )}
                                                         </Paper>
                                                     )
                                                 }
 
                                                 return (
-                                                    <Typography key={i} variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-                                                        {part.value}
-                                                    </Typography>
+                                                    <Box
+                                                        key={i}
+                                                        sx={{
+                                                            "& p": { my: 0.7, lineHeight: 1.55 },
+                                                            "& ul, & ol": { my: 0.7, pl: 2.5 },
+                                                            "& li": { my: 0.3 },
+                                                            "& a": { color: "inherit", textDecoration: "underline" },
+                                                            "& img": {
+                                                                maxWidth: "100%",
+                                                                borderRadius: 1.5,
+                                                                display: "block",
+                                                                my: 1,
+                                                            },
+                                                            "& code": {
+                                                                fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                                                                fontSize: "0.82em",
+                                                                bgcolor: isUser ? "rgba(255,255,255,0.2)" : "action.hover",
+                                                                px: 0.5,
+                                                                borderRadius: 0.6,
+                                                            },
+                                                            "& pre code": {
+                                                                display: "block",
+                                                                p: 1,
+                                                                overflowX: "auto",
+                                                            },
+                                                        }}
+                                                    >
+                                                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{part.value}</ReactMarkdown>
+                                                    </Box>
                                                 )
                                             })}
                                         </Stack>
@@ -1131,6 +1424,87 @@ export default function ProjectChatPage() {
                         </Stack>
                     </Stack>
                 </Paper>
+
+                <Dialog
+                    open={toolsOpen}
+                    onClose={() => setToolsOpen(false)}
+                    fullWidth
+                    maxWidth="md"
+                >
+                    <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+                        <Stack spacing={0.2}>
+                            <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                                Chat Tool Configuration
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                                Chat: <code>{selectedChatId || "none"}</code>
+                            </Typography>
+                        </Stack>
+                    </DialogTitle>
+                    <DialogContent dividers sx={{ pt: 1.2 }}>
+                        {toolsLoading && (
+                            <Box sx={{ py: 2 }}>
+                                <CircularProgress size={18} />
+                            </Box>
+                        )}
+                        {toolsError && (
+                            <Box sx={{ pb: 1.2 }}>
+                                <Alert severity="error">{toolsError}</Alert>
+                            </Box>
+                        )}
+                        <Stack spacing={1.2}>
+                            <FormControlLabel
+                                control={
+                                    <Switch
+                                        checked={toolReadOnlyOnly}
+                                        onChange={(e) => setToolReadOnlyOnly(e.target.checked)}
+                                    />
+                                }
+                                label="Read-only mode (disable all write/mutating tools)"
+                            />
+                            <Divider />
+                            <List dense>
+                                {toolCatalog.map((tool) => {
+                                    const enabled = toolEnabledSet.has(tool.name)
+                                    return (
+                                        <ListItemButton key={tool.name} onClick={() => toggleToolEnabled(tool.name)} sx={{ borderRadius: 1.5, mb: 0.35 }}>
+                                            <ListItemIcon sx={{ minWidth: 34 }}>
+                                                <Switch
+                                                    size="small"
+                                                    checked={enabled}
+                                                    onChange={() => toggleToolEnabled(tool.name)}
+                                                    onClick={(e) => e.stopPropagation()}
+                                                />
+                                            </ListItemIcon>
+                                            <ListItemText
+                                                primary={
+                                                    <Stack direction="row" spacing={1} alignItems="center">
+                                                        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                                                            {tool.name}
+                                                        </Typography>
+                                                        {enabled && <CheckCircleRounded fontSize="inherit" color="success" />}
+                                                    </Stack>
+                                                }
+                                                secondary={`${tool.description || ""}${tool.read_only ? " · read-only" : " · write-enabled"}`}
+                                            />
+                                        </ListItemButton>
+                                    )
+                                })}
+                                {!toolCatalog.length && !toolsLoading && (
+                                    <ListItemButton disabled>
+                                        <ListItemText primary="No tools found." />
+                                    </ListItemButton>
+                                )}
+                            </List>
+                        </Stack>
+                    </DialogContent>
+                    <DialogActions>
+                        <Button onClick={() => setToolsOpen(false)}>Close</Button>
+                        <Button variant="contained" onClick={() => void saveChatToolPolicy()} disabled={toolsSaving || !selectedChatId}>
+                            {toolsSaving ? "Saving..." : "Save"}
+                        </Button>
+                    </DialogActions>
+                </Dialog>
 
                 <Dialog
                     open={docsOpen}

@@ -1,18 +1,66 @@
 from fastapi import APIRouter, HTTPException, Header
 from datetime import datetime
+from typing import Any
 from ..db import get_db
 from ..models.chat import ChatDoc, AppendReq, ChatResponse, ChatMessage
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/chats", tags=["chats"])
 
 COLL = "chats"
 
 
+class ChatToolPolicyReq(BaseModel):
+    allowed_tools: list[str] = Field(default_factory=list)
+    blocked_tools: list[str] = Field(default_factory=list)
+    read_only_only: bool = False
+    timeout_overrides: dict[str, int] = Field(default_factory=dict)
+    rate_limit_overrides: dict[str, int] = Field(default_factory=dict)
+    retry_overrides: dict[str, int] = Field(default_factory=dict)
+    cache_ttl_overrides: dict[str, int] = Field(default_factory=dict)
+
+
+def _clean_policy(req: ChatToolPolicyReq) -> dict[str, Any]:
+    def clean_list(values: list[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in values:
+            s = str(raw or "").strip()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+        return out
+
+    def clean_int_map(values: dict[str, int], min_value: int, max_value: int) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for k, v in (values or {}).items():
+            key = str(k or "").strip()
+            if not key:
+                continue
+            try:
+                num = int(v)
+            except Exception:
+                continue
+            out[key] = max(min_value, min(max_value, num))
+        return out
+
+    return {
+        "allowed_tools": clean_list(req.allowed_tools),
+        "blocked_tools": clean_list(req.blocked_tools),
+        "read_only_only": bool(req.read_only_only),
+        "timeout_overrides": clean_int_map(req.timeout_overrides, 1, 3600),
+        "rate_limit_overrides": clean_int_map(req.rate_limit_overrides, 1, 6000),
+        "retry_overrides": clean_int_map(req.retry_overrides, 0, 5),
+        "cache_ttl_overrides": clean_int_map(req.cache_ttl_overrides, 0, 3600),
+    }
+
+
 async def _ensure_chat_doc(payload: ChatDoc):
     # Upsert: create if missing.
     await get_db()[COLL].update_one(
         {"chat_id": payload.chat_id},
-        {"$setOnInsert": payload.model_dump()},
+        {"$setOnInsert": {**payload.model_dump(), "tool_policy": {}}},
         upsert=True,
     )
     return await get_db()[COLL].find_one({"chat_id": payload.chat_id}, {"_id": 0})
@@ -40,7 +88,16 @@ async def list_chats_by_project(
         .limit(max(1, min(limit, 300)))
     )
     docs = await cursor.to_list(length=max(1, min(limit, 300)))
-    return docs
+    # Be tolerant if duplicate chat_id docs exist in legacy data.
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for d in docs:
+        cid = str(d.get("chat_id") or "").strip()
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        deduped.append(d)
+    return deduped
 
 
 @router.get("/{chat_id}", response_model=ChatResponse)
@@ -92,3 +149,25 @@ async def clear_chat(chat_id: str):
 
     doc = await get_db()[COLL].find_one({"chat_id": chat_id}, {"_id": 0})
     return doc
+
+
+@router.get("/{chat_id}/tool-policy")
+async def get_chat_tool_policy(chat_id: str):
+    doc = await get_db()[COLL].find_one({"chat_id": chat_id}, {"_id": 0, "chat_id": 1, "tool_policy": 1})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    policy = doc.get("tool_policy") if isinstance(doc.get("tool_policy"), dict) else {}
+    return {"chat_id": chat_id, "tool_policy": policy}
+
+
+@router.put("/{chat_id}/tool-policy")
+async def put_chat_tool_policy(chat_id: str, req: ChatToolPolicyReq):
+    policy = _clean_policy(req)
+    res = await get_db()[COLL].update_one(
+        {"chat_id": chat_id},
+        {"$set": {"tool_policy": policy, "updated_at": datetime.utcnow()}},
+        upsert=False,
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    return {"chat_id": chat_id, "tool_policy": policy}

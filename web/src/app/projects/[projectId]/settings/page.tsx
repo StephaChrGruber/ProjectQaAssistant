@@ -183,6 +183,18 @@ function emptyJira(): JiraForm {
     return { isEnabled: false, baseUrl: "", email: "", apiToken: "", jql: "" }
 }
 
+function dedupeChatsById(items: DrawerChat[]): DrawerChat[] {
+    const out: DrawerChat[] = []
+    const seen = new Set<string>()
+    for (const item of items || []) {
+        const id = (item?.chat_id || "").trim()
+        if (!id || seen.has(id)) continue
+        seen.add(id)
+        out.push(item)
+    }
+    return out
+}
+
 function DetailCard({ title, value }: { title: string; value: string }) {
     return (
         <Card variant="outlined">
@@ -315,7 +327,7 @@ export default function ProjectSettingsPage() {
             const docs = await backendJson<DrawerChat[]>(
                 `/api/projects/${projectId}/chats?branch=${encodeURIComponent(branch)}&limit=100&user=${encodeURIComponent(userId)}`
             )
-            setChats(docs)
+            setChats(dedupeChatsById(docs || []))
         } finally {
             setLoadingChats(false)
         }
