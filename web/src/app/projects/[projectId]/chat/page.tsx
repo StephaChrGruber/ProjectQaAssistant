@@ -270,22 +270,31 @@ function buildDocTree(files: DocumentationFileEntry[]): DocTreeNode[] {
 
 function splitChartBlocks(text: string): Array<{ type: "text" | "chart"; value: string }> {
     const parts: Array<{ type: "text" | "chart"; value: string }> = []
-    const re = /```chart\s*([\s\S]*?)```/g
-    let last = 0
+    const re = /```([a-zA-Z0-9_-]*)\s*\n([\s\S]*?)```/g
+    let cursor = 0
     let m: RegExpExecArray | null
 
     while ((m = re.exec(text)) !== null) {
         const start = m.index
         const end = re.lastIndex
-        if (start > last) {
-            parts.push({ type: "text", value: text.slice(last, start) })
+        const lang = String(m[1] || "").trim().toLowerCase()
+        const body = String(m[2] || "").trim()
+        const maybeChart = parseChartSpec(body)
+        const chartLang = lang === "chart" || lang === "json"
+
+        if (!chartLang || !maybeChart) {
+            continue
         }
-        parts.push({ type: "chart", value: (m[1] ?? "").trim() })
-        last = end
+
+        if (start > cursor) {
+            parts.push({ type: "text", value: text.slice(cursor, start) })
+        }
+        parts.push({ type: "chart", value: body })
+        cursor = end
     }
 
-    if (last < text.length) {
-        parts.push({ type: "text", value: text.slice(last) })
+    if (cursor < text.length) {
+        parts.push({ type: "text", value: text.slice(cursor) })
     }
     return parts
 }

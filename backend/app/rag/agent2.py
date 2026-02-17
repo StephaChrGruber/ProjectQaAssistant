@@ -68,6 +68,8 @@ def _system_prompt(project_id: str, branch: str, user_id: str, runtime: ToolRunt
         "- Do not invent arguments.\n"
         "- Prefer tools over guessing.\n"
         "- If asked to update docs in repository, call generate_project_docs.\n"
+        "- If user asks for a chart/graph/visualization, return a ```chart fenced JSON block using this schema:\n"
+        '  {"type":"line|bar","title":"...","xKey":"...","series":[{"key":"...","label":"...","color":"#0088FE"}],"data":[{"x":"...","metric":123}]}\n'
         "- Always cite file paths + line numbers when explaining code.\n"
         "- After TOOL_RESULT, continue reasoning.\n"
         "- If enough info is available, answer in normal text (NOT JSON).\n\n"
