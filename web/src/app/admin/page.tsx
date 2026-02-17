@@ -482,6 +482,11 @@ export default function AdminPage() {
         [editForm.llm_provider, editForm.llm_model, llmOptions]
     )
 
+    const llmProfileModelOptions = useMemo(
+        () => modelOptionsForProvider(llmProfileForm.provider, llmProfileForm.model),
+        [llmProfileForm.model, llmProfileForm.provider, llmOptions]
+    )
+
     async function refreshProjects(preferredProjectId?: string) {
         const all = await backendJson<AdminProject[]>("/api/admin/projects")
         setProjects(all)
@@ -563,6 +568,39 @@ export default function AdminPage() {
                 llm_base_url: nextBaseUrl,
                 llm_model: nextModel,
                 llm_api_key: nextApiKey,
+            }
+        })
+    }
+
+    function applyProviderChangeToLlmProfile(nextProvider: string) {
+        setLlmProfileForm((prev) => {
+            const oldProvider = prev.provider || "ollama"
+            const oldDefaultBase = defaultBaseUrlForProvider(oldProvider)
+            const nextDefaultBase = defaultBaseUrlForProvider(nextProvider)
+            const nextBaseUrl =
+                !prev.base_url.trim() || prev.base_url.trim() === oldDefaultBase
+                    ? nextDefaultBase
+                    : prev.base_url
+
+            const nextModelOptions = modelOptionsForProvider(nextProvider, prev.model)
+            const nextModel =
+                prev.model && nextModelOptions.includes(prev.model)
+                    ? prev.model
+                    : (nextModelOptions[0] || "")
+
+            let nextApiKey = prev.api_key
+            if (nextProvider === "openai" && nextApiKey.trim() === "ollama") {
+                nextApiKey = ""
+            } else if (nextProvider === "ollama" && !nextApiKey.trim()) {
+                nextApiKey = "ollama"
+            }
+
+            return {
+                ...prev,
+                provider: nextProvider,
+                base_url: nextBaseUrl,
+                model: nextModel,
+                api_key: nextApiKey,
             }
         })
     }
@@ -1057,7 +1095,7 @@ export default function AdminPage() {
                                             labelId="llm-profile-provider-label"
                                             label="Provider"
                                             value={llmProfileForm.provider}
-                                            onChange={(e) => setLlmProfileForm((f) => ({ ...f, provider: e.target.value }))}
+                                            onChange={(e) => applyProviderChangeToLlmProfile(e.target.value)}
                                         >
                                             {providerOptions.map((option) => (
                                                 <MenuItem key={option.value} value={option.value}>
@@ -1074,19 +1112,70 @@ export default function AdminPage() {
                                         fullWidth
                                         sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}
                                     />
-                                    <TextField
-                                        label="Model"
-                                        value={llmProfileForm.model}
-                                        onChange={(e) => setLlmProfileForm((f) => ({ ...f, model: e.target.value }))}
-                                        size="small"
-                                        fullWidth
-                                    />
+                                    <Stack
+                                        direction="row"
+                                        alignItems="center"
+                                        justifyContent="space-between"
+                                        spacing={1}
+                                        sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}
+                                    >
+                                        <Typography variant="caption" color="text.secondary">
+                                            {llmProfileForm.provider === "openai"
+                                                ? "Use OpenAI-compatible model IDs for this profile."
+                                                : "Choose from discovered local Ollama models."}
+                                        </Typography>
+                                        <Button
+                                            variant="text"
+                                            size="small"
+                                            onClick={() =>
+                                                void loadLlmOptions(
+                                                    llmProfileForm.provider === "openai"
+                                                        ? {
+                                                            openaiApiKey: llmProfileForm.api_key,
+                                                            openaiBaseUrl: llmProfileForm.base_url,
+                                                        }
+                                                        : undefined
+                                                )
+                                            }
+                                            disabled={loadingLlmOptions}
+                                        >
+                                            {loadingLlmOptions ? "Refreshing..." : "Refresh models"}
+                                        </Button>
+                                    </Stack>
+                                    {llmOptionsError && (
+                                        <Alert severity="warning" sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}>
+                                            Model discovery warning: {llmOptionsError}
+                                        </Alert>
+                                    )}
                                     <TextField
                                         label="Base URL"
                                         value={llmProfileForm.base_url}
                                         onChange={(e) => setLlmProfileForm((f) => ({ ...f, base_url: e.target.value }))}
                                         size="small"
                                         fullWidth
+                                    />
+                                    <FormControl fullWidth size="small">
+                                        <InputLabel id="llm-profile-model-label">Model</InputLabel>
+                                        <Select
+                                            labelId="llm-profile-model-label"
+                                            label="Model"
+                                            value={llmProfileForm.model}
+                                            onChange={(e) => setLlmProfileForm((f) => ({ ...f, model: e.target.value }))}
+                                        >
+                                            {llmProfileModelOptions.map((model) => (
+                                                <MenuItem key={model} value={model}>
+                                                    {model}
+                                                </MenuItem>
+                                            ))}
+                                        </Select>
+                                    </FormControl>
+                                    <TextField
+                                        label="Custom Model ID (optional)"
+                                        value={llmProfileForm.model}
+                                        onChange={(e) => setLlmProfileForm((f) => ({ ...f, model: e.target.value }))}
+                                        size="small"
+                                        fullWidth
+                                        sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}
                                     />
                                     <TextField
                                         label="API Key"
