@@ -383,29 +383,93 @@ def _remote_ref(remote: dict[str, Any], requested_ref: Optional[str]) -> str:
     return str(config.get("branch") or "main").strip() or "main"
 
 
+def _remote_ref_candidates(remote: dict[str, Any], requested_ref: Optional[str]) -> list[str]:
+    config = remote.get("config") or {}
+    base = str(config.get("branch") or "").strip()
+    default = str(config.get("default_branch") or "").strip()
+    requested = (requested_ref or "").strip()
+
+    candidates: list[str] = []
+    for ref in (requested, base, default, "main", "master"):
+        r = str(ref or "").strip()
+        if not r:
+            continue
+        if r not in candidates:
+            candidates.append(r)
+
+    # Also try GitHub-style refs when branch aliases are used.
+    for ref in list(candidates):
+        if ref.startswith("heads/"):
+            alt = ref.removeprefix("heads/")
+            if alt and alt not in candidates:
+                candidates.append(alt)
+        else:
+            alt = f"heads/{ref}"
+            if alt not in candidates:
+                candidates.append(alt)
+
+    return candidates or ["main", "master"]
+
+
+def _is_ref_retryable_status(err: Exception) -> bool:
+    if isinstance(err, httpx.HTTPStatusError):
+        try:
+            status = int(err.response.status_code)
+        except Exception:
+            return False
+        return status in {400, 404, 422}
+    return False
+
+
 async def _remote_list_tree(remote: dict[str, Any], requested_ref: Optional[str]) -> list[str]:
     rtype = remote.get("type")
     config = remote.get("config") or {}
-    ref = _remote_ref(remote, requested_ref)
-    if rtype == "github":
-        return await _github_list_tree(config, ref)
-    if rtype == "bitbucket":
-        return await _bitbucket_list_tree(config, ref)
-    if rtype == "azure_devops":
-        return await _azure_list_tree(config, ref)
+    refs = _remote_ref_candidates(remote, requested_ref)
+    last_err: Exception | None = None
+
+    for idx, ref in enumerate(refs):
+        try:
+            if rtype == "github":
+                return await _github_list_tree(config, ref)
+            if rtype == "bitbucket":
+                return await _bitbucket_list_tree(config, ref)
+            if rtype == "azure_devops":
+                return await _azure_list_tree(config, ref)
+            return []
+        except Exception as err:
+            last_err = err
+            if idx < len(refs) - 1 and _is_ref_retryable_status(err):
+                continue
+            raise
+
+    if last_err:
+        raise last_err
     return []
 
 
 async def _remote_open_file(remote: dict[str, Any], path: str, requested_ref: Optional[str]) -> tuple[str, str]:
     rtype = remote.get("type")
     config = remote.get("config") or {}
-    ref = _remote_ref(remote, requested_ref)
-    if rtype == "github":
-        return await _github_open_file_content(config, path, ref=ref)
-    if rtype == "bitbucket":
-        return await _bitbucket_open_file_content(config, path, ref=ref)
-    if rtype == "azure_devops":
-        return await _azure_open_file_content(config, path, ref=ref)
+    refs = _remote_ref_candidates(remote, requested_ref)
+    last_err: Exception | None = None
+
+    for idx, ref in enumerate(refs):
+        try:
+            if rtype == "github":
+                return await _github_open_file_content(config, path, ref=ref)
+            if rtype == "bitbucket":
+                return await _bitbucket_open_file_content(config, path, ref=ref)
+            if rtype == "azure_devops":
+                return await _azure_open_file_content(config, path, ref=ref)
+            break
+        except Exception as err:
+            last_err = err
+            if idx < len(refs) - 1 and _is_ref_retryable_status(err):
+                continue
+            raise
+
+    if last_err:
+        raise last_err
     raise ValueError("Unsupported remote connector")
 
 

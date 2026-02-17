@@ -629,7 +629,16 @@ async def _discover_sources_when_missing(
             )
             continue
         events.append(ev)
+        before = len(out)
         _extract_sources_from_tool_event(ev, out, seen)
+        if len(out) == before and bool(ev.get("ok")):
+            tool = _as_text(ev.get("tool")) or name
+            _append_source(
+                out,
+                seen,
+                label=f"{tool}() result",
+                source_type=tool,
+            )
         if len(out) >= 12:
             break
 
@@ -731,7 +740,7 @@ async def ask_agent(req: AskReq):
                 local_repo_context=req.local_repo_context,
             )
             if fallback_events:
-                tool_events = [*tool_events, *fallback_events]
+                tool_events = [*tool_events, *[ev for ev in fallback_events if bool((ev or {}).get("ok"))]]
             if fallback_sources:
                 answer_sources = fallback_sources
     except LLMUpstreamError as err:
