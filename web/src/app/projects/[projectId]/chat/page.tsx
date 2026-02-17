@@ -16,6 +16,7 @@ import {
     Divider,
     FormControl,
     FormControlLabel,
+    IconButton,
     InputLabel,
     List,
     ListItemButton,
@@ -704,6 +705,7 @@ export default function ProjectChatPage() {
     const [sending, setSending] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [lastToolEvents, setLastToolEvents] = useState<AskAgentResponse["tool_events"]>([])
+    const [toolEventsDismissed, setToolEventsDismissed] = useState(false)
     const [booting, setBooting] = useState(true)
     const [docsOpen, setDocsOpen] = useState(false)
     const [docsLoading, setDocsLoading] = useState(false)
@@ -750,6 +752,40 @@ export default function ProjectChatPage() {
         const n = chatMemory?.next_steps || []
         return d.length > 0 || q.length > 0 || n.length > 0
     }, [chatMemory])
+
+    useEffect(() => {
+        if (!error) return
+        const timer = window.setTimeout(() => setError(null), 9000)
+        return () => window.clearTimeout(timer)
+    }, [error])
+
+    useEffect(() => {
+        if (!docsNotice) return
+        const timer = window.setTimeout(() => setDocsNotice(null), 7000)
+        return () => window.clearTimeout(timer)
+    }, [docsNotice])
+
+    useEffect(() => {
+        if (!docsError) return
+        const timer = window.setTimeout(() => setDocsError(null), 9000)
+        return () => window.clearTimeout(timer)
+    }, [docsError])
+
+    useEffect(() => {
+        if (!toolsError) return
+        const timer = window.setTimeout(() => setToolsError(null), 9000)
+        return () => window.clearTimeout(timer)
+    }, [toolsError])
+
+    useEffect(() => {
+        if (!lastToolEvents?.length) {
+            setToolEventsDismissed(false)
+            return
+        }
+        setToolEventsDismissed(false)
+        const timer = window.setTimeout(() => setToolEventsDismissed(true), 12000)
+        return () => window.clearTimeout(timer)
+    }, [lastToolEvents])
 
     useEffect(() => {
         selectedChatIdRef.current = selectedChatId
@@ -1697,15 +1733,22 @@ export default function ProjectChatPage() {
 
                 {error && (
                     <Box sx={{ px: { xs: 1.5, md: 3 }, pt: 1.25 }}>
-                        <Alert severity="error">{error}</Alert>
+                        <Alert severity="error" onClose={() => setError(null)}>
+                            {error}
+                        </Alert>
                     </Box>
                 )}
-                {!!lastToolEvents?.length && (
+                {!!lastToolEvents?.length && !toolEventsDismissed && (
                     <Box sx={{ px: { xs: 1.5, md: 3 }, pt: 1.25 }}>
                         <Paper variant="outlined" sx={{ p: 1.2 }}>
-                            <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.08em" }}>
-                                TOOL EXECUTION
-                            </Typography>
+                            <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.08em" }}>
+                                    TOOL EXECUTION
+                                </Typography>
+                                <IconButton size="small" onClick={() => setToolEventsDismissed(true)}>
+                                    <CloseRounded fontSize="small" />
+                                </IconButton>
+                            </Stack>
                             <Stack spacing={0.45} sx={{ mt: 0.8 }}>
                                 {lastToolEvents.map((ev, idx) => (
                                     <Typography key={`${ev.tool}-${idx}`} variant="body2" color={ev.ok ? "success.main" : "warning.main"}>
@@ -1720,9 +1763,11 @@ export default function ProjectChatPage() {
                         </Paper>
                     </Box>
                 )}
-                {docsNotice && (
+                {docsNotice && !docsOpen && (
                     <Box sx={{ px: { xs: 1.5, md: 3 }, pt: 1.25 }}>
-                        <Alert severity="success">{docsNotice}</Alert>
+                        <Alert severity="success" onClose={() => setDocsNotice(null)}>
+                            {docsNotice}
+                        </Alert>
                     </Box>
                 )}
                 {memoryHasItems && (
@@ -2201,7 +2246,9 @@ export default function ProjectChatPage() {
                         )}
                         {toolsError && (
                             <Box sx={{ pb: 1.2 }}>
-                                <Alert severity="error">{toolsError}</Alert>
+                                <Alert severity="error" onClose={() => setToolsError(null)}>
+                                    {toolsError}
+                                </Alert>
                             </Box>
                         )}
                         <Stack spacing={1.2}>
@@ -2335,12 +2382,16 @@ export default function ProjectChatPage() {
                         )}
                         {docsError && (
                             <Box sx={{ p: 1.5 }}>
-                                <Alert severity="error">{docsError}</Alert>
+                                <Alert severity="error" onClose={() => setDocsError(null)}>
+                                    {docsError}
+                                </Alert>
                             </Box>
                         )}
-                        {docsNotice && (
+                        {docsNotice && docsOpen && (
                             <Box sx={{ p: 1.5 }}>
-                                <Alert severity="success">{docsNotice}</Alert>
+                                <Alert severity="success" onClose={() => setDocsNotice(null)}>
+                                    {docsNotice}
+                                </Alert>
                             </Box>
                         )}
 
