@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Any
 
 from fastapi import APIRouter
@@ -167,6 +168,57 @@ def _source_kind(path: str | None, url: str | None) -> str:
     return "file"
 
 
+def _as_line(v: Any) -> int | None:
+    if isinstance(v, int):
+        return v if v > 0 else None
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return None
+        try:
+            n = int(s)
+            return n if n > 0 else None
+        except Exception:
+            return None
+    return None
+
+
+def _normalize_path_text(v: Any) -> str | None:
+    s = _as_text(v).replace("\\", "/").replace("./", "", 1)
+    if not s:
+        return None
+    if s.startswith("/"):
+        return None
+    if "://" in s:
+        return None
+    if ".." in s:
+        return None
+    if re.search(r"\s", s):
+        return None
+    base = s.rsplit("/", 1)[-1].lower()
+    if "/" not in s and "." not in s and base not in {"dockerfile", "makefile", "readme", "license"}:
+        return None
+    return s
+
+
+def _extract_path_and_line_from_text(v: Any) -> tuple[str | None, int | None]:
+    text = _as_text(v)
+    if not text:
+        return None, None
+
+    # Examples:
+    # - src/app/main.ts:42
+    # - src/app/main.ts:42:7
+    # - documentation/setup.md
+    m = re.search(r"(?P<path>[A-Za-z0-9_./-]+(?:\.[A-Za-z0-9_-]+)?)(?::(?P<line>\d+))?(?::\d+)?", text)
+    if not m:
+        return None, None
+
+    path = _normalize_path_text(m.group("path"))
+    line = _as_line(m.group("line"))
+    return path, line
+
+
 def _append_source(
     out: list[dict[str, Any]],
     seen: set[str],
@@ -204,12 +256,98 @@ def _append_source(
     out.append(item)
 
 
+def _append_source_from_row(
+    out: list[dict[str, Any]],
+    seen: set[str],
+    *,
+    row: dict[str, Any],
+    default_label: str,
+    source_type: str,
+) -> None:
+    url = _as_text(row.get("url")) or None
+    path = _normalize_path_text(row.get("path"))
+    title = _as_text(row.get("title")) or _as_text(row.get("name")) or default_label
+    line = _as_line(row.get("line") or row.get("start_line"))
+
+    if not path and not url:
+        inferred_path, inferred_line = _extract_path_and_line_from_text(
+            row.get("path")
+            or row.get("file")
+            or row.get("filename")
+            or row.get("source")
+            or row.get("id")
+            or row.get("ref")
+            or row.get("title")
+            or row.get("label")
+        )
+        path = inferred_path
+        line = line or inferred_line
+
+    if not path and not url and _looks_like_url(title):
+        url = title
+
+    if not path and not url and title == default_label:
+        return
+
+    _append_source(
+        out,
+        seen,
+        label=title if title else (path or url or default_label),
+        path=path,
+        url=url,
+        source_type=source_type,
+        line=line,
+    )
+
+
+def _walk_tool_result_for_sources(
+    value: Any,
+    out: list[dict[str, Any]],
+    seen: set[str],
+    *,
+    source_type: str,
+    depth: int = 0,
+) -> None:
+    if depth > 4 or len(out) >= 24:
+        return
+    if isinstance(value, dict):
+        _append_source_from_row(
+            out,
+            seen,
+            row=value,
+            default_label=f"{source_type} source",
+            source_type=source_type,
+        )
+        for k, v in value.items():
+            if k in {"content", "snippet", "diff", "output", "messages"}:
+                continue
+            _walk_tool_result_for_sources(v, out, seen, source_type=source_type, depth=depth + 1)
+        return
+    if isinstance(value, list):
+        for item in value[:40]:
+            _walk_tool_result_for_sources(item, out, seen, source_type=source_type, depth=depth + 1)
+            if len(out) >= 24:
+                break
+        return
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return
+        if _looks_like_url(s):
+            _append_source(out, seen, label=s, url=s, source_type=source_type)
+            return
+        path, line = _extract_path_and_line_from_text(s)
+        if path:
+            _append_source(out, seen, label=f"{path}:{line}" if line else path, path=path, source_type=source_type, line=line)
+
+
 def _extract_sources_from_tool_event(ev: dict[str, Any], out: list[dict[str, Any]], seen: set[str]) -> None:
     if not bool(ev.get("ok")):
         return
     tool = _as_text(ev.get("tool"))
     result = ev.get("result")
     if not isinstance(result, dict):
+        _walk_tool_result_for_sources(result, out, seen, source_type=tool or "tool")
         return
 
     if tool == "repo_grep":
@@ -217,27 +355,27 @@ def _extract_sources_from_tool_event(ev: dict[str, Any], out: list[dict[str, Any
             if not isinstance(m, dict):
                 continue
             path = _as_text(m.get("path"))
-            line = m.get("line")
+            line = _as_line(m.get("line"))
             _append_source(
                 out,
                 seen,
-                label=f"{path}:{line}" if path and isinstance(line, int) else (path or "repo_grep"),
+                label=f"{path}:{line}" if path and line else (path or "repo_grep"),
                 path=path or None,
                 source_type="repo_grep",
-                line=line if isinstance(line, int) else None,
+                line=line,
             )
         return
 
-    if tool == "open_file":
-        path = _as_text(result.get("path"))
-        line = result.get("start_line")
+    if tool in {"open_file", "git_show_file_at_ref"}:
+        path = _normalize_path_text(result.get("path")) or _as_text(result.get("path"))
+        line = _as_line(result.get("start_line"))
         _append_source(
             out,
             seen,
-            label=f"{path}:{line}" if path and isinstance(line, int) else (path or "open_file"),
+            label=f"{path}:{line}" if path and line else (path or tool),
             path=path or None,
-            source_type="open_file",
-            line=line if isinstance(line, int) else None,
+            source_type=tool,
+            line=line,
         )
         return
 
@@ -292,6 +430,44 @@ def _extract_sources_from_tool_event(ev: dict[str, Any], out: list[dict[str, Any
             _append_source(out, seen, label=path or "documentation", path=path or None, source_type="documentation")
         return
 
+    if tool == "symbol_search":
+        for item in (result.get("items") or [])[:20]:
+            if not isinstance(item, dict):
+                continue
+            path = _normalize_path_text(item.get("path")) or _as_text(item.get("path"))
+            line = _as_line(item.get("line"))
+            symbol = _as_text(item.get("symbol")) or _as_text(item.get("title"))
+            label = symbol or (f"{path}:{line}" if path and line else path or "symbol")
+            _append_source(out, seen, label=label, path=path or None, source_type="symbol_search", line=line)
+        return
+
+    if tool == "repo_tree":
+        for entry in (result.get("entries") or [])[:20]:
+            if not isinstance(entry, dict):
+                continue
+            path = _normalize_path_text(entry.get("path")) or _as_text(entry.get("path"))
+            if not path:
+                continue
+            _append_source(out, seen, label=path, path=path, source_type="repo_tree")
+        return
+
+    if tool == "generate_project_docs":
+        for p in (result.get("files_written") or [])[:20]:
+            path = _normalize_path_text(p)
+            if not path:
+                continue
+            _append_source(out, seen, label=path, path=path, source_type="generate_project_docs")
+        files = result.get("files")
+        if isinstance(files, list):
+            for row in files[:20]:
+                if not isinstance(row, dict):
+                    continue
+                path = _normalize_path_text(row.get("path"))
+                if not path:
+                    continue
+                _append_source(out, seen, label=path, path=path, source_type="generate_project_docs")
+        return
+
     # Generic fallback for tool outputs that already include url/path/title.
     for key in ("items", "result", "hits", "files", "entries"):
         rows = result.get(key)
@@ -314,16 +490,58 @@ def _extract_sources_from_tool_event(ev: dict[str, Any], out: list[dict[str, Any
                 source_type=_as_text(item.get("source")) or tool,
             )
 
+    _walk_tool_result_for_sources(result, out, seen, source_type=tool or "tool")
 
-def _collect_answer_sources(tool_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+
+def _extract_sources_from_local_repo_context(
+    local_repo_context: str | None,
+    out: list[dict[str, Any]],
+    seen: set[str],
+) -> None:
+    raw = _as_text(local_repo_context)
+    if not raw:
+        return
+
+    for line in raw.splitlines()[:400]:
+        path, ln = _extract_path_and_line_from_text(line)
+        if not path:
+            continue
+        _append_source(
+            out,
+            seen,
+            label=f"{path}:{ln}" if ln else path,
+            path=path,
+            source_type="browser_local_repo",
+            line=ln,
+        )
+        if len(out) >= 24:
+            return
+
+
+def _collect_answer_sources(
+    tool_events: list[dict[str, Any]],
+    *,
+    local_repo_context: str | None = None,
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for ev in tool_events or []:
         if not isinstance(ev, dict):
             continue
+        before = len(out)
         _extract_sources_from_tool_event(ev, out, seen)
+        if len(out) == before and bool(ev.get("ok")):
+            tool = _as_text(ev.get("tool")) or "tool"
+            _append_source(
+                out,
+                seen,
+                label=f"{tool}() result",
+                source_type=tool,
+            )
         if len(out) >= 24:
             break
+    if len(out) < 24:
+        _extract_sources_from_local_repo_context(local_repo_context, out, seen)
     return out[:24]
 
 
@@ -408,7 +626,7 @@ async def ask_agent(req: AskReq):
         )
         answer = str((agent_out or {}).get("answer") or "")
         tool_events = (agent_out or {}).get("tool_events") or []
-        answer_sources = _collect_answer_sources(tool_events)
+        answer_sources = _collect_answer_sources(tool_events, local_repo_context=req.local_repo_context)
     except LLMUpstreamError as err:
         detail = str(err)
         detail_lc = detail.lower()
