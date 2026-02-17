@@ -41,6 +41,8 @@ import ExpandMoreRounded from "@mui/icons-material/ExpandMoreRounded"
 import ChevronRightRounded from "@mui/icons-material/ChevronRightRounded"
 import BuildRounded from "@mui/icons-material/BuildRounded"
 import CheckCircleRounded from "@mui/icons-material/CheckCircleRounded"
+import VisibilityOffRounded from "@mui/icons-material/VisibilityOffRounded"
+import VisibilityRounded from "@mui/icons-material/VisibilityRounded"
 import { backendJson } from "@/lib/backend"
 import { ProjectDrawerLayout, type DrawerChat, type DrawerUser } from "@/components/ProjectDrawerLayout"
 import { buildChatPath, saveLastChat } from "@/lib/last-chat"
@@ -732,6 +734,7 @@ export default function ProjectChatPage() {
     const [savingLlmProfile, setSavingLlmProfile] = useState(false)
     const [expandedSourceMessages, setExpandedSourceMessages] = useState<Record<string, boolean>>({})
     const [chatMemory, setChatMemory] = useState<ChatMemorySummary | null>(null)
+    const [sessionMemoryOpen, setSessionMemoryOpen] = useState(true)
 
     const scrollRef = useRef<HTMLDivElement | null>(null)
     const projectLabel = useMemo(() => project?.name || project?.key || projectId, [project, projectId])
@@ -790,6 +793,25 @@ export default function ProjectChatPage() {
     useEffect(() => {
         selectedChatIdRef.current = selectedChatId
     }, [selectedChatId])
+
+    useEffect(() => {
+        try {
+            const raw = window.localStorage.getItem("pqa.sessionMemory.open")
+            if (raw === "0") {
+                setSessionMemoryOpen(false)
+            }
+        } catch {
+            // Ignore persistence issues and keep the default visible behavior.
+        }
+    }, [])
+
+    useEffect(() => {
+        try {
+            window.localStorage.setItem("pqa.sessionMemory.open", sessionMemoryOpen ? "1" : "0")
+        } catch {
+            // Ignore persistence issues.
+        }
+    }, [sessionMemoryOpen])
 
     const syncUrl = useCallback(
         (chatId: string, activeBranch: string) => {
@@ -1728,6 +1750,16 @@ export default function ProjectChatPage() {
                         >
                             {docsGenerating ? "Generating..." : "Generate Docs"}
                         </Button>
+                        {memoryHasItems && (
+                            <Button
+                                size="small"
+                                variant="outlined"
+                                startIcon={sessionMemoryOpen ? <VisibilityOffRounded /> : <VisibilityRounded />}
+                                onClick={() => setSessionMemoryOpen((v) => !v)}
+                            >
+                                {sessionMemoryOpen ? "Hide Memory" : "Show Memory"}
+                            </Button>
+                        )}
                     </Stack>
                 </Paper>
 
@@ -1770,12 +1802,17 @@ export default function ProjectChatPage() {
                         </Alert>
                     </Box>
                 )}
-                {memoryHasItems && (
+                {memoryHasItems && sessionMemoryOpen && (
                     <Box sx={{ px: { xs: 1.5, md: 3 }, pt: 1.25 }}>
                         <Paper variant="outlined" sx={{ p: { xs: 1.2, md: 1.5 }, maxWidth: 980, mx: "auto" }}>
-                            <Typography variant="overline" color="primary" sx={{ letterSpacing: "0.12em" }}>
-                                Session Memory
-                            </Typography>
+                            <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                <Typography variant="overline" color="primary" sx={{ letterSpacing: "0.12em" }}>
+                                    Session Memory
+                                </Typography>
+                                <IconButton size="small" onClick={() => setSessionMemoryOpen(false)}>
+                                    <CloseRounded fontSize="small" />
+                                </IconButton>
+                            </Stack>
                             <Box
                                 sx={{
                                     mt: 0.8,
