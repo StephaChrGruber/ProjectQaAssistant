@@ -78,6 +78,18 @@ type ChatResponse = {
 
 type AskAgentResponse = {
     answer?: string
+    tool_events?: Array<{
+        tool: string
+        ok: boolean
+        duration_ms: number
+        input_bytes?: number
+        result_bytes?: number
+        error?: {
+            code?: string
+            message?: string
+            retryable?: boolean
+        } | null
+    }>
 }
 
 type GenerateDocsResponse = {
@@ -261,6 +273,7 @@ export default function ProjectChatPage() {
     const [loadingMessages, setLoadingMessages] = useState(false)
     const [sending, setSending] = useState(false)
     const [error, setError] = useState<string | null>(null)
+    const [lastToolEvents, setLastToolEvents] = useState<AskAgentResponse["tool_events"]>([])
     const [booting, setBooting] = useState(true)
     const [docsOpen, setDocsOpen] = useState(false)
     const [docsLoading, setDocsLoading] = useState(false)
@@ -586,6 +599,7 @@ export default function ProjectChatPage() {
 
         setSending(true)
         setError(null)
+        setLastToolEvents([])
         setInput("")
         setMessages((prev) => [...prev, { role: "user", content: q, ts: new Date().toISOString() }])
 
@@ -626,6 +640,7 @@ export default function ProjectChatPage() {
             if (res.answer?.trim()) {
                 setMessages((prev) => [...prev, { role: "assistant", content: res.answer || "", ts: new Date().toISOString() }])
             }
+            setLastToolEvents(res.tool_events || [])
 
             await loadMessages(selectedChatId)
             await loadChats(branch, selectedChatId)
@@ -944,6 +959,24 @@ export default function ProjectChatPage() {
                 {error && (
                     <Box sx={{ px: { xs: 1.5, md: 3 }, pt: 1.25 }}>
                         <Alert severity="error">{error}</Alert>
+                    </Box>
+                )}
+                {!!lastToolEvents?.length && (
+                    <Box sx={{ px: { xs: 1.5, md: 3 }, pt: 1.25 }}>
+                        <Paper variant="outlined" sx={{ p: 1.2 }}>
+                            <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.08em" }}>
+                                TOOL EXECUTION
+                            </Typography>
+                            <Stack spacing={0.45} sx={{ mt: 0.8 }}>
+                                {lastToolEvents.map((ev, idx) => (
+                                    <Typography key={`${ev.tool}-${idx}`} variant="body2" color={ev.ok ? "success.main" : "warning.main"}>
+                                        {ev.ok ? "OK" : "ERR"} · {ev.tool} · {ev.duration_ms} ms
+                                        {ev.error?.code ? ` · ${ev.error.code}` : ""}
+                                        {ev.error?.message ? ` · ${ev.error.message}` : ""}
+                                    </Typography>
+                                ))}
+                            </Stack>
+                        </Paper>
                     </Box>
                 )}
                 {docsNotice && (

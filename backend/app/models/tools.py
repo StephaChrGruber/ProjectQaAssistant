@@ -1,16 +1,26 @@
 from __future__ import annotations
-from pydantic import BaseModel, Field
-from typing import Optional, List, Literal, Dict, Any
-from pydantic import ConfigDict
+
+from typing import Any, Dict, List, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class GetProjectMetadataRequest(BaseModel):
+    project_id: str
+
+
+class GenerateProjectDocsRequest(BaseModel):
+    project_id: str
+    branch: Optional[str] = None
 
 
 class RepoGrepRequest(BaseModel):
     project_id: str
-    branch: Optional[str] = None  # optional filter; grep operates on repo_path
+    branch: Optional[str] = None
     pattern: str
-    glob: Optional[str] = None          # e.g. "*.ts" or "src/**/*.py"
+    glob: Optional[str] = None
     case_sensitive: bool = False
-    regex: bool = True                  # if False, treat as fixed string
+    regex: bool = True
     max_results: int = 50
     context_lines: int = 2
 
@@ -31,9 +41,10 @@ class RepoGrepResponse(BaseModel):
 class OpenFileRequest(BaseModel):
     project_id: str
     path: str
-    ref: Optional[str] = None           # branch name or commit hash; if set uses `git show`
-    start_line: Optional[int] = None    # 1-based inclusive
-    end_line: Optional[int] = None      # 1-based inclusive
+    branch: Optional[str] = None
+    ref: Optional[str] = None
+    start_line: Optional[int] = None
+    end_line: Optional[int] = None
     max_chars: int = 200_000
 
 
@@ -75,12 +86,15 @@ class ProjectMetadataResponse(BaseModel):
     default_branch: str = "main"
     extra: Dict[str, Any] = Field(default_factory=dict)
 
+
 class ChromaCountRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     project_id: str = Field(alias="projectId")
 
+
 class ChromaCountResponse(BaseModel):
     count: int
+
 
 class ChromaSearchChunksRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -89,10 +103,12 @@ class ChromaSearchChunksRequest(BaseModel):
     top_k: int = 6
     max_snippet_chars: int = 500
 
+
 class ChromaSearchChunkResponse(BaseModel):
     query: str
     items: List[Dict[str, Any]]
     count: int
+
 
 class ChromaOpenChunksRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -100,5 +116,162 @@ class ChromaOpenChunksRequest(BaseModel):
     ids: List[str]
     max_chars_per_chunk: int = 2000
 
+
 class ChromaOpenChunksResponse(BaseModel):
     result: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class RepoTreeRequest(BaseModel):
+    project_id: str
+    branch: Optional[str] = None
+    path: str = ""
+    max_depth: int = 4
+    include_files: bool = True
+    include_dirs: bool = True
+    max_entries: int = 800
+    glob: Optional[str] = None
+
+
+class RepoTreeNode(BaseModel):
+    path: str
+    type: Literal["file", "dir"]
+    depth: int
+    size: Optional[int] = None
+
+
+class RepoTreeResponse(BaseModel):
+    root: str
+    branch: str
+    entries: List[RepoTreeNode]
+
+
+class GitStatusRequest(BaseModel):
+    project_id: str
+    branch: Optional[str] = None
+
+
+class GitStatusResponse(BaseModel):
+    branch: str
+    upstream: Optional[str] = None
+    ahead: int = 0
+    behind: int = 0
+    staged: List[str] = Field(default_factory=list)
+    modified: List[str] = Field(default_factory=list)
+    untracked: List[str] = Field(default_factory=list)
+    clean: bool = True
+
+
+class GitDiffRequest(BaseModel):
+    project_id: str
+    branch: Optional[str] = None
+    ref_base: Optional[str] = None
+    ref_head: Optional[str] = None
+    path_glob: Optional[str] = None
+    max_chars: int = 15_000
+
+
+class GitDiffResponse(BaseModel):
+    ref_base: Optional[str] = None
+    ref_head: Optional[str] = None
+    diff: str
+    truncated: bool = False
+
+
+class GitLogRequest(BaseModel):
+    project_id: str
+    branch: Optional[str] = None
+    ref: Optional[str] = None
+    max_count: int = 20
+    path: Optional[str] = None
+
+
+class GitLogItem(BaseModel):
+    commit: str
+    author: str
+    date: str
+    subject: str
+
+
+class GitLogResponse(BaseModel):
+    ref: str
+    commits: List[GitLogItem]
+
+
+class GitShowFileAtRefRequest(BaseModel):
+    project_id: str
+    path: str
+    ref: str
+    start_line: Optional[int] = None
+    end_line: Optional[int] = None
+    max_chars: int = 200_000
+
+
+class SymbolSearchRequest(BaseModel):
+    project_id: str
+    branch: Optional[str] = None
+    query: str
+    kinds: List[str] = Field(default_factory=list)
+    max_results: int = 40
+
+
+class SymbolSearchHit(BaseModel):
+    path: str
+    line: int
+    kind: str
+    symbol: str
+    snippet: str
+
+
+class SymbolSearchResponse(BaseModel):
+    items: List[SymbolSearchHit]
+
+
+class RunTestsRequest(BaseModel):
+    project_id: str
+    branch: Optional[str] = None
+    command: Optional[str] = None
+    timeout_sec: int = 300
+    max_output_chars: int = 20_000
+
+
+class RunTestsResponse(BaseModel):
+    command: str
+    exit_code: int
+    success: bool
+    output: str
+    truncated: bool = False
+
+
+class ReadDocsFolderRequest(BaseModel):
+    project_id: str
+    branch: Optional[str] = None
+    path: str = "documentation"
+    max_files: int = 80
+    max_chars_per_file: int = 4_000
+
+
+class ReadDocsFile(BaseModel):
+    path: str
+    content: str
+
+
+class ReadDocsFolderResponse(BaseModel):
+    branch: str
+    files: List[ReadDocsFile]
+
+
+class ToolError(BaseModel):
+    code: str
+    message: str
+    retryable: bool = False
+    details: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolEnvelope(BaseModel):
+    tool: str
+    ok: bool
+    duration_ms: int
+    input_bytes: int = 0
+    result_bytes: int = 0
+    result: Optional[Any] = None
+    error: Optional[ToolError] = None

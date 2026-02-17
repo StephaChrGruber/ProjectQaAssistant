@@ -111,7 +111,7 @@ async def ask_agent(req: AskReq):
         )
 
     try:
-        answer = await answer_with_agent(
+        agent_out = await answer_with_agent(
             project_id=req.project_id,
             branch=req.branch,
             user_id=req.user,
@@ -119,7 +119,10 @@ async def ask_agent(req: AskReq):
             llm_base_url=req.llm_base_url or defaults["llm_base_url"],
             llm_api_key=req.llm_api_key or defaults["llm_api_key"],
             llm_model=req.llm_model or defaults["llm_model"],
+            include_tool_events=True,
         )
+        answer = str((agent_out or {}).get("answer") or "")
+        tool_events = (agent_out or {}).get("tool_events") or []
     except LLMUpstreamError as err:
         detail = str(err)
         detail_lc = detail.lower()
@@ -142,6 +145,7 @@ async def ask_agent(req: AskReq):
                 "Please try again shortly, or switch model/provider in Project Settings.\n\n"
                 f"Details: {detail}"
             )
+        tool_events = []
     except Exception:
         logger.exception(
             "Unexpected ask_agent failure for project=%s branch=%s user=%s",
@@ -153,6 +157,7 @@ async def ask_agent(req: AskReq):
             "I hit an internal error while generating the answer. "
             "Please try again in a moment."
         )
+        tool_events = []
 
     # append assistant message
     done = datetime.utcnow()
@@ -168,4 +173,4 @@ async def ask_agent(req: AskReq):
         },
     )
 
-    return {"answer": answer, "chat_id": chat_id}
+    return {"answer": answer, "chat_id": chat_id, "tool_events": tool_events}
