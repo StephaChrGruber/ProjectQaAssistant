@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -15,6 +16,8 @@ from bson import ObjectId
 
 from ..db import get_db
 from ..settings import settings
+
+logger = logging.getLogger(__name__)
 
 DOC_ROOT = "documentation"
 MAX_CONTEXT_FILES = 90
@@ -184,15 +187,33 @@ def _llm_chat(
         headers["Authorization"] = f"Bearer {api_key}"
 
     attempts = max(1, max_attempts)
+    total_chars = sum(len((m.get("content") or "")) for m in messages)
+    logger.info(
+        "docs.llm.request endpoint=%s model=%s attempts=%s timeout_sec=%s messages=%s chars=%s",
+        endpoint,
+        model,
+        attempts,
+        timeout_sec,
+        len(messages),
+        total_chars,
+    )
     for idx in range(1, attempts + 1):
         try:
             res = requests.post(endpoint, json=payload, headers=headers, timeout=timeout_sec)
         except requests.RequestException as err:
+            logger.warning("docs.llm.network_error attempt=%s/%s err=%s", idx, attempts, err)
             if idx < attempts:
                 continue
             raise DocumentationError(f"Could not reach LLM provider: {err}") from err
 
         if res.status_code in (429, 500, 502, 503, 504) and idx < attempts:
+            logger.warning(
+                "docs.llm.retryable_status attempt=%s/%s status=%s body_preview=%s",
+                idx,
+                attempts,
+                res.status_code,
+                _preview(res.text or ""),
+            )
             continue
 
         if res.status_code >= 400:
@@ -206,10 +227,25 @@ def _llm_chat(
                     detail = f"{detail} (code={code})".strip()
             except Exception:
                 detail = res.text[:500]
+            logger.warning(
+                "docs.llm.error_status attempt=%s/%s status=%s detail=%s",
+                idx,
+                attempts,
+                res.status_code,
+                detail,
+            )
             raise DocumentationError(f"LLM request failed ({res.status_code}). {detail}".strip())
 
         data = res.json() or {}
-        return (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+        content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+        logger.info(
+            "docs.llm.success attempt=%s/%s content_chars=%s preview=%s",
+            idx,
+            attempts,
+            len(content),
+            _preview(content),
+        )
+        return content
 
     raise DocumentationError("LLM request failed after retries.")
 
@@ -219,6 +255,13 @@ def _strip_fences(text: str) -> str:
     s = re.sub(r"^```(?:json)?\s*", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\s*```$", "", s)
     return s.strip()
+
+
+def _preview(text: str, max_chars: int = 400) -> str:
+    s = (text or "").replace("\n", "\\n")
+    if len(s) <= max_chars:
+        return s
+    return s[:max_chars] + "...(truncated)"
 
 
 def _extract_json_obj(text: str) -> dict[str, Any]:
@@ -589,6 +632,12 @@ def _generate_doc_plan_with_llm_from_context(
     llm_model: str,
 ) -> tuple[list[dict[str, str]], str]:
     bounded_context = _bounded_context(context, MAX_LLM_CONTEXT_CHARS)
+    logger.info(
+        "docs.plan.start project=%s branch=%s context_chars=%s",
+        project_name,
+        branch,
+        len(bounded_context),
+    )
     system = (
         "You are a senior software architect and technical writer. "
         "First create a documentation file plan and return JSON only."
@@ -619,8 +668,8 @@ def _generate_doc_plan_with_llm_from_context(
         base_url=llm_base,
         api_key=llm_key,
         model=llm_model,
-        timeout_sec=75,
-        max_attempts=1,
+        timeout_sec=150,
+        max_attempts=2,
     )
     summary = ""
     plan_raw: Any = None
@@ -641,9 +690,17 @@ def _generate_doc_plan_with_llm_from_context(
     if not plan:
         plan = [{"path": p, "purpose": ""} for p in _extract_doc_paths_from_text(raw)]
     if not plan:
+        logger.warning("docs.plan.empty project=%s branch=%s raw_preview=%s", project_name, branch, _preview(raw))
         raise DocumentationError("LLM did not return a usable documentation plan.")
     if not summary:
         summary = f"Planned {len(plan)} documentation files."
+    logger.info(
+        "docs.plan.success project=%s branch=%s files=%s summary=%s",
+        project_name,
+        branch,
+        len(plan),
+        summary,
+    )
     return plan, summary
 
 
@@ -660,6 +717,13 @@ def _generate_single_doc_with_llm_from_context(
     planned_paths: list[str],
 ) -> str:
     bounded_context = _bounded_context(context, MAX_LLM_FILE_CONTEXT_CHARS)
+    logger.info(
+        "docs.file.start project=%s branch=%s target=%s context_chars=%s",
+        project_name,
+        branch,
+        target_path,
+        len(bounded_context),
+    )
     plan_lines = "\n".join(f"- {p}" for p in planned_paths[:MAX_DOC_PLAN_FILES])
     effective_purpose = purpose.strip() or _default_doc_purpose(target_path)
     system = (
@@ -697,7 +761,97 @@ def _generate_single_doc_with_llm_from_context(
     if not content.startswith("#"):
         title = Path(target_path).stem.replace("-", " ").replace("_", " ").title() or "Documentation"
         content = f"# {title}\n\n{content}"
+    logger.info(
+        "docs.file.success project=%s branch=%s target=%s chars=%s",
+        project_name,
+        branch,
+        target_path,
+        len(content),
+    )
     return content + "\n"
+
+
+def _generate_docs_single_shot_with_llm_from_context(
+    *,
+    project_name: str,
+    branch: str,
+    context: str,
+    llm_base: str,
+    llm_key: str | None,
+    llm_model: str,
+) -> tuple[list[dict[str, str]], str]:
+    bounded_context = _bounded_context(context, MAX_LLM_CONTEXT_CHARS)
+    logger.info(
+        "docs.single_shot.start project=%s branch=%s context_chars=%s",
+        project_name,
+        branch,
+        len(bounded_context),
+    )
+    system = (
+        "You are a senior software architect and technical writer. "
+        "Generate repository documentation as JSON only."
+    )
+    user = (
+        f"Project: {project_name}\n"
+        f"Branch: {branch}\n\n"
+        "Create high-quality markdown documentation files under the 'documentation/' folder.\n"
+        "Requirements:\n"
+        "- Create a useful structure (subfolders by related topics).\n"
+        "- Explain overall architecture and major modules.\n"
+        "- Provide practical technical setup guide for developers.\n"
+        "- Use comments/annotations/docstrings from code where available.\n"
+        "- Keep content concise but actionable.\n\n"
+        "Return EXACTLY one JSON object in this schema:\n"
+        "{\n"
+        '  "summary": "short summary",\n'
+        '  "files": [\n'
+        '    {"path":"documentation/README.md","content":"# ..."},\n'
+        '    {"path":"documentation/architecture/overview.md","content":"# ..."},\n'
+        '    {"path":"documentation/setup/getting-started.md","content":"# ..."}\n'
+        "  ]\n"
+        "}\n\n"
+        "Repository evidence follows:\n\n"
+        f"{bounded_context}"
+    )
+    raw = _llm_chat(
+        [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        base_url=llm_base,
+        api_key=llm_key,
+        model=llm_model,
+        timeout_sec=180,
+        max_attempts=2,
+    )
+    obj = _extract_json_obj(raw)
+    files_raw = obj.get("files")
+    if files_raw is None:
+        files_raw = obj.get("documents")
+    if files_raw is None:
+        files_raw = obj.get("pages")
+    files = _sanitize_generated_files(files_raw)
+
+    if not files:
+        by_path = obj.get("content_by_path")
+        if isinstance(by_path, dict):
+            items = [{"path": str(k), "content": str(v)} for k, v in by_path.items()]
+            files = _sanitize_generated_files(items)
+
+    summary = str(obj.get("summary") or "").strip()
+    if not files:
+        logger.warning(
+            "docs.single_shot.empty project=%s branch=%s raw_preview=%s",
+            project_name,
+            branch,
+            _preview(raw),
+        )
+        raise DocumentationError("LLM single-shot generation returned no usable files.")
+    logger.info(
+        "docs.single_shot.success project=%s branch=%s files=%s summary=%s",
+        project_name,
+        branch,
+        len(files),
+        summary or "(none)",
+    )
+    return files, summary
 
 
 def _generate_docs_with_llm_from_context(
@@ -712,38 +866,76 @@ def _generate_docs_with_llm_from_context(
     if not context.strip():
         return [], ""
 
-    plan, summary = _generate_doc_plan_with_llm_from_context(
-        project_name=project_name,
-        branch=branch,
-        context=context,
-        llm_base=llm_base,
-        llm_key=llm_key,
-        llm_model=llm_model,
-    )
-    if not plan:
-        return [], summary
+    errors: list[str] = []
+    summary = ""
+    plan: list[dict[str, str]] = []
 
-    planned_paths = [item["path"] for item in plan]
+    try:
+        plan, summary = _generate_doc_plan_with_llm_from_context(
+            project_name=project_name,
+            branch=branch,
+            context=context,
+            llm_base=llm_base,
+            llm_key=llm_key,
+            llm_model=llm_model,
+        )
+    except Exception as err:
+        msg = f"planner failed: {err}"
+        errors.append(msg)
+        logger.warning("docs.generate.planner_failed project=%s branch=%s err=%s", project_name, branch, err)
+
     files: list[dict[str, str]] = []
-    for item in plan:
-        path = item["path"]
-        purpose = item.get("purpose", "")
-        try:
-            content = _generate_single_doc_with_llm_from_context(
-                project_name=project_name,
-                branch=branch,
-                context=context,
-                llm_base=llm_base,
-                llm_key=llm_key,
-                llm_model=llm_model,
-                target_path=path,
-                purpose=purpose,
-                planned_paths=planned_paths,
-            )
-        except Exception:
-            continue
-        files.append({"path": path, "content": content})
-    return files, summary
+    if plan:
+        planned_paths = [item["path"] for item in plan]
+        for item in plan:
+            path = item["path"]
+            purpose = item.get("purpose", "")
+            try:
+                content = _generate_single_doc_with_llm_from_context(
+                    project_name=project_name,
+                    branch=branch,
+                    context=context,
+                    llm_base=llm_base,
+                    llm_key=llm_key,
+                    llm_model=llm_model,
+                    target_path=path,
+                    purpose=purpose,
+                    planned_paths=planned_paths,
+                )
+            except Exception as err:
+                logger.warning("docs.file.failed project=%s branch=%s target=%s err=%s", project_name, branch, path, err)
+                continue
+            files.append({"path": path, "content": content})
+        logger.info(
+            "docs.generate.planned_result project=%s branch=%s planned=%s generated=%s",
+            project_name,
+            branch,
+            len(plan),
+            len(files),
+        )
+        if not files:
+            errors.append("planner produced files but all per-file generations failed")
+
+    if files:
+        return files, summary
+
+    try:
+        single_files, single_summary = _generate_docs_single_shot_with_llm_from_context(
+            project_name=project_name,
+            branch=branch,
+            context=context,
+            llm_base=llm_base,
+            llm_key=llm_key,
+            llm_model=llm_model,
+        )
+        return single_files, single_summary or summary
+    except Exception as err:
+        msg = f"single-shot failed: {err}"
+        errors.append(msg)
+        logger.warning("docs.generate.single_shot_failed project=%s branch=%s err=%s", project_name, branch, err)
+
+    combined = "; ".join(errors) if errors else "unknown generation error"
+    raise DocumentationError(combined)
 
 
 def _safe_target(repo_path: str, rel_path: str) -> Path:
@@ -831,6 +1023,13 @@ async def generate_project_documentation(project_id: str, branch: Optional[str] 
         )
 
     _clear_docs(repo_path)
+    logger.info(
+        "docs.generate.start project_id=%s branch=%s current_branch=%s repo_path=%s",
+        project_id,
+        chosen_branch,
+        current_branch,
+        repo_path,
+    )
 
     files_out = _git_stdout(repo_path, ["ls-tree", "-r", "--name-only", chosen_branch], timeout=30)
     all_paths = [line.strip() for line in files_out.splitlines() if line.strip()]
@@ -843,6 +1042,15 @@ async def generate_project_documentation(project_id: str, branch: Optional[str] 
 
     selected_paths = _select_context_files(source_paths)
     context = _build_repo_context(repo_path, chosen_branch, selected_paths)
+    logger.info(
+        "docs.generate.context project_id=%s branch=%s all_files=%s source_files=%s selected_files=%s context_chars=%s",
+        project_id,
+        chosen_branch,
+        len(all_paths),
+        len(source_paths),
+        len(selected_paths),
+        len(context),
+    )
 
     project_name = str(project.get("name") or project.get("key") or project_id)
     fallback = _fallback_docs(project_name, chosen_branch, source_paths, selected_paths)
@@ -851,6 +1059,14 @@ async def generate_project_documentation(project_id: str, branch: Optional[str] 
     llm_base = _normalize_llm_base(project.get("llm_base_url"), provider)
     llm_key = _llm_key(provider, project.get("llm_api_key"))
     llm_model = _llm_model(provider, project.get("llm_model"))
+    logger.info(
+        "docs.generate.llm project_id=%s provider=%s model=%s base=%s has_api_key=%s",
+        project_id,
+        provider,
+        llm_model,
+        llm_base,
+        bool(llm_key),
+    )
 
     generated_files: list[dict[str, str]] = []
     summary = ""
@@ -870,6 +1086,7 @@ async def generate_project_documentation(project_id: str, branch: Optional[str] 
                 mode = "llm"
         except Exception as err:
             llm_error = str(err)
+            logger.warning("docs.generate.llm_failed project_id=%s branch=%s err=%s", project_id, chosen_branch, err)
             generated_files = []
 
     if not generated_files:
@@ -881,6 +1098,14 @@ async def generate_project_documentation(project_id: str, branch: Optional[str] 
 
     generated_files = _ensure_mandatory_docs(generated_files, fallback)
     written_paths = _write_docs(repo_path, generated_files)
+    logger.info(
+        "docs.generate.done project_id=%s branch=%s mode=%s files_written=%s llm_error=%s",
+        project_id,
+        chosen_branch,
+        mode,
+        len(written_paths),
+        llm_error or "",
+    )
 
     return {
         "project_id": str(project.get("_id") or project_id),
@@ -906,11 +1131,25 @@ async def generate_project_documentation_from_local_context(
 ) -> dict[str, Any]:
     project = await _load_project(project_id)
     chosen_branch = (branch or project.get("default_branch") or "main").strip() or "main"
+    logger.info(
+        "docs.generate_local.start project_id=%s branch=%s local_repo_root=%s local_paths=%s",
+        project_id,
+        chosen_branch,
+        local_repo_root,
+        len(local_repo_file_paths or []),
+    )
 
     all_paths = [p.strip().replace("\\", "/") for p in (local_repo_file_paths or []) if str(p).strip()]
     if not all_paths:
         all_paths = ["README.md"]
     selected_paths = all_paths[:MAX_CONTEXT_FILES]
+    logger.info(
+        "docs.generate_local.context project_id=%s branch=%s selected_paths=%s context_chars=%s",
+        project_id,
+        chosen_branch,
+        len(selected_paths),
+        len((local_repo_context or "").strip()),
+    )
 
     project_name = str(project.get("name") or project.get("key") or project_id)
     fallback = _fallback_docs(project_name, chosen_branch, all_paths, selected_paths)
@@ -919,6 +1158,14 @@ async def generate_project_documentation_from_local_context(
     llm_base = _normalize_llm_base(project.get("llm_base_url"), provider)
     llm_key = _llm_key(provider, project.get("llm_api_key"))
     llm_model = _llm_model(provider, project.get("llm_model"))
+    logger.info(
+        "docs.generate_local.llm project_id=%s provider=%s model=%s base=%s has_api_key=%s",
+        project_id,
+        provider,
+        llm_model,
+        llm_base,
+        bool(llm_key),
+    )
 
     generated_files: list[dict[str, str]] = []
     summary = ""
@@ -939,6 +1186,7 @@ async def generate_project_documentation_from_local_context(
                 mode = "llm"
         except Exception as err:
             llm_error = str(err)
+            logger.warning("docs.generate_local.llm_failed project_id=%s branch=%s err=%s", project_id, chosen_branch, err)
             generated_files = []
 
     if not generated_files:
@@ -949,6 +1197,14 @@ async def generate_project_documentation_from_local_context(
             summary = f"{summary} LLM generation failed: {llm_error}"
 
     generated_files = _ensure_mandatory_docs(generated_files, fallback)
+    logger.info(
+        "docs.generate_local.done project_id=%s branch=%s mode=%s files=%s llm_error=%s",
+        project_id,
+        chosen_branch,
+        mode,
+        len(generated_files),
+        llm_error or "",
+    )
 
     return {
         "project_id": str(project.get("_id") or project_id),

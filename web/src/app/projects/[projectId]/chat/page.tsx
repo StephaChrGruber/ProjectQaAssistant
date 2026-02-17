@@ -80,6 +80,7 @@ type GenerateDocsResponse = {
     current_branch?: string
     mode?: string
     summary?: string
+    llm_error?: string | null
     files_written?: string[]
     files?: Array<{ path: string; content: string }>
 }
@@ -474,8 +475,9 @@ export default function ProjectChatPage() {
             const writeRes = await writeLocalDocumentationFiles(projectId, generated)
             const mode = out.mode || "generated"
             const count = writeRes.written.length
+            const info = [out.summary, out.llm_error].filter(Boolean).join(" ")
             setDocsNotice(
-                `Documentation ${mode === "llm" ? "generated with LLM" : "generated"} for local repo branch ${out.branch || branch}. Files updated: ${count}.`
+                `Documentation ${mode === "llm" ? "generated with LLM" : "generated"} for local repo branch ${out.branch || branch}. Files updated: ${count}.${info ? ` ${info}` : ""}`
             )
         },
         [branch, browserLocalRepoMode, projectId]
@@ -669,8 +671,9 @@ export default function ProjectChatPage() {
                 const writeRes = await writeLocalDocumentationFiles(projectId, generated)
                 const mode = out.mode || "generated"
                 const count = writeRes.written.length
+                const info = [out.summary, out.llm_error].filter(Boolean).join(" ")
                 setDocsNotice(
-                    `Documentation ${mode === "llm" ? "generated with LLM" : "generated"} for local repo branch ${out.branch || branch}. Files updated: ${count}.`
+                    `Documentation ${mode === "llm" ? "generated with LLM" : "generated"} for local repo branch ${out.branch || branch}. Files updated: ${count}.${info ? ` ${info}` : ""}`
                 )
             } else {
                 const out = await backendJson<GenerateDocsResponse>(`/api/projects/${projectId}/documentation/generate`, {
@@ -679,8 +682,9 @@ export default function ProjectChatPage() {
                 })
                 const mode = out.mode || "generated"
                 const count = out.files_written?.length || 0
+                const info = [out.summary, out.llm_error].filter(Boolean).join(" ")
                 setDocsNotice(
-                    `Documentation ${mode === "llm" ? "generated with LLM" : "generated"} for branch ${out.branch || branch}. Files updated: ${count}.`
+                    `Documentation ${mode === "llm" ? "generated with LLM" : "generated"} for branch ${out.branch || branch}. Files updated: ${count}.${info ? ` ${info}` : ""}`
                 )
             }
 
