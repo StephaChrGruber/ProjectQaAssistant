@@ -73,6 +73,14 @@ type ChatMessage = {
     role: "user" | "assistant" | "system" | "tool"
     content: string
     ts?: string
+    meta?: {
+        tool_summary?: {
+            calls?: number
+            errors?: number
+            cached_hits?: number
+        }
+        sources?: ChatAnswerSource[]
+    }
 }
 
 type ProjectDoc = {
@@ -115,6 +123,7 @@ type AskAgentResponse = {
             retryable?: boolean
         } | null
     }>
+    sources?: ChatAnswerSource[]
 }
 
 type LlmProfileDoc = {
@@ -127,6 +136,15 @@ type LlmProfileDoc = {
 type ChatLlmProfileResponse = {
     chat_id: string
     llm_profile_id?: string | null
+}
+
+type ChatAnswerSource = {
+    label: string
+    kind?: "url" | "documentation" | "file" | string
+    source?: string
+    url?: string
+    path?: string
+    line?: number
 }
 
 type ToolCatalogItem = {
@@ -326,6 +344,22 @@ function splitChartBlocks(text: string): Array<{ type: "text" | "chart"; value: 
         parts.push({ type: "text", value: text.slice(cursor) })
     }
     return parts
+}
+
+function isDocumentationPath(path?: string): boolean {
+    const p = String(path || "").trim().replace(/\\/g, "/").replace(/^\.?\//, "")
+    return /^documentation\/.+\.md$/i.test(p)
+}
+
+function sourceDisplayText(src: ChatAnswerSource): string {
+    const path = String(src.path || "").trim()
+    const url = String(src.url || "").trim()
+    const label = String(src.label || "").trim()
+    const line = typeof src.line === "number" && src.line > 0 ? `:${src.line}` : ""
+    if (path) return `${path}${line}`
+    if (label) return label
+    if (url) return url
+    return "Source"
 }
 
 function errText(err: unknown): string {
@@ -1130,7 +1164,15 @@ export default function ProjectChatPage() {
             })
 
             if (res.answer?.trim()) {
-                setMessages((prev) => [...prev, { role: "assistant", content: res.answer || "", ts: new Date().toISOString() }])
+                setMessages((prev) => [
+                    ...prev,
+                    {
+                        role: "assistant",
+                        content: res.answer || "",
+                        ts: new Date().toISOString(),
+                        meta: { sources: res.sources || [] },
+                    },
+                ])
             }
             setLastToolEvents(res.tool_events || [])
 
@@ -1308,6 +1350,23 @@ export default function ProjectChatPage() {
         setDocsOpen(true)
         void loadDocumentationList(selectedDocPath)
     }, [loadDocumentationList, selectedDocPath])
+
+    const handleAnswerSourceClick = useCallback(
+        async (src: ChatAnswerSource) => {
+            const rawUrl = String(src.url || "").trim()
+            if (rawUrl && /^https?:\/\//i.test(rawUrl)) {
+                window.open(rawUrl, "_blank", "noopener,noreferrer")
+                return
+            }
+
+            const path = String(src.path || "").trim().replace(/\\/g, "/").replace(/^\.?\//, "")
+            if (isDocumentationPath(path)) {
+                setDocsOpen(true)
+                await loadDocumentationList(path)
+            }
+        },
+        [loadDocumentationList]
+    )
 
     const generateDocumentation = useCallback(async (opts?: { silent?: boolean }) => {
         if (!opts?.silent) {
@@ -1537,6 +1596,7 @@ export default function ProjectChatPage() {
 
                         {messages.map((m, idx) => {
                             const isUser = m.role === "user"
+                            const sources = !isUser && m.role === "assistant" ? (m.meta?.sources || []) : []
                             return (
                                 <Box key={`${m.ts || idx}-${idx}`} sx={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start" }}>
                                     <Paper
@@ -1693,6 +1753,60 @@ export default function ProjectChatPage() {
                                                     </Box>
                                                 )
                                             })}
+
+                                            {!isUser && m.role === "assistant" && (
+                                                <Box
+                                                    sx={{
+                                                        mt: 0.4,
+                                                        pt: 0.9,
+                                                        borderTop: "1px solid",
+                                                        borderColor: "divider",
+                                                    }}
+                                                >
+                                                    <Typography
+                                                        variant="caption"
+                                                        color="text.secondary"
+                                                        sx={{ letterSpacing: "0.08em", display: "block", mb: 0.6 }}
+                                                    >
+                                                        SOURCES
+                                                    </Typography>
+                                                    <Stack spacing={0.2}>
+                                                        {sources.length > 0 ? (
+                                                            sources.map((src, sidx) => {
+                                                                const clickable = Boolean(
+                                                                    (src.url && /^https?:\/\//i.test(src.url)) ||
+                                                                    isDocumentationPath(src.path)
+                                                                )
+                                                                return (
+                                                                    <Button
+                                                                        key={`${sourceDisplayText(src)}-${sidx}`}
+                                                                        variant="text"
+                                                                        size="small"
+                                                                        onClick={() => {
+                                                                            void handleAnswerSourceClick(src)
+                                                                        }}
+                                                                        disabled={!clickable}
+                                                                        sx={{
+                                                                            justifyContent: "flex-start",
+                                                                            textTransform: "none",
+                                                                            px: 0,
+                                                                            minHeight: "auto",
+                                                                            fontSize: 12,
+                                                                            lineHeight: 1.35,
+                                                                        }}
+                                                                    >
+                                                                        {sourceDisplayText(src)}
+                                                                    </Button>
+                                                                )
+                                                            })
+                                                        ) : (
+                                                            <Typography variant="caption" color="text.secondary">
+                                                                No explicit sources were captured for this answer.
+                                                            </Typography>
+                                                        )}
+                                                    </Stack>
+                                                </Box>
+                                            )}
                                         </Stack>
                                     </Paper>
                                 </Box>

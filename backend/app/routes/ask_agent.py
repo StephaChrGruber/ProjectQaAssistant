@@ -149,6 +149,184 @@ def _merge_tool_policies(base_policy: dict, chat_policy: dict) -> dict:
     return merged
 
 
+def _as_text(v: Any) -> str:
+    return str(v or "").strip()
+
+
+def _looks_like_url(v: str) -> bool:
+    s = _as_text(v).lower()
+    return s.startswith("http://") or s.startswith("https://")
+
+
+def _source_kind(path: str | None, url: str | None) -> str:
+    p = _as_text(path).replace("\\", "/")
+    if _looks_like_url(_as_text(url)):
+        return "url"
+    if p.startswith("documentation/") and p.lower().endswith(".md"):
+        return "documentation"
+    return "file"
+
+
+def _append_source(
+    out: list[dict[str, Any]],
+    seen: set[str],
+    *,
+    label: str,
+    path: str | None = None,
+    url: str | None = None,
+    source_type: str | None = None,
+    line: int | None = None,
+) -> None:
+    clean_label = _as_text(label) or "Source"
+    clean_path = _as_text(path) or None
+    clean_url = _as_text(url) or None
+    clean_source = _as_text(source_type) or None
+    clean_line = int(line) if isinstance(line, int) and line > 0 else None
+
+    kind = _source_kind(clean_path, clean_url)
+    key = f"{kind}|{clean_url or ''}|{clean_path or ''}|{clean_line or 0}|{clean_label}"
+    if key in seen:
+        return
+    seen.add(key)
+
+    item: dict[str, Any] = {
+        "label": clean_label,
+        "kind": kind,
+    }
+    if clean_source:
+        item["source"] = clean_source
+    if clean_url:
+        item["url"] = clean_url
+    if clean_path:
+        item["path"] = clean_path
+    if clean_line:
+        item["line"] = clean_line
+    out.append(item)
+
+
+def _extract_sources_from_tool_event(ev: dict[str, Any], out: list[dict[str, Any]], seen: set[str]) -> None:
+    if not bool(ev.get("ok")):
+        return
+    tool = _as_text(ev.get("tool"))
+    result = ev.get("result")
+    if not isinstance(result, dict):
+        return
+
+    if tool == "repo_grep":
+        for m in (result.get("matches") or [])[:20]:
+            if not isinstance(m, dict):
+                continue
+            path = _as_text(m.get("path"))
+            line = m.get("line")
+            _append_source(
+                out,
+                seen,
+                label=f"{path}:{line}" if path and isinstance(line, int) else (path or "repo_grep"),
+                path=path or None,
+                source_type="repo_grep",
+                line=line if isinstance(line, int) else None,
+            )
+        return
+
+    if tool == "open_file":
+        path = _as_text(result.get("path"))
+        line = result.get("start_line")
+        _append_source(
+            out,
+            seen,
+            label=f"{path}:{line}" if path and isinstance(line, int) else (path or "open_file"),
+            path=path or None,
+            source_type="open_file",
+            line=line if isinstance(line, int) else None,
+        )
+        return
+
+    if tool == "keyword_search":
+        for h in (result.get("hits") or [])[:20]:
+            if not isinstance(h, dict):
+                continue
+            path = _as_text(h.get("path"))
+            title = _as_text(h.get("title")) or path or "keyword hit"
+            _append_source(
+                out,
+                seen,
+                label=title,
+                path=path or None,
+                source_type=_as_text(h.get("source")) or "keyword",
+            )
+        return
+
+    if tool == "chroma_search_chunks":
+        for item in (result.get("items") or [])[:20]:
+            if not isinstance(item, dict):
+                continue
+            _append_source(
+                out,
+                seen,
+                label=_as_text(item.get("title")) or _as_text(item.get("url")) or "chroma chunk",
+                path=_as_text(item.get("path")) or None,
+                url=_as_text(item.get("url")) or None,
+                source_type=_as_text(item.get("source")) or "chroma",
+            )
+        return
+
+    if tool == "chroma_open_chunks":
+        for item in (result.get("result") or [])[:20]:
+            if not isinstance(item, dict):
+                continue
+            _append_source(
+                out,
+                seen,
+                label=_as_text(item.get("title")) or _as_text(item.get("url")) or "chroma chunk",
+                path=_as_text(item.get("path")) or None,
+                url=_as_text(item.get("url")) or None,
+                source_type=_as_text(item.get("source")) or "chroma",
+            )
+        return
+
+    if tool == "read_docs_folder":
+        for file_doc in (result.get("files") or [])[:20]:
+            if not isinstance(file_doc, dict):
+                continue
+            path = _as_text(file_doc.get("path"))
+            _append_source(out, seen, label=path or "documentation", path=path or None, source_type="documentation")
+        return
+
+    # Generic fallback for tool outputs that already include url/path/title.
+    for key in ("items", "result", "hits", "files", "entries"):
+        rows = result.get(key)
+        if not isinstance(rows, list):
+            continue
+        for item in rows[:20]:
+            if not isinstance(item, dict):
+                continue
+            url = _as_text(item.get("url"))
+            path = _as_text(item.get("path"))
+            title = _as_text(item.get("title")) or path or url or f"{tool} source"
+            if not (url or path):
+                continue
+            _append_source(
+                out,
+                seen,
+                label=title,
+                path=path or None,
+                url=url or None,
+                source_type=_as_text(item.get("source")) or tool,
+            )
+
+
+def _collect_answer_sources(tool_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ev in tool_events or []:
+        if not isinstance(ev, dict):
+            continue
+        _extract_sources_from_tool_event(ev, out, seen)
+        if len(out) >= 24:
+            break
+    return out[:24]
+
+
 @router.post("/ask_agent")
 async def ask_agent(req: AskReq):
     chat_id = req.chat_id or f"{req.project_id}::{req.branch}::{req.user}"
@@ -230,6 +408,7 @@ async def ask_agent(req: AskReq):
         )
         answer = str((agent_out or {}).get("answer") or "")
         tool_events = (agent_out or {}).get("tool_events") or []
+        answer_sources = _collect_answer_sources(tool_events)
     except LLMUpstreamError as err:
         detail = str(err)
         detail_lc = detail.lower()
@@ -253,6 +432,7 @@ async def ask_agent(req: AskReq):
                 f"Details: {detail}"
             )
         tool_events = []
+        answer_sources = []
     except Exception:
         logger.exception(
             "Unexpected ask_agent failure for project=%s branch=%s user=%s",
@@ -265,6 +445,7 @@ async def ask_agent(req: AskReq):
             "Please try again in a moment."
         )
         tool_events = []
+        answer_sources = []
 
     # append assistant message
     done = datetime.utcnow()
@@ -276,7 +457,14 @@ async def ask_agent(req: AskReq):
     await get_db()["chats"].update_one(
         {"chat_id": chat_id},
         {
-            "$push": {"messages": {"role": "assistant", "content": answer, "ts": done, "meta": {"tool_summary": tool_summary}}},
+            "$push": {
+                "messages": {
+                    "role": "assistant",
+                    "content": answer,
+                    "ts": done,
+                    "meta": {"tool_summary": tool_summary, "sources": answer_sources},
+                }
+            },
             "$set": {
                 "updated_at": done,
                 "last_message_at": done,
@@ -314,4 +502,4 @@ async def ask_agent(req: AskReq):
         except Exception:
             logger.exception("Failed to persist tool events for chat_id=%s", chat_id)
 
-    return {"answer": answer, "chat_id": chat_id, "tool_events": tool_events}
+    return {"answer": answer, "chat_id": chat_id, "tool_events": tool_events, "sources": answer_sources}

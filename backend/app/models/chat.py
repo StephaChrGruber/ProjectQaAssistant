@@ -8,6 +8,7 @@ class ChatMessage(BaseModel):
     role: Role
     content: str
     ts: datetime = Field(default_factory=datetime.utcnow)
+    meta: dict | None = None
 
 class ChatDoc(BaseModel):
     chat_id: str
