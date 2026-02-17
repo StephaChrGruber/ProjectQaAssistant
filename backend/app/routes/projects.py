@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import Any
 from bson import ObjectId
 import subprocess
+from datetime import datetime, timedelta
 
 from ..db import get_db  # however you access Mongo (Motor/PyMongo)
 from ..services.documentation import (
@@ -196,3 +197,105 @@ async def open_documentation_file(
         return await read_project_documentation_file(project_id=project_id, path=path, branch=branch)
     except DocumentationError as err:
         raise HTTPException(status_code=400, detail=str(err))
+
+
+@router.get("/{project_id}/tool-events")
+async def list_tool_events(
+    project_id: str,
+    branch: str | None = None,
+    chat_id: str | None = None,
+    ok: bool | None = None,
+    limit: int = 100,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+
+    p = await get_db().projects.find_one({"_id": oid(project_id)})
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    safe_limit = max(1, min(int(limit), 500))
+    q: dict[str, Any] = {"project_id": project_id}
+    if branch:
+        q["branch"] = branch
+    if chat_id:
+        q["chat_id"] = chat_id
+    if ok is not None:
+        q["ok"] = bool(ok)
+
+    cursor = get_db()["tool_events"].find(q).sort("created_at", -1).limit(safe_limit)
+    rows = await cursor.to_list(length=safe_limit)
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["_id"] = str(item.get("_id"))
+        ts = item.get("created_at")
+        if isinstance(ts, datetime):
+            item["created_at"] = ts.isoformat() + "Z"
+        out.append(item)
+
+    return {"project_id": project_id, "items": out}
+
+
+@router.get("/{project_id}/tool-events/summary")
+async def summarize_tool_events(
+    project_id: str,
+    hours: int = 24,
+    branch: str | None = None,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+
+    p = await get_db().projects.find_one({"_id": oid(project_id)})
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    safe_hours = max(1, min(int(hours), 24 * 90))
+    since = datetime.utcnow() - timedelta(hours=safe_hours)
+    match: dict[str, Any] = {"project_id": project_id, "created_at": {"$gte": since}}
+    if branch:
+        match["branch"] = branch
+
+    pipeline = [
+        {"$match": match},
+        {
+            "$group": {
+                "_id": "$tool",
+                "calls": {"$sum": 1},
+                "ok": {"$sum": {"$cond": ["$ok", 1, 0]}},
+                "errors": {"$sum": {"$cond": ["$ok", 0, 1]}},
+                "cached_hits": {"$sum": {"$cond": ["$cached", 1, 0]}},
+                "avg_duration_ms": {"$avg": "$duration_ms"},
+            }
+        },
+        {"$sort": {"calls": -1, "_id": 1}},
+    ]
+    rows = await get_db()["tool_events"].aggregate(pipeline).to_list(length=500)
+    items: list[dict[str, Any]] = []
+    total_calls = 0
+    total_errors = 0
+    for row in rows:
+        calls = int(row.get("calls") or 0)
+        errors = int(row.get("errors") or 0)
+        total_calls += calls
+        total_errors += errors
+        items.append(
+            {
+                "tool": str(row.get("_id") or ""),
+                "calls": calls,
+                "ok": int(row.get("ok") or 0),
+                "errors": errors,
+                "cached_hits": int(row.get("cached_hits") or 0),
+                "avg_duration_ms": int(round(float(row.get("avg_duration_ms") or 0))),
+            }
+        )
+
+    return {
+        "project_id": project_id,
+        "hours": safe_hours,
+        "total_calls": total_calls,
+        "total_errors": total_errors,
+        "items": items,
+    }

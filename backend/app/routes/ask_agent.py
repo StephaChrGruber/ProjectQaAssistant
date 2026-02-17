@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -25,7 +26,7 @@ class AskReq(BaseModel):
     llm_model: str | None = None
 
 
-async def _project_llm_defaults(project_id: str) -> dict[str, str | None]:
+async def _project_llm_defaults(project_id: str) -> dict[str, Any]:
     db = get_db()
     q = {"key": project_id}
     if ObjectId.is_valid(project_id):
@@ -60,7 +61,72 @@ async def _project_llm_defaults(project_id: str) -> dict[str, str | None]:
         "llm_base_url": base_url,
         "llm_api_key": api_key,
         "llm_model": model,
+        "tool_policy": _extract_tool_policy(project),
+        "max_tool_calls": _extract_max_tool_calls(project),
     }
+
+
+def _as_tool_name_list(raw: object) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        s = str(item or "").strip()
+        if s:
+            out.append(s)
+    return out
+
+
+def _extract_tool_policy(project: dict) -> dict:
+    extra = project.get("extra") if isinstance(project, dict) else {}
+    if not isinstance(extra, dict):
+        extra = {}
+    tooling = extra.get("tooling")
+    if not isinstance(tooling, dict):
+        tooling = {}
+
+    raw = tooling.get("tool_policy")
+    if not isinstance(raw, dict):
+        raw = tooling
+
+    policy: dict[str, object] = {}
+    allowed = _as_tool_name_list(raw.get("allowed_tools") or raw.get("allow_tools"))
+    blocked = _as_tool_name_list(raw.get("blocked_tools") or raw.get("deny_tools"))
+    if allowed:
+        policy["allowed_tools"] = allowed
+    if blocked:
+        policy["blocked_tools"] = blocked
+    if bool(raw.get("read_only_only")):
+        policy["read_only_only"] = True
+
+    for key in ("timeout_overrides", "rate_limit_overrides", "retry_overrides", "cache_ttl_overrides"):
+        value = raw.get(key)
+        if isinstance(value, dict):
+            cleaned: dict[str, int] = {}
+            for k, v in value.items():
+                try:
+                    cleaned[str(k)] = int(v)
+                except Exception:
+                    continue
+            if cleaned:
+                policy[key] = cleaned
+
+    return policy
+
+
+def _extract_max_tool_calls(project: dict) -> int:
+    extra = project.get("extra") if isinstance(project, dict) else {}
+    if not isinstance(extra, dict):
+        extra = {}
+    tooling = extra.get("tooling")
+    if not isinstance(tooling, dict):
+        tooling = {}
+    raw = tooling.get("max_tool_calls")
+    try:
+        value = int(raw)
+    except Exception:
+        return 12
+    return max(1, min(value, 80))
 
 
 @router.post("/ask_agent")
@@ -119,6 +185,8 @@ async def ask_agent(req: AskReq):
             llm_base_url=req.llm_base_url or defaults["llm_base_url"],
             llm_api_key=req.llm_api_key or defaults["llm_api_key"],
             llm_model=req.llm_model or defaults["llm_model"],
+            tool_policy=(defaults.get("tool_policy") or {}),
+            max_tool_calls=int(defaults.get("max_tool_calls") or 12),
             include_tool_events=True,
         )
         answer = str((agent_out or {}).get("answer") or "")
@@ -161,10 +229,15 @@ async def ask_agent(req: AskReq):
 
     # append assistant message
     done = datetime.utcnow()
+    tool_summary = {
+        "calls": len(tool_events),
+        "errors": sum(1 for ev in tool_events if not bool((ev or {}).get("ok"))),
+        "cached_hits": sum(1 for ev in tool_events if bool((ev or {}).get("cached"))),
+    }
     await get_db()["chats"].update_one(
         {"chat_id": chat_id},
         {
-            "$push": {"messages": {"role": "assistant", "content": answer, "ts": done}},
+            "$push": {"messages": {"role": "assistant", "content": answer, "ts": done, "meta": {"tool_summary": tool_summary}}},
             "$set": {
                 "updated_at": done,
                 "last_message_at": done,
@@ -172,5 +245,34 @@ async def ask_agent(req: AskReq):
             },
         },
     )
+
+    if tool_events:
+        try:
+            docs = []
+            for ev in tool_events:
+                row = ev or {}
+                err = row.get("error") or {}
+                docs.append(
+                    {
+                        "project_id": req.project_id,
+                        "chat_id": chat_id,
+                        "branch": req.branch,
+                        "user": req.user,
+                        "tool": str(row.get("tool") or ""),
+                        "ok": bool(row.get("ok")),
+                        "duration_ms": int(row.get("duration_ms") or 0),
+                        "attempts": int(row.get("attempts") or 1),
+                        "cached": bool(row.get("cached")),
+                        "input_bytes": int(row.get("input_bytes") or 0),
+                        "result_bytes": int(row.get("result_bytes") or 0),
+                        "error_code": str(err.get("code") or "") or None,
+                        "error_message": str(err.get("message") or "") or None,
+                        "created_at": done,
+                    }
+                )
+            if docs:
+                await get_db()["tool_events"].insert_many(docs, ordered=False)
+        except Exception:
+            logger.exception("Failed to persist tool events for chat_id=%s", chat_id)
 
     return {"answer": answer, "chat_id": chat_id, "tool_events": tool_events}

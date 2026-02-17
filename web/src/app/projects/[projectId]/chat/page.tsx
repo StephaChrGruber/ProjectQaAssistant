@@ -82,6 +82,8 @@ type AskAgentResponse = {
         tool: string
         ok: boolean
         duration_ms: number
+        attempts?: number
+        cached?: boolean
         input_bytes?: number
         result_bytes?: number
         error?: {
@@ -971,6 +973,8 @@ export default function ProjectChatPage() {
                                 {lastToolEvents.map((ev, idx) => (
                                     <Typography key={`${ev.tool}-${idx}`} variant="body2" color={ev.ok ? "success.main" : "warning.main"}>
                                         {ev.ok ? "OK" : "ERR"} · {ev.tool} · {ev.duration_ms} ms
+                                        {ev.cached ? " · cached" : ""}
+                                        {ev.attempts && ev.attempts > 1 ? ` · attempts:${ev.attempts}` : ""}
                                         {ev.error?.code ? ` · ${ev.error.code}` : ""}
                                         {ev.error?.message ? ` · ${ev.error.message}` : ""}
                                     </Typography>

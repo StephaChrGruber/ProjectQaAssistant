@@ -28,14 +28,35 @@ def _base(llm_base_url: str | None = None) -> str:
     return base + "/v1/"
 
 
-def _system_prompt(project_id: str, branch: str, user_id: str, runtime: ToolRuntime) -> str:
+def _policy_hint(policy: dict[str, Any] | None) -> str:
+    p = policy or {}
+    if not isinstance(p, dict) or not p:
+        return ""
+    allowed = p.get("allowed_tools") or p.get("allow_tools") or []
+    blocked = p.get("blocked_tools") or p.get("deny_tools") or []
+    read_only_only = bool(p.get("read_only_only"))
+    lines: list[str] = ["Tool policy:"]
+    if isinstance(allowed, list) and allowed:
+        lines.append(f"- allowed_tools = {', '.join(str(x) for x in allowed)}")
+    if isinstance(blocked, list) and blocked:
+        lines.append(f"- blocked_tools = {', '.join(str(x) for x in blocked)}")
+    if read_only_only:
+        lines.append("- read_only_only = true")
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines) + "\n\n"
+
+
+def _system_prompt(project_id: str, branch: str, user_id: str, runtime: ToolRuntime, policy: dict[str, Any] | None) -> str:
     tool_schema = runtime.schema_text()
+    policy_text = _policy_hint(policy)
     return (
         "You are an onboarding + developer assistant for a codebase.\n"
         f"Context:\n"
         f"- project_id = {project_id}\n"
         f"- branch = {branch}\n"
         f"- user = {user_id}\n\n"
+        f"{policy_text}"
         "When you need tools, reply with EXACTLY one JSON object (no markdown, no extra text):\n"
         "{\n"
         '  "tool": "<tool_name>",\n'
@@ -180,6 +201,7 @@ class Agent2:
         llm_base_url: str | None = None,
         llm_api_key: str | None = None,
         llm_model: str | None = None,
+        tool_policy: dict[str, Any] | None = None,
         runtime: ToolRuntime | None = None,
     ):
         self.project_id = project_id
@@ -191,10 +213,11 @@ class Agent2:
         self.llm_base_url = llm_base_url
         self.llm_api_key = llm_api_key
         self.llm_model = llm_model
+        self.tool_policy = tool_policy or {}
         self.runtime = runtime or _RUNTIME
 
     async def run(self, user_text: str) -> dict[str, Any]:
-        system_prompt = _system_prompt(self.project_id, self.branch, self.user_id, self.runtime)
+        system_prompt = _system_prompt(self.project_id, self.branch, self.user_id, self.runtime, self.tool_policy)
         messages: List[Dict[str, str]] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},
@@ -231,7 +254,7 @@ class Agent2:
 
             tool_name = tool_call["tool"]
             model_args = dict(tool_call["args"] or {})
-            ctx = ToolContext(project_id=self.project_id, branch=self.branch, user_id=self.user_id)
+            ctx = ToolContext(project_id=self.project_id, branch=self.branch, user_id=self.user_id, policy=self.tool_policy)
 
             logger.info("tool.execute.request tool=%s args=%s", tool_name, model_args)
             envelope = await self.runtime.execute(tool_name, model_args, ctx)
@@ -271,6 +294,8 @@ async def answer_with_agent(
     llm_base_url: str | None = None,
     llm_api_key: str | None = None,
     llm_model: str | None = None,
+    tool_policy: dict[str, Any] | None = None,
+    max_tool_calls: int = 12,
     include_tool_events: bool = False,
 ) -> Any:
     agent = Agent2(
@@ -279,9 +304,11 @@ async def answer_with_agent(
         user_id=user_id,
         temperature=temperature,
         max_tokens=max_tokens,
+        max_tool_calls=max(1, min(max_tool_calls, 80)),
         llm_base_url=llm_base_url,
         llm_api_key=llm_api_key,
         llm_model=llm_model,
+        tool_policy=tool_policy,
     )
     out = await agent.run(question)
     if include_tool_events:

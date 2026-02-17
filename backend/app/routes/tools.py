@@ -11,13 +11,20 @@ from ..models.tools import (
 )
 from ..utils.projects import get_project_or_404, project_meta
 from ..utils.repo_tools import repo_grep_rg, repo_open_file
+from ..rag.tool_runtime import build_default_tool_runtime
 
 router = APIRouter()
+RUNTIME = build_default_tool_runtime()
 
 
 def get_db(request: Request):
     # adjust to your app (motor client). Example:
     return request.app.state.db
+
+
+@router.get("/tools/catalog")
+async def tools_catalog():
+    return {"tools": RUNTIME.catalog()}
 
 
 @router.get("/projects/{project_id}/metadata", response_model=ProjectMetadataResponse)

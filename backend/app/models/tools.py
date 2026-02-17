@@ -271,7 +271,35 @@ class ToolEnvelope(BaseModel):
     tool: str
     ok: bool
     duration_ms: int
+    attempts: int = 1
+    cached: bool = False
     input_bytes: int = 0
     result_bytes: int = 0
     result: Optional[Any] = None
     error: Optional[ToolError] = None
+
+
+class ToolEventRecord(BaseModel):
+    project_id: str
+    chat_id: str
+    branch: str
+    user: str
+    tool: str
+    ok: bool
+    duration_ms: int
+    attempts: int = 1
+    cached: bool = False
+    input_bytes: int = 0
+    result_bytes: int = 0
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: str
+
+
+class ToolEventSummaryItem(BaseModel):
+    tool: str
+    calls: int
+    ok: int
+    errors: int
+    cached_hits: int
+    avg_duration_ms: int
