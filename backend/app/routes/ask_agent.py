@@ -14,32 +14,6 @@ from ..services.llm_profiles import resolve_project_llm_config
 router = APIRouter()
 logger = logging.getLogger(__name__)
 _SOURCE_DISCOVERY_RUNTIME = build_default_tool_runtime()
-_COMMON_QUESTION_WORDS = {
-    "what",
-    "where",
-    "when",
-    "which",
-    "with",
-    "from",
-    "that",
-    "this",
-    "please",
-    "show",
-    "find",
-    "does",
-    "about",
-    "into",
-    "project",
-    "code",
-    "repo",
-    "file",
-    "files",
-    "chat",
-    "answer",
-    "help",
-    "there",
-    "their",
-}
 
 class AskReq(BaseModel):
     project_id: str
@@ -573,19 +547,6 @@ def _collect_answer_sources(
     return out[:24]
 
 
-def _fallback_repo_pattern(question: str) -> str | None:
-    tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_./-]{2,}", _as_text(question).lower())
-    ranked = [
-        t
-        for t in tokens
-        if t not in _COMMON_QUESTION_WORDS and not t.startswith("http") and len(t) >= 3
-    ]
-    if not ranked:
-        return None
-    ranked.sort(key=lambda t: ("/" in t or "_" in t or "-" in t, len(t)), reverse=True)
-    return ranked[0]
-
-
 async def _discover_sources_when_missing(
     *,
     project_id: str,
@@ -600,21 +561,35 @@ async def _discover_sources_when_missing(
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
 
+    discovery_policy = dict(tool_policy or {})
+    timeout_overrides = discovery_policy.get("timeout_overrides")
+    if not isinstance(timeout_overrides, dict):
+        timeout_overrides = {}
+    timeout_overrides = dict(timeout_overrides)
+    timeout_overrides.setdefault("keyword_search", 10)
+    timeout_overrides.setdefault("repo_tree", 15)
+    discovery_policy["timeout_overrides"] = timeout_overrides
+
+    retry_overrides = discovery_policy.get("retry_overrides")
+    if not isinstance(retry_overrides, dict):
+        retry_overrides = {}
+    retry_overrides = dict(retry_overrides)
+    retry_overrides.setdefault("keyword_search", 0)
+    retry_overrides.setdefault("repo_tree", 0)
+    discovery_policy["retry_overrides"] = retry_overrides
+
     ctx = ToolContext(
         project_id=project_id,
         branch=branch,
         user_id=user,
         chat_id=chat_id,
-        policy=tool_policy or {},
+        policy=discovery_policy,
     )
 
     calls: list[tuple[str, dict[str, Any]]] = [
         ("keyword_search", {"query": question, "top_k": 8}),
         ("repo_tree", {"path": "", "max_depth": 2, "include_dirs": False, "include_files": True, "max_entries": 120}),
     ]
-    pattern = _fallback_repo_pattern(question)
-    if pattern:
-        calls.insert(1, ("repo_grep", {"pattern": pattern, "regex": False, "case_sensitive": False, "max_results": 18, "context_lines": 0}))
 
     for name, args in calls:
         try:
