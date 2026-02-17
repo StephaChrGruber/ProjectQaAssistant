@@ -42,7 +42,9 @@ async def _get_chat_owner_or_403(chat_id: str, x_dev_user: str | None) -> dict[s
     if not caller:
         raise HTTPException(status_code=401, detail="Missing X-Dev-User header")
     if caller and owner and caller != owner:
-        raise HTTPException(status_code=403, detail="Not allowed for this chat")
+        db_user = await get_db()["users"].find_one({"email": caller}, {"isGlobalAdmin": 1})
+        if not bool((db_user or {}).get("isGlobalAdmin")):
+            raise HTTPException(status_code=403, detail="Not allowed for this chat")
     return chat
 
 

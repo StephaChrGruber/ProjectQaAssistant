@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 MAX_CUSTOM_TOOL_CODE_CHARS = 200_000
 MAX_CUSTOM_TOOL_RESULT_CHARS = 180_000
 LOCAL_TOOL_JOB_POLL_INTERVAL_SEC = 0.35
+_BUILTIN_TOOL_CATALOG_CACHE: dict[str, dict[str, Any]] | None = None
 
 
 class CustomToolServiceError(RuntimeError):
@@ -44,6 +45,91 @@ def slugify_tool_name(name: str) -> str:
 def normalize_tool_name(name: str) -> str:
     slug = slugify_tool_name(name)
     return slug
+
+
+def _builtin_tool_catalog_map() -> dict[str, dict[str, Any]]:
+    global _BUILTIN_TOOL_CATALOG_CACHE
+    if _BUILTIN_TOOL_CATALOG_CACHE is None:
+        runtime = build_default_tool_runtime()
+        out: dict[str, dict[str, Any]] = {}
+        for row in runtime.catalog():
+            name = str(row.get("name") or "").strip()
+            if not name:
+                continue
+            out[name] = row
+        _BUILTIN_TOOL_CATALOG_CACHE = out
+    return dict(_BUILTIN_TOOL_CATALOG_CACHE)
+
+
+async def ensure_system_tool_configs_seeded() -> None:
+    db = get_db()
+    now = utc_now()
+    catalog = _builtin_tool_catalog_map()
+    for name, row in catalog.items():
+        await db["system_tool_configs"].update_one(
+            {"projectId": None, "name": name},
+            {
+                "$setOnInsert": {
+                    "projectId": None,
+                    "name": name,
+                    "description": str(row.get("description") or ""),
+                    "isEnabled": True,
+                    "readOnly": bool(row.get("read_only", True)),
+                    "timeoutSec": int(row.get("timeout_sec") or 45),
+                    "rateLimitPerMin": int(row.get("rate_limit_per_min") or 40),
+                    "maxRetries": int(row.get("max_retries") or 0),
+                    "cacheTtlSec": int(row.get("cache_ttl_sec") or 0),
+                    "requireApproval": bool(row.get("require_approval", False)),
+                    "createdAt": now,
+                    "updatedAt": now,
+                }
+            },
+            upsert=True,
+        )
+
+
+async def load_effective_system_tool_settings(project_id: str) -> tuple[set[str], dict[str, dict[str, Any]]]:
+    await ensure_system_tool_configs_seeded()
+    db = get_db()
+    rows = await db["system_tool_configs"].find(
+        {"$or": [{"projectId": None}, {"projectId": project_id}]}
+    ).to_list(length=1000)
+
+    by_name: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue
+        is_project = str(row.get("projectId") or "") == project_id
+        prev = by_name.get(name)
+        if not prev:
+            by_name[name] = row
+            continue
+        prev_is_project = str(prev.get("projectId") or "") == project_id
+        if is_project and not prev_is_project:
+            by_name[name] = row
+
+    catalog = _builtin_tool_catalog_map()
+    enabled_names: set[str] = set(catalog.keys())
+    overrides: dict[str, dict[str, Any]] = {}
+    for name in list(catalog.keys()):
+        cfg = by_name.get(name)
+        if not isinstance(cfg, dict):
+            continue
+        if not bool(cfg.get("isEnabled", True)):
+            if name in enabled_names:
+                enabled_names.remove(name)
+            continue
+        overrides[name] = {
+            "description": str(cfg.get("description") or catalog[name].get("description") or ""),
+            "timeout_sec": int(cfg.get("timeoutSec") or catalog[name].get("timeout_sec") or 45),
+            "rate_limit_per_min": int(cfg.get("rateLimitPerMin") or catalog[name].get("rate_limit_per_min") or 40),
+            "max_retries": int(cfg.get("maxRetries") or catalog[name].get("max_retries") or 0),
+            "cache_ttl_sec": int(cfg.get("cacheTtlSec") or catalog[name].get("cache_ttl_sec") or 0),
+            "read_only": bool(cfg.get("readOnly", catalog[name].get("read_only", True))),
+            "require_approval": bool(cfg.get("requireApproval", catalog[name].get("require_approval", False))),
+        }
+    return enabled_names, overrides
 
 
 def _sha256_text(text: str) -> str:
@@ -488,21 +574,29 @@ async def resolve_runtime_custom_tools(project_id: str) -> list[tuple[dict[str, 
 
 
 async def build_runtime_for_project(project_id: str) -> ToolRuntime:
-    runtime = build_default_tool_runtime()
+    try:
+        enabled_builtin_names, builtin_overrides = await load_effective_system_tool_settings(project_id)
+        runtime = build_default_tool_runtime(
+            enabled_names=enabled_builtin_names,
+            spec_overrides=builtin_overrides,
+        )
+    except Exception:
+        logger.exception("system_tool.runtime_load_failed project=%s", project_id)
+        runtime = build_default_tool_runtime()
+
     try:
         custom_pairs = await resolve_runtime_custom_tools(project_id)
     except Exception:
         logger.exception("custom_tool.runtime_load_failed project=%s", project_id)
         return runtime
 
-    builtin_names = set(runtime.tool_names())
+    existing_names = set(runtime.tool_names())
     for tool_doc, version_doc in custom_pairs:
         tool_name = str(tool_doc.get("name") or "").strip()
         if not tool_name:
             continue
-        if tool_name in builtin_names:
-            logger.warning("custom_tool.name_conflict project=%s name=%s", project_id, tool_name)
-            continue
+        if tool_name in existing_names:
+            logger.warning("tool.name_override project=%s name=%s origin=custom", project_id, tool_name)
 
         schema = tool_doc.get("inputSchema") if isinstance(tool_doc.get("inputSchema"), dict) else {}
         model_cls, allow_extra = build_args_model_from_schema(str(tool_doc.get("_id")), schema)
@@ -534,6 +628,7 @@ async def build_runtime_for_project(project_id: str) -> ToolRuntime:
                 allow_extra_args=allow_extra,
             )
         )
+        existing_names.add(tool_name)
     return runtime
 
 

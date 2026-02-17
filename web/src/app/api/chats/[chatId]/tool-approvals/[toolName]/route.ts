@@ -4,15 +4,17 @@ const BACKEND = process.env.BACKEND_BASE_URL || "http://backend:8080"
 const DEV_USER = process.env.POC_DEV_USER || "dev@local"
 
 export async function DELETE(
-    _req: Request,
+    req: Request,
     ctx: { params: Promise<{ chatId: string; toolName: string }> }
 ) {
     const { chatId, toolName } = await ctx.params
+    const url = new URL(req.url)
+    const user = (url.searchParams.get("user") || "").trim() || DEV_USER
     const res = await fetch(
         `${BACKEND}/chats/${encodeURIComponent(chatId)}/tool-approvals/${encodeURIComponent(toolName)}`,
         {
             method: "DELETE",
-            headers: { "X-Dev-User": DEV_USER },
+            headers: { "X-Dev-User": user },
             cache: "no-store",
         }
     )
@@ -22,4 +24,3 @@ export async function DELETE(
         headers: { "Content-Type": res.headers.get("content-type") || "application/json" },
     })
 }
-

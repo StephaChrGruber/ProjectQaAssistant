@@ -3,19 +3,21 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal, Optional
 
+from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from ..db import get_db
 from ..deps import current_user
 from ..models.base_mongo_models import CustomTool, CustomToolVersion
-from ..rag.tool_runtime import build_default_tool_runtime
 from ..services.custom_tools import (
     CustomToolServiceError,
     claim_local_tool_job_for_user,
     complete_local_tool_job,
     create_custom_tool_version,
+    ensure_system_tool_configs_seeded,
     fail_local_tool_job,
+    load_effective_system_tool_settings,
     normalize_secret_map,
     normalize_tool_name,
     publish_custom_tool_version,
@@ -29,7 +31,6 @@ from ..services.custom_tools import (
 )
 
 router = APIRouter(tags=["custom_tools"])
-BUILTIN_TOOL_NAMES = set(build_default_tool_runtime().tool_names())
 
 
 class CreateCustomToolReq(BaseModel):
@@ -100,6 +101,18 @@ class CompleteLocalJobReq(BaseModel):
 class FailLocalJobReq(BaseModel):
     claimId: str | None = None
     error: str = "Local tool execution failed"
+
+
+class UpdateSystemToolReq(BaseModel):
+    projectId: str | None = None
+    isEnabled: bool | None = None
+    description: str | None = None
+    readOnly: bool | None = None
+    timeoutSec: int | None = None
+    rateLimitPerMin: int | None = None
+    maxRetries: int | None = None
+    cacheTtlSec: int | None = None
+    requireApproval: bool | None = None
 
 
 def _as_iso(v: Any) -> str | None:
@@ -184,6 +197,25 @@ def _normalize_tool_bounds(req_data: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _system_tool_to_public(row: dict[str, Any]) -> dict[str, Any]:
+    out = {
+        "id": str(row.get("_id") or ""),
+        "projectId": row.get("projectId"),
+        "name": row.get("name"),
+        "description": row.get("description"),
+        "isEnabled": bool(row.get("isEnabled", True)),
+        "readOnly": bool(row.get("readOnly", True)),
+        "timeoutSec": int(row.get("timeoutSec") or 45),
+        "rateLimitPerMin": int(row.get("rateLimitPerMin") or 40),
+        "maxRetries": int(row.get("maxRetries") or 0),
+        "cacheTtlSec": int(row.get("cacheTtlSec") or 0),
+        "requireApproval": bool(row.get("requireApproval", False)),
+        "createdAt": _as_iso(row.get("createdAt")),
+        "updatedAt": _as_iso(row.get("updatedAt")),
+    }
+    return out
+
+
 async def _load_tool_or_404(tool_id: str) -> CustomTool:
     doc = await CustomTool.get(tool_id)
     if not doc:
@@ -195,8 +227,6 @@ async def _ensure_unique_tool_name(*, project_id: str | None, name: str, ignore_
     slug = normalize_tool_name(name)
     if not slug:
         raise HTTPException(400, "Tool name is required")
-    if slug in BUILTIN_TOOL_NAMES:
-        raise HTTPException(400, f"Tool name '{slug}' conflicts with a built-in tool")
     q: dict[str, Any] = {"slug": slug, "projectId": project_id}
     row = await get_db()["custom_tools"].find_one(q, {"_id": 1})
     if row and str(row.get("_id")) != str(ignore_id or ""):
@@ -224,6 +254,88 @@ async def list_custom_tools(
     rows = await get_db()["custom_tools"].find(q).sort("name", 1).to_list(length=1000)
     out = [_serialize_tool_public(row, include_secrets=False) for row in rows]
     return {"items": out}
+
+
+@router.get("/admin/system-tools")
+async def list_system_tools(
+    project_id: str | None = Query(default=None),
+    user=Depends(current_user),
+):
+    _require_admin(user)
+    await ensure_system_tool_configs_seeded()
+    q: dict[str, Any]
+    if project_id:
+        q = {"$or": [{"projectId": None}, {"projectId": project_id}]}
+    else:
+        q = {"projectId": None}
+    rows = await get_db()["system_tool_configs"].find(q).sort([("name", 1), ("projectId", 1)]).to_list(length=1000)
+    items = [_system_tool_to_public(row) for row in rows]
+    effective: list[dict[str, Any]] = []
+    if project_id:
+        enabled, overrides = await load_effective_system_tool_settings(project_id)
+        for name in sorted(enabled.union(set(overrides.keys()))):
+            ov = overrides.get(name) or {}
+            effective.append(
+                {
+                    "name": name,
+                    "isEnabled": name in enabled,
+                    "description": ov.get("description"),
+                    "readOnly": ov.get("read_only"),
+                    "timeoutSec": ov.get("timeout_sec"),
+                    "rateLimitPerMin": ov.get("rate_limit_per_min"),
+                    "maxRetries": ov.get("max_retries"),
+                    "cacheTtlSec": ov.get("cache_ttl_sec"),
+                    "requireApproval": ov.get("require_approval"),
+                }
+            )
+    return {"items": items, "effective": effective}
+
+
+@router.put("/admin/system-tools/{tool_name}")
+async def upsert_system_tool(
+    tool_name: str,
+    req: UpdateSystemToolReq,
+    user=Depends(current_user),
+):
+    _require_admin(user)
+    await ensure_system_tool_configs_seeded()
+    name = normalize_tool_name(tool_name)
+    if not name:
+        raise HTTPException(400, "Invalid tool name")
+
+    existing = await get_db()["system_tool_configs"].find_one(
+        {"projectId": (req.projectId or "").strip() or None, "name": name}
+    )
+    if not existing:
+        base = await get_db()["system_tool_configs"].find_one({"projectId": None, "name": name})
+        if not base:
+            raise HTTPException(404, "System tool not found")
+        existing = dict(base)
+        existing["_id"] = ObjectId()
+        existing["projectId"] = (req.projectId or "").strip() or None
+        existing["createdAt"] = utc_now()
+
+    now = utc_now()
+    data = req.model_dump(exclude_unset=True)
+    data = _normalize_tool_bounds(data)
+    update: dict[str, Any] = {"updatedAt": now}
+    for key in ("isEnabled", "readOnly", "requireApproval"):
+        if key in data and data[key] is not None:
+            update[key] = bool(data[key])
+    for key in ("description",):
+        if key in data and data[key] is not None:
+            update[key] = str(data[key])
+    for key in ("timeoutSec", "rateLimitPerMin", "maxRetries", "cacheTtlSec"):
+        if key in data and data[key] is not None:
+            update[key] = int(data[key])
+
+    await get_db()["system_tool_configs"].update_one(
+        {"projectId": (req.projectId or "").strip() or None, "name": name},
+        {"$set": update, "$setOnInsert": {"createdAt": existing.get("createdAt") or now}},
+        upsert=True,
+    )
+    row = await get_db()["system_tool_configs"].find_one({"projectId": (req.projectId or "").strip() or None, "name": name})
+    return {"item": _system_tool_to_public(row or {})}
 
 
 @router.post("/admin/custom-tools")

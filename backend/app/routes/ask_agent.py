@@ -8,13 +8,12 @@ from ..db import get_db
 from datetime import datetime
 from bson import ObjectId
 from ..rag.agent2 import LLMUpstreamError, answer_with_agent
-from ..rag.tool_runtime import ToolContext, build_default_tool_runtime
+from ..rag.tool_runtime import ToolContext
 from ..services.llm_profiles import resolve_project_llm_config
 from ..services.custom_tools import build_runtime_for_project
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-_SOURCE_DISCOVERY_RUNTIME = build_default_tool_runtime()
 _DEFAULT_FAST_INTENT_MARKERS = (
     "where",
     "which file",
@@ -867,6 +866,7 @@ async def _discover_sources_when_missing(
     events: list[dict[str, Any]] = []
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
+    runtime = await build_runtime_for_project(project_id)
 
     discovery_policy = dict(tool_policy or {})
     timeout_overrides = discovery_policy.get("timeout_overrides")
@@ -900,7 +900,7 @@ async def _discover_sources_when_missing(
 
     for name, args in calls:
         try:
-            envelope = await _SOURCE_DISCOVERY_RUNTIME.execute(name, args, ctx)
+            envelope = await runtime.execute(name, args, ctx)
             ev = envelope.model_dump()
         except Exception:
             logger.exception(

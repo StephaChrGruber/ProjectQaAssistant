@@ -585,7 +585,11 @@ def _show_file_handler(req: GitShowFileAtRefRequest):
     return open_file(open_req)
 
 
-def build_default_tool_runtime() -> ToolRuntime:
+def build_default_tool_runtime(
+    *,
+    enabled_names: set[str] | None = None,
+    spec_overrides: dict[str, dict[str, Any]] | None = None,
+) -> ToolRuntime:
     rt = ToolRuntime()
 
     rt.register(
@@ -836,5 +840,29 @@ def build_default_tool_runtime() -> ToolRuntime:
             cache_ttl_sec=10,
         )
     )
+
+    if enabled_names is not None:
+        allowed = set(str(x).strip() for x in enabled_names if str(x).strip())
+        rt._tools = {name: spec for name, spec in rt._tools.items() if name in allowed}
+
+    if isinstance(spec_overrides, dict) and spec_overrides:
+        for name, ov in spec_overrides.items():
+            spec = rt._tools.get(name)
+            if not spec or not isinstance(ov, dict):
+                continue
+            if "description" in ov and ov.get("description") is not None:
+                spec.description = str(ov.get("description") or spec.description)
+            if "timeout_sec" in ov and ov.get("timeout_sec") is not None:
+                spec.timeout_sec = max(1, min(int(ov.get("timeout_sec")), 3600))
+            if "rate_limit_per_min" in ov and ov.get("rate_limit_per_min") is not None:
+                spec.rate_limit_per_min = max(1, min(int(ov.get("rate_limit_per_min")), 6000))
+            if "max_retries" in ov and ov.get("max_retries") is not None:
+                spec.max_retries = max(0, min(int(ov.get("max_retries")), 5))
+            if "cache_ttl_sec" in ov and ov.get("cache_ttl_sec") is not None:
+                spec.cache_ttl_sec = max(0, min(int(ov.get("cache_ttl_sec")), 3600))
+            if "read_only" in ov and ov.get("read_only") is not None:
+                spec.read_only = bool(ov.get("read_only"))
+            if "require_approval" in ov and ov.get("require_approval") is not None:
+                spec.require_approval = bool(ov.get("require_approval"))
 
     return rt

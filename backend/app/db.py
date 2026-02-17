@@ -3,7 +3,7 @@ from beanie import init_beanie
 from .settings import settings
 from .models.base_mongo_models import (
     User, Group, GroupMembership, Project, Membership, Connector, AuditLog, LlmProfile,
-    CustomTool, CustomToolVersion, CustomToolAudit, LocalToolJob, ChatToolApproval,
+    CustomTool, CustomToolVersion, CustomToolAudit, LocalToolJob, ChatToolApproval, SystemToolConfig,
 )
 import os
 
@@ -29,6 +29,7 @@ async def init_db():
             CustomToolAudit,
             LocalToolJob,
             ChatToolApproval,
+            SystemToolConfig,
         ],
     )
 

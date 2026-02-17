@@ -102,6 +102,25 @@ class AuditLog(Document):
         name = "audit_logs"
 
 
+class SystemToolConfig(Document):
+    projectId: Optional[str] = None  # None => global defaults
+    name: str
+    description: str
+    isEnabled: bool = True
+    readOnly: bool = True
+    timeoutSec: int
+    rateLimitPerMin: int
+    maxRetries: int = 0
+    cacheTtlSec: int = 0
+    requireApproval: bool = False
+    createdAt: datetime = Field(default_factory=datetime.utcnow)
+    updatedAt: datetime = Field(default_factory=datetime.utcnow)
+
+    class Settings:
+        name = "system_tool_configs"
+        indexes = [[("projectId", 1), ("name", 1)]]
+
+
 class CustomTool(Document):
     projectId: Optional[str] = None  # None => global tool
     name: str

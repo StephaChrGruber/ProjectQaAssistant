@@ -14,6 +14,7 @@ import {
     FormControl,
     InputLabel,
     MenuItem,
+    Paper,
     Select,
     Stack,
     Switch,
@@ -63,6 +64,20 @@ type ToolVersionRow = {
     checksum: string
     changelog?: string
     createdAt?: string
+}
+
+type SystemToolRow = {
+    id: string
+    projectId?: string | null
+    name: string
+    description?: string
+    isEnabled: boolean
+    readOnly: boolean
+    timeoutSec: number
+    rateLimitPerMin: number
+    maxRetries: number
+    cacheTtlSec: number
+    requireApproval: boolean
 }
 
 type ToolDetailResponse = {
@@ -153,6 +168,7 @@ export default function AdminCustomToolsPage() {
     const [error, setError] = useState<string | null>(null)
     const [testArgsText, setTestArgsText] = useState<string>('{}')
     const [testResult, setTestResult] = useState<string>("")
+    const [systemTools, setSystemTools] = useState<SystemToolRow[]>([])
 
     useEffect(() => {
         let stopped = false
@@ -224,6 +240,12 @@ export default function AdminCustomToolsPage() {
         setSelectedToolId(rows[0]?.id || "")
     }, [projectFilter, selectedToolId])
 
+    const loadSystemTools = useCallback(async () => {
+        const qs = projectFilter ? `?projectId=${encodeURIComponent(projectFilter)}` : ""
+        const out = await backendJson<{ items: SystemToolRow[] }>(`/api/admin/system-tools${qs}`)
+        setSystemTools((out.items || []).sort((a, b) => a.name.localeCompare(b.name)))
+    }, [projectFilter])
+
     const loadToolDetail = useCallback(async (toolId: string) => {
         if (!toolId) {
             setVersions([])
@@ -260,6 +282,10 @@ export default function AdminCustomToolsPage() {
     useEffect(() => {
         void loadTools().catch((err) => setError(String(err)))
     }, [loadTools])
+
+    useEffect(() => {
+        void loadSystemTools().catch((err) => setError(String(err)))
+    }, [loadSystemTools])
 
     useEffect(() => {
         if (!selectedToolId) return
@@ -413,6 +439,27 @@ export default function AdminCustomToolsPage() {
             )
             setTestResult(JSON.stringify(out, null, 2))
             setNotice(`Test run completed (version ${out.version}).`)
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err))
+        } finally {
+            setBusy(false)
+        }
+    }
+
+    async function updateSystemTool(name: string, patch: Partial<SystemToolRow>) {
+        setBusy(true)
+        setError(null)
+        setNotice(null)
+        try {
+            await backendJson(`/api/admin/system-tools/${encodeURIComponent(name)}`, {
+                method: "PUT",
+                body: JSON.stringify({
+                    projectId: projectFilter || null,
+                    ...patch,
+                }),
+            })
+            await loadSystemTools()
+            setNotice(`Updated system tool: ${name}`)
         } catch (err) {
             setError(err instanceof Error ? err.message : String(err))
         } finally {
@@ -745,6 +792,64 @@ export default function AdminCustomToolsPage() {
                         </CardContent>
                     </Card>
                 </Box>
+
+                <Card variant="outlined">
+                    <CardContent>
+                        <Stack spacing={1.1}>
+                            <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                                Built-in Tool Load Config
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary">
+                                Built-in tools are now loaded from configuration, just like custom tools.
+                                {projectFilter
+                                    ? " You are editing project-specific overrides."
+                                    : " Select a project scope to create project-specific overrides."}
+                            </Typography>
+                            <Divider />
+                            <Stack spacing={1}>
+                                {systemTools.map((tool) => (
+                                    <Paper
+                                        key={`${tool.projectId || "global"}:${tool.name}`}
+                                        variant="outlined"
+                                        sx={{ p: 1, display: "grid", gridTemplateColumns: { xs: "1fr", md: "1fr auto auto" }, gap: 1, alignItems: "center" }}
+                                    >
+                                        <Box>
+                                            <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                                                {tool.name}
+                                            </Typography>
+                                            <Typography variant="caption" color="text.secondary">
+                                                {tool.description || "No description"}
+                                            </Typography>
+                                        </Box>
+                                        <Stack direction="row" spacing={1} alignItems="center">
+                                            <Typography variant="caption">Enabled</Typography>
+                                            <Switch
+                                                size="small"
+                                                checked={tool.isEnabled}
+                                                onChange={(e) => void updateSystemTool(tool.name, { isEnabled: e.target.checked })}
+                                                disabled={busy || !projectFilter}
+                                            />
+                                        </Stack>
+                                        <Stack direction="row" spacing={1} alignItems="center">
+                                            <Typography variant="caption">Approval</Typography>
+                                            <Switch
+                                                size="small"
+                                                checked={tool.requireApproval}
+                                                onChange={(e) => void updateSystemTool(tool.name, { requireApproval: e.target.checked })}
+                                                disabled={busy || !projectFilter}
+                                            />
+                                        </Stack>
+                                    </Paper>
+                                ))}
+                                {!systemTools.length && (
+                                    <Typography variant="body2" color="text.secondary">
+                                        No system tools loaded.
+                                    </Typography>
+                                )}
+                            </Stack>
+                        </Stack>
+                    </CardContent>
+                </Card>
             </Stack>
         </Container>
     )
