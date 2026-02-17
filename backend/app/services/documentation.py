@@ -31,6 +31,8 @@ MAX_PLAN_BLOCKS = 42
 MAX_PLAN_BLOCK_CHARS = 800
 MAX_FILE_BLOCKS = 18
 MAX_FILE_BLOCK_CHARS = 1400
+MAX_DOC_TOOL_CALLS = 16
+DOC_TOOL_USER_ID = "docs@system"
 
 TEXT_EXTENSIONS = {
     ".py",
@@ -116,6 +118,9 @@ IGNORE_PREFIXES = (
 
 class DocumentationError(RuntimeError):
     pass
+
+
+_DOC_TOOL_RUNTIME: Any = None
 
 
 def _run_git(repo_path: str, args: list[str], timeout: int = 40) -> subprocess.CompletedProcess:
@@ -269,6 +274,145 @@ def _preview(text: str, max_chars: int = 400) -> str:
     if len(s) <= max_chars:
         return s
     return s[:max_chars] + "...(truncated)"
+
+
+def _get_doc_tool_runtime() -> Any:
+    global _DOC_TOOL_RUNTIME
+    if _DOC_TOOL_RUNTIME is None:
+        # Imported lazily to avoid import cycles at module load time.
+        from ..rag.tool_runtime import build_default_tool_runtime
+
+        _DOC_TOOL_RUNTIME = build_default_tool_runtime()
+    return _DOC_TOOL_RUNTIME
+
+
+def _try_parse_tool_call(text: str) -> Optional[dict[str, Any]]:
+    if not text:
+        return None
+    s = _strip_fences(text.strip())
+    if not (s.startswith("{") and s.endswith("}")):
+        return None
+    try:
+        obj = json.loads(s)
+    except Exception:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    tool = obj.get("tool")
+    args = obj.get("args", {})
+    if not isinstance(tool, str):
+        return None
+    if not isinstance(args, dict):
+        return None
+    return {"tool": tool, "args": args}
+
+
+def _doc_tool_system_prompt(tool_schema: str) -> str:
+    return (
+        "You can use tools while generating documentation.\n"
+        "When you need a tool, reply with EXACTLY one JSON object and nothing else:\n"
+        "{\n"
+        '  "tool": "<tool_name>",\n'
+        '  "args": { ... }\n'
+        "}\n\n"
+        "Rules:\n"
+        "- Use only listed tools and valid arguments.\n"
+        "- Prefer tools over guessing for repository facts.\n"
+        "- Do not call generate_project_docs (recursion guard).\n"
+        "- After TOOL_RESULT, continue reasoning.\n"
+        "- When enough information is available, return the requested final output in normal text.\n\n"
+        "AVAILABLE TOOLS\n"
+        "────────────────────────────────\n"
+        f"{tool_schema}"
+    )
+
+
+async def _llm_chat_with_tools(
+    *,
+    project_id: str,
+    branch: str,
+    user_id: str,
+    messages: list[dict[str, str]],
+    base_url: str,
+    api_key: str | None,
+    model: str,
+    timeout_sec: int,
+    max_attempts: int,
+    max_tokens: int,
+    max_tool_calls: int = MAX_DOC_TOOL_CALLS,
+) -> str:
+    runtime = _get_doc_tool_runtime()
+    tool_schema = runtime.schema_text()
+    convo: list[dict[str, str]] = [{"role": "system", "content": _doc_tool_system_prompt(tool_schema)}]
+    convo.extend(messages)
+    tool_calls = 0
+
+    while True:
+        assistant_text = _llm_chat(
+            convo,
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            timeout_sec=timeout_sec,
+            max_attempts=max_attempts,
+            max_tokens=max_tokens,
+        )
+        tool_call = _try_parse_tool_call(assistant_text)
+        if not tool_call:
+            return assistant_text
+
+        tool_calls += 1
+        tool_name = tool_call["tool"]
+        tool_args = dict(tool_call["args"] or {})
+
+        if tool_calls > max(1, max_tool_calls):
+            raise DocumentationError("Tool call limit reached during documentation generation.")
+
+        if tool_name == "generate_project_docs":
+            envelope = {
+                "tool": tool_name,
+                "ok": False,
+                "duration_ms": 0,
+                "error": {
+                    "code": "validation_error",
+                    "message": "Tool is disabled in documentation generation (recursion guard).",
+                    "retryable": False,
+                    "details": {},
+                },
+            }
+            logger.warning("docs.tools.blocked tool=%s reason=recursion_guard", tool_name)
+        else:
+            from ..rag.tool_runtime import ToolContext
+
+            ctx = ToolContext(project_id=project_id, branch=branch, user_id=user_id)
+            envelope_model = await runtime.execute(tool_name, tool_args, ctx)
+            envelope = envelope_model.model_dump()
+            logger.info(
+                "docs.tools.executed tool=%s ok=%s duration_ms=%s",
+                tool_name,
+                bool(envelope.get("ok")),
+                envelope.get("duration_ms", 0),
+            )
+
+        convo.append({"role": "assistant", "content": assistant_text})
+        convo.append(
+            {
+                "role": "user",
+                "content": (
+                    f"TOOL_RESULT {tool_name}:\n"
+                    f"{json.dumps(envelope, ensure_ascii=False, indent=2)}\n"
+                ),
+            }
+        )
+        convo.append(
+            {
+                "role": "user",
+                "content": (
+                    "Continue. If enough information is available, return the requested final output now. "
+                    "Otherwise call the next tool as JSON."
+                ),
+            }
+        )
 
 
 def _keyword_terms(text: str) -> set[str]:
@@ -737,8 +881,10 @@ def _extract_markdown_from_llm_output(raw: str) -> str:
     return _strip_fences(text).strip()
 
 
-def _generate_doc_plan_with_llm_from_context(
+async def _generate_doc_plan_with_llm_from_context(
     *,
+    project_id: str,
+    user_id: str,
     project_name: str,
     branch: str,
     context: str,
@@ -781,8 +927,11 @@ def _generate_doc_plan_with_llm_from_context(
         "Repository evidence follows:\n\n"
         f"{bounded_context}"
     )
-    raw = _llm_chat(
-        [{"role": "system", "content": system}, {"role": "user", "content": user}],
+    raw = await _llm_chat_with_tools(
+        project_id=project_id,
+        branch=branch,
+        user_id=user_id,
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         base_url=llm_base,
         api_key=llm_key,
         model=llm_model,
@@ -823,8 +972,10 @@ def _generate_doc_plan_with_llm_from_context(
     return plan, summary
 
 
-def _generate_single_doc_with_llm_from_context(
+async def _generate_single_doc_with_llm_from_context(
     *,
+    project_id: str,
+    user_id: str,
     project_name: str,
     branch: str,
     context: str,
@@ -872,8 +1023,11 @@ def _generate_single_doc_with_llm_from_context(
         "Repository evidence follows:\n\n"
         f"{bounded_context}"
     )
-    raw = _llm_chat(
-        [{"role": "system", "content": system}, {"role": "user", "content": user}],
+    raw = await _llm_chat_with_tools(
+        project_id=project_id,
+        branch=branch,
+        user_id=user_id,
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         base_url=llm_base,
         api_key=llm_key,
         model=llm_model,
@@ -897,8 +1051,10 @@ def _generate_single_doc_with_llm_from_context(
     return content + "\n"
 
 
-def _generate_docs_single_shot_with_llm_from_context(
+async def _generate_docs_single_shot_with_llm_from_context(
     *,
+    project_id: str,
+    user_id: str,
     project_name: str,
     branch: str,
     context: str,
@@ -906,7 +1062,9 @@ def _generate_docs_single_shot_with_llm_from_context(
     llm_key: str | None,
     llm_model: str,
 ) -> tuple[list[dict[str, str]], str]:
-    return _generate_docs_single_shot_with_llm_from_context_budget(
+    return await _generate_docs_single_shot_with_llm_from_context_budget(
+        project_id=project_id,
+        user_id=user_id,
         project_name=project_name,
         branch=branch,
         context=context,
@@ -917,8 +1075,10 @@ def _generate_docs_single_shot_with_llm_from_context(
     )
 
 
-def _generate_docs_single_shot_with_llm_from_context_budget(
+async def _generate_docs_single_shot_with_llm_from_context_budget(
     *,
+    project_id: str,
+    user_id: str,
     project_name: str,
     branch: str,
     context: str,
@@ -962,8 +1122,11 @@ def _generate_docs_single_shot_with_llm_from_context_budget(
         "Repository evidence follows:\n\n"
         f"{bounded_context}"
     )
-    raw = _llm_chat(
-        [{"role": "system", "content": system}, {"role": "user", "content": user}],
+    raw = await _llm_chat_with_tools(
+        project_id=project_id,
+        branch=branch,
+        user_id=user_id,
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         base_url=llm_base,
         api_key=llm_key,
         model=llm_model,
@@ -1004,8 +1167,10 @@ def _generate_docs_single_shot_with_llm_from_context_budget(
     return files, summary
 
 
-def _generate_docs_with_llm_from_context(
+async def _generate_docs_with_llm_from_context(
     *,
+    project_id: str,
+    user_id: str,
     project_name: str,
     branch: str,
     context: str,
@@ -1021,7 +1186,9 @@ def _generate_docs_with_llm_from_context(
     plan: list[dict[str, str]] = []
 
     try:
-        plan, summary = _generate_doc_plan_with_llm_from_context(
+        plan, summary = await _generate_doc_plan_with_llm_from_context(
+            project_id=project_id,
+            user_id=user_id,
             project_name=project_name,
             branch=branch,
             context=context,
@@ -1043,7 +1210,9 @@ def _generate_docs_with_llm_from_context(
                     branch,
                     MAX_LLM_CONTEXT_CHARS_TIGHT,
                 )
-                plan, summary = _generate_doc_plan_with_llm_from_context(
+                plan, summary = await _generate_doc_plan_with_llm_from_context(
+                    project_id=project_id,
+                    user_id=user_id,
                     project_name=project_name,
                     branch=branch,
                     context=context,
@@ -1064,7 +1233,9 @@ def _generate_docs_with_llm_from_context(
             path = item["path"]
             purpose = item.get("purpose", "")
             try:
-                content = _generate_single_doc_with_llm_from_context(
+                content = await _generate_single_doc_with_llm_from_context(
+                    project_id=project_id,
+                    user_id=user_id,
                     project_name=project_name,
                     branch=branch,
                     context=context,
@@ -1093,7 +1264,9 @@ def _generate_docs_with_llm_from_context(
         return files, summary
 
     try:
-        single_files, single_summary = _generate_docs_single_shot_with_llm_from_context(
+        single_files, single_summary = await _generate_docs_single_shot_with_llm_from_context(
+            project_id=project_id,
+            user_id=user_id,
             project_name=project_name,
             branch=branch,
             context=context,
@@ -1115,7 +1288,9 @@ def _generate_docs_with_llm_from_context(
                     branch,
                     MAX_LLM_CONTEXT_CHARS_TIGHT,
                 )
-                single_files, single_summary = _generate_docs_single_shot_with_llm_from_context_budget(
+                single_files, single_summary = await _generate_docs_single_shot_with_llm_from_context_budget(
+                    project_id=project_id,
+                    user_id=user_id,
                     project_name=project_name,
                     branch=branch,
                     context=context,
@@ -1270,7 +1445,9 @@ async def generate_project_documentation(project_id: str, branch: Optional[str] 
     llm_error: str | None = None
     if context:
         try:
-            generated_files, summary = _generate_docs_with_llm_from_context(
+            generated_files, summary = await _generate_docs_with_llm_from_context(
+                project_id=project_id,
+                user_id=DOC_TOOL_USER_ID,
                 project_name=project_name,
                 branch=chosen_branch,
                 context=context,
@@ -1370,7 +1547,9 @@ async def generate_project_documentation_from_local_context(
 
     if local_repo_context and local_repo_context.strip():
         try:
-            generated_files, summary = _generate_docs_with_llm_from_context(
+            generated_files, summary = await _generate_docs_with_llm_from_context(
+                project_id=project_id,
+                user_id=DOC_TOOL_USER_ID,
                 project_name=project_name,
                 branch=chosen_branch,
                 context=local_repo_context.strip(),
