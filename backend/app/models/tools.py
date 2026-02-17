@@ -61,7 +61,7 @@ class KeywordSearchRequest(BaseModel):
     branch: Optional[str] = None
     query: str
     top_k: int = 10
-    source: Optional[Literal["confluence", "github", "jira", "any"]] = "any"
+    source: Optional[Literal["confluence", "github", "bitbucket", "azure_devops", "jira", "local", "any"]] = "any"
 
 
 class KeywordHit(BaseModel):

@@ -6,7 +6,7 @@ import shutil
 from urllib.parse import urljoin
 from pathlib import Path
 from ..deps import current_user
-from ..models.base_mongo_models import Project, Membership, Connector
+from ..models.base_mongo_models import Project, Membership, Connector, LlmProfile
 from ..settings import settings
 from ..db import get_db
 
@@ -14,6 +14,7 @@ router = APIRouter()
 
 OLLAMA_DEFAULT_BASE_URL = "http://ollama:11434/v1"
 OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
+VALID_CONNECTOR_TYPES = ("confluence", "jira", "github", "bitbucket", "azure_devops", "local")
 FALLBACK_OLLAMA_MODELS = [
     "llama3.2:3b",
     "llama3.1:8b",
@@ -39,6 +40,7 @@ class CreateProject(BaseModel):
     llm_base_url: str | None = None
     llm_model: str | None = None
     llm_api_key: str | None = None
+    llm_profile_id: str | None = None
 
 
 class UpdateProject(BaseModel):
@@ -50,11 +52,32 @@ class UpdateProject(BaseModel):
     llm_base_url: str | None = None
     llm_model: str | None = None
     llm_api_key: str | None = None
+    llm_profile_id: str | None = None
 
 
 class UpsertConnector(BaseModel):
     isEnabled: bool = True
     config: dict = {}
+
+
+class CreateLlmProfile(BaseModel):
+    name: str
+    description: str | None = None
+    provider: str = "ollama"
+    base_url: str | None = None
+    model: str
+    api_key: str | None = None
+    isEnabled: bool = True
+
+
+class UpdateLlmProfile(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    provider: str | None = None
+    base_url: str | None = None
+    model: str | None = None
+    api_key: str | None = None
+    isEnabled: bool | None = None
 
 
 def _serialize_project(p: Project) -> dict:
@@ -69,8 +92,39 @@ def _serialize_project(p: Project) -> dict:
         "llm_base_url": p.llm_base_url,
         "llm_model": p.llm_model,
         "llm_api_key": p.llm_api_key,
+        "llm_profile_id": p.llm_profile_id,
         "createdAt": p.createdAt.isoformat() if p.createdAt else None,
     }
+
+
+def _serialize_llm_profile(profile: LlmProfile, *, include_secrets: bool = True) -> dict:
+    out = {
+        "id": str(profile.id),
+        "name": profile.name,
+        "description": profile.description,
+        "provider": profile.provider,
+        "base_url": profile.base_url,
+        "model": profile.model,
+        "isEnabled": profile.isEnabled,
+        "createdAt": profile.createdAt.isoformat() if profile.createdAt else None,
+        "updatedAt": profile.updatedAt.isoformat() if profile.updatedAt else None,
+    }
+    if include_secrets:
+        out["api_key"] = profile.api_key
+    return out
+
+
+async def _validate_llm_profile_id(profile_id: str | None) -> str | None:
+    pid = (profile_id or "").strip()
+    if not pid:
+        return None
+    try:
+        doc = await LlmProfile.get(pid)
+    except Exception:
+        doc = None
+    if not doc or not bool(doc.isEnabled):
+        raise HTTPException(400, "Invalid llm_profile_id")
+    return str(doc.id)
 
 
 def _normalize_ollama_tags_url(base_url: str | None) -> str:
@@ -212,6 +266,8 @@ async def create_project(req: CreateProject, user=Depends(current_user)):
     if existing:
         raise HTTPException(409, "Project key already exists")
 
+    llm_profile_id = await _validate_llm_profile_id(req.llm_profile_id)
+
     p = Project(
         key=req.key,
         name=req.name,
@@ -222,6 +278,7 @@ async def create_project(req: CreateProject, user=Depends(current_user)):
         llm_base_url=req.llm_base_url,
         llm_model=req.llm_model,
         llm_api_key=req.llm_api_key,
+        llm_profile_id=llm_profile_id,
     )
     await p.insert()
 
@@ -267,6 +324,8 @@ async def update_project(project_id: str, req: UpdateProject, user=Depends(curre
         raise HTTPException(404, "Project not found")
 
     data = req.model_dump(exclude_unset=True)
+    if "llm_profile_id" in data:
+        data["llm_profile_id"] = await _validate_llm_profile_id(data.get("llm_profile_id"))
     for k, v in data.items():
         setattr(p, k, v)
     await p.save()
@@ -377,10 +436,11 @@ async def upsert_connector(
     if not project:
         raise HTTPException(404, "Project not found")
 
-    if connector_type not in ("confluence", "jira", "github"):
+    normalized_type = "github" if connector_type == "git" else connector_type
+    if normalized_type not in VALID_CONNECTOR_TYPES:
         raise HTTPException(400, "Invalid connector type")
 
-    existing = await Connector.find_one(Connector.projectId == project_id, Connector.type == connector_type)
+    existing = await Connector.find_one(Connector.projectId == project_id, Connector.type == normalized_type)
     now = datetime.utcnow()
 
     if existing:
@@ -392,7 +452,7 @@ async def upsert_connector(
     else:
         doc = Connector(
             projectId=project_id,
-            type=connector_type,
+            type=normalized_type,
             isEnabled=req.isEnabled,
             config=req.config,
             createdAt=now,
@@ -513,4 +573,107 @@ async def list_paths(path: str | None = None, user=Depends(current_user)):
         "parent": parent,
         "roots": roots_out,
         "directories": directories,
+    }
+
+
+@router.get("/admin/connectors/catalog")
+async def connector_catalog(user=Depends(current_user)):
+    if not user.isGlobalAdmin:
+        raise HTTPException(403, "Global admin required")
+
+    return {
+        "types": [
+            {"type": "github", "label": "GitHub"},
+            {"type": "bitbucket", "label": "Bitbucket"},
+            {"type": "azure_devops", "label": "Azure DevOps"},
+            {"type": "local", "label": "Local Repository"},
+            {"type": "confluence", "label": "Confluence"},
+            {"type": "jira", "label": "Jira"},
+        ]
+    }
+
+
+@router.get("/llm/profiles")
+async def list_llm_profiles_public(user=Depends(current_user)):
+    profiles = await LlmProfile.find(LlmProfile.isEnabled == True).to_list()
+    return [_serialize_llm_profile(p, include_secrets=False) for p in profiles]
+
+
+@router.get("/admin/llm/profiles")
+async def list_llm_profiles(user=Depends(current_user)):
+    if not user.isGlobalAdmin:
+        raise HTTPException(403, "Global admin required")
+    profiles = await LlmProfile.find_all().to_list()
+    return [_serialize_llm_profile(p, include_secrets=True) for p in profiles]
+
+
+@router.post("/admin/llm/profiles")
+async def create_llm_profile(req: CreateLlmProfile, user=Depends(current_user)):
+    if not user.isGlobalAdmin:
+        raise HTTPException(403, "Global admin required")
+
+    now = datetime.utcnow()
+    doc = LlmProfile(
+        name=req.name.strip(),
+        description=(req.description or "").strip() or None,
+        provider=(req.provider or "ollama").strip().lower() or "ollama",
+        base_url=(req.base_url or "").strip() or None,
+        model=req.model.strip(),
+        api_key=(req.api_key or "").strip() or None,
+        isEnabled=bool(req.isEnabled),
+        createdAt=now,
+        updatedAt=now,
+    )
+    await doc.insert()
+    return _serialize_llm_profile(doc, include_secrets=True)
+
+
+@router.patch("/admin/llm/profiles/{profile_id}")
+async def update_llm_profile(profile_id: str, req: UpdateLlmProfile, user=Depends(current_user)):
+    if not user.isGlobalAdmin:
+        raise HTTPException(403, "Global admin required")
+    doc = await LlmProfile.get(profile_id)
+    if not doc:
+        raise HTTPException(404, "LLM profile not found")
+
+    data = req.model_dump(exclude_unset=True)
+    for k, v in data.items():
+        if k == "name" and isinstance(v, str):
+            v = v.strip()
+        if k == "description" and isinstance(v, str):
+            v = v.strip() or None
+        if k == "provider" and isinstance(v, str):
+            v = v.strip().lower() or "ollama"
+        if k == "base_url" and isinstance(v, str):
+            v = v.strip() or None
+        if k == "model" and isinstance(v, str):
+            v = v.strip()
+        if k == "api_key" and isinstance(v, str):
+            v = v.strip() or None
+        setattr(doc, k, v)
+    doc.updatedAt = datetime.utcnow()
+    await doc.save()
+    return _serialize_llm_profile(doc, include_secrets=True)
+
+
+@router.delete("/admin/llm/profiles/{profile_id}")
+async def delete_llm_profile(profile_id: str, user=Depends(current_user)):
+    if not user.isGlobalAdmin:
+        raise HTTPException(403, "Global admin required")
+    doc = await LlmProfile.get(profile_id)
+    if not doc:
+        raise HTTPException(404, "LLM profile not found")
+
+    db = get_db()
+    project_refs = await db["projects"].count_documents({"llm_profile_id": profile_id})
+    chat_refs = await db["chats"].count_documents({"llm_profile_id": profile_id})
+    await db["projects"].update_many({"llm_profile_id": profile_id}, {"$unset": {"llm_profile_id": ""}})
+    await db["chats"].update_many({"llm_profile_id": profile_id}, {"$unset": {"llm_profile_id": ""}})
+    await doc.delete()
+
+    return {
+        "deleted": True,
+        "id": profile_id,
+        "project_refs_cleared": int(project_refs),
+        "chat_refs_cleared": int(chat_refs),
     }

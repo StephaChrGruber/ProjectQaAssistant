@@ -45,6 +45,7 @@ type ProjectDoc = {
     llm_base_url?: string
     llm_model?: string
     llm_api_key?: string
+    llm_profile_id?: string
 }
 
 type MeResponse = {
@@ -57,7 +58,7 @@ type BranchesResponse = {
 
 type ConnectorDoc = {
     id?: string
-    type: "confluence" | "jira" | "github"
+    type: "confluence" | "jira" | "github" | "bitbucket" | "azure_devops" | "local"
     isEnabled: boolean
     config: Record<string, unknown>
 }
@@ -73,6 +74,7 @@ type ProjectEditForm = {
     llm_base_url: string
     llm_model: string
     llm_api_key: string
+    llm_profile_id: string
 }
 
 type GitForm = {
@@ -82,6 +84,40 @@ type GitForm = {
     branch: string
     token: string
     paths: string
+}
+
+type BitbucketForm = {
+    isEnabled: boolean
+    workspace: string
+    repo: string
+    branch: string
+    username: string
+    app_password: string
+    paths: string
+    base_url: string
+}
+
+type AzureDevOpsForm = {
+    isEnabled: boolean
+    organization: string
+    project: string
+    repository: string
+    branch: string
+    pat: string
+    paths: string
+    base_url: string
+}
+
+type LocalConnectorForm = {
+    isEnabled: boolean
+    paths: string
+}
+
+type LlmProfileDoc = {
+    id: string
+    name: string
+    provider: string
+    model: string
 }
 
 type ConfluenceForm = {
@@ -183,6 +219,39 @@ function emptyJira(): JiraForm {
     return { isEnabled: false, baseUrl: "", email: "", apiToken: "", jql: "" }
 }
 
+function emptyBitbucket(): BitbucketForm {
+    return {
+        isEnabled: false,
+        workspace: "",
+        repo: "",
+        branch: "main",
+        username: "",
+        app_password: "",
+        paths: "",
+        base_url: "https://api.bitbucket.org/2.0",
+    }
+}
+
+function emptyAzureDevOps(): AzureDevOpsForm {
+    return {
+        isEnabled: false,
+        organization: "",
+        project: "",
+        repository: "",
+        branch: "main",
+        pat: "",
+        paths: "",
+        base_url: "https://dev.azure.com",
+    }
+}
+
+function emptyLocalConnector(): LocalConnectorForm {
+    return {
+        isEnabled: false,
+        paths: "",
+    }
+}
+
 function dedupeChatsById(items: DrawerChat[]): DrawerChat[] {
     const out: DrawerChat[] = []
     const seen = new Set<string>()
@@ -236,11 +305,16 @@ export default function ProjectSettingsPage() {
         llm_base_url: "http://ollama:11434/v1",
         llm_model: "llama3.2:3b",
         llm_api_key: "ollama",
+        llm_profile_id: "",
     })
 
     const [gitForm, setGitForm] = useState<GitForm>(emptyGit())
+    const [bitbucketForm, setBitbucketForm] = useState<BitbucketForm>(emptyBitbucket())
+    const [azureDevOpsForm, setAzureDevOpsForm] = useState<AzureDevOpsForm>(emptyAzureDevOps())
+    const [localConnectorForm, setLocalConnectorForm] = useState<LocalConnectorForm>(emptyLocalConnector())
     const [confluenceForm, setConfluenceForm] = useState<ConfluenceForm>(emptyConfluence())
     const [jiraForm, setJiraForm] = useState<JiraForm>(emptyJira())
+    const [llmProfiles, setLlmProfiles] = useState<LlmProfileDoc[]>([])
 
     const [llmOptions, setLlmOptions] = useState<LlmOptionsResponse | null>(null)
     const [loadingLlmOptions, setLoadingLlmOptions] = useState(false)
@@ -356,9 +430,21 @@ export default function ProjectSettingsPage() {
         }
     }
 
+    async function loadLlmProfiles() {
+        try {
+            const profiles = await backendJson<LlmProfileDoc[]>("/api/llm/profiles")
+            setLlmProfiles((profiles || []).filter((p) => p && p.id))
+        } catch {
+            setLlmProfiles([])
+        }
+    }
+
     async function loadConnectors(defaultBranch: string) {
         const connectors = await backendJson<ConnectorsResponse>(`/api/admin/projects/${projectId}/connectors`)
         const git = getConnector(connectors, "github")
+        const bitbucket = getConnector(connectors, "bitbucket")
+        const azureDevOps = getConnector(connectors, "azure_devops")
+        const local = getConnector(connectors, "local")
         const confluence = getConnector(connectors, "confluence")
         const jira = getConnector(connectors, "jira")
 
@@ -369,6 +455,30 @@ export default function ProjectSettingsPage() {
             branch: asStr(git?.config?.branch) || defaultBranch,
             token: asStr(git?.config?.token),
             paths: Array.isArray(git?.config?.paths) ? (git?.config?.paths as string[]).join(", ") : "",
+        })
+        setBitbucketForm({
+            isEnabled: bitbucket?.isEnabled ?? false,
+            workspace: asStr(bitbucket?.config?.workspace),
+            repo: asStr(bitbucket?.config?.repo_slug || bitbucket?.config?.repo),
+            branch: asStr(bitbucket?.config?.branch) || defaultBranch,
+            username: asStr(bitbucket?.config?.username),
+            app_password: asStr(bitbucket?.config?.app_password || bitbucket?.config?.appPassword),
+            paths: Array.isArray(bitbucket?.config?.paths) ? (bitbucket?.config?.paths as string[]).join(", ") : "",
+            base_url: asStr(bitbucket?.config?.base_url || bitbucket?.config?.baseUrl) || "https://api.bitbucket.org/2.0",
+        })
+        setAzureDevOpsForm({
+            isEnabled: azureDevOps?.isEnabled ?? false,
+            organization: asStr(azureDevOps?.config?.organization || azureDevOps?.config?.org),
+            project: asStr(azureDevOps?.config?.project),
+            repository: asStr(azureDevOps?.config?.repository || azureDevOps?.config?.repo),
+            branch: asStr(azureDevOps?.config?.branch) || defaultBranch,
+            pat: asStr(azureDevOps?.config?.pat || azureDevOps?.config?.token),
+            paths: Array.isArray(azureDevOps?.config?.paths) ? (azureDevOps?.config?.paths as string[]).join(", ") : "",
+            base_url: asStr(azureDevOps?.config?.base_url || azureDevOps?.config?.baseUrl) || "https://dev.azure.com",
+        })
+        setLocalConnectorForm({
+            isEnabled: local?.isEnabled ?? false,
+            paths: Array.isArray(local?.config?.paths) ? (local?.config?.paths as string[]).join(", ") : "",
         })
         setConfluenceForm({
             isEnabled: confluence?.isEnabled ?? false,
@@ -413,6 +523,7 @@ export default function ProjectSettingsPage() {
                     llm_base_url: projectRes.llm_base_url || defaultBase,
                     llm_model: projectRes.llm_model || defaultModel,
                     llm_api_key: projectRes.llm_api_key || (provider === "ollama" ? "ollama" : ""),
+                    llm_profile_id: projectRes.llm_profile_id || "",
                 })
 
                 let b: string[] = []
@@ -434,6 +545,7 @@ export default function ProjectSettingsPage() {
                 if (meRes.user?.isGlobalAdmin) {
                     await Promise.all([
                         loadLlmOptions(),
+                        loadLlmProfiles(),
                         loadConnectors(projectRes.default_branch || "main"),
                     ])
                 }
@@ -469,6 +581,7 @@ export default function ProjectSettingsPage() {
                     llm_base_url: editForm.llm_base_url.trim() || null,
                     llm_model: editForm.llm_model.trim() || null,
                     llm_api_key: editForm.llm_api_key.trim() || null,
+                    llm_profile_id: editForm.llm_profile_id.trim() || null,
                 }),
             })
             setProject(updated)
@@ -480,7 +593,7 @@ export default function ProjectSettingsPage() {
         }
     }
 
-    async function saveConnector(type: "git" | "confluence" | "jira") {
+    async function saveConnector(type: "git" | "bitbucket" | "azure_devops" | "local" | "confluence" | "jira") {
         if (!me?.isGlobalAdmin) return
         setSavingConnector(true)
         setError(null)
@@ -497,6 +610,48 @@ export default function ProjectSettingsPage() {
                             branch: gitForm.branch.trim() || "main",
                             token: gitForm.token.trim(),
                             paths: csvToList(gitForm.paths),
+                        },
+                    }),
+                })
+            } else if (type === "bitbucket") {
+                await backendJson(`/api/admin/projects/${projectId}/connectors/bitbucket`, {
+                    method: "PUT",
+                    body: JSON.stringify({
+                        isEnabled: bitbucketForm.isEnabled,
+                        config: {
+                            workspace: bitbucketForm.workspace.trim(),
+                            repo_slug: bitbucketForm.repo.trim(),
+                            branch: bitbucketForm.branch.trim() || "main",
+                            username: bitbucketForm.username.trim(),
+                            app_password: bitbucketForm.app_password.trim(),
+                            paths: csvToList(bitbucketForm.paths),
+                            base_url: bitbucketForm.base_url.trim(),
+                        },
+                    }),
+                })
+            } else if (type === "azure_devops") {
+                await backendJson(`/api/admin/projects/${projectId}/connectors/azure_devops`, {
+                    method: "PUT",
+                    body: JSON.stringify({
+                        isEnabled: azureDevOpsForm.isEnabled,
+                        config: {
+                            organization: azureDevOpsForm.organization.trim(),
+                            project: azureDevOpsForm.project.trim(),
+                            repository: azureDevOpsForm.repository.trim(),
+                            branch: azureDevOpsForm.branch.trim() || "main",
+                            pat: azureDevOpsForm.pat.trim(),
+                            paths: csvToList(azureDevOpsForm.paths),
+                            base_url: azureDevOpsForm.base_url.trim(),
+                        },
+                    }),
+                })
+            } else if (type === "local") {
+                await backendJson(`/api/admin/projects/${projectId}/connectors/local`, {
+                    method: "PUT",
+                    body: JSON.stringify({
+                        isEnabled: localConnectorForm.isEnabled,
+                        config: {
+                            paths: csvToList(localConnectorForm.paths),
                         },
                     }),
                 })
@@ -642,6 +797,7 @@ export default function ProjectSettingsPage() {
                                 </Box>
                                 <DetailCard title="LLM Provider" value={project?.llm_provider || "default"} />
                                 <DetailCard title="LLM Model" value={project?.llm_model || "backend default"} />
+                                <DetailCard title="LLM Profile" value={project?.llm_profile_id || "none"} />
                                 <Box sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}>
                                     <DetailCard title="LLM Base URL" value={project?.llm_base_url || "backend default"} />
                                 </Box>
@@ -663,6 +819,9 @@ export default function ProjectSettingsPage() {
                                 </Typography>
                                 <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 1.5 }}>
                                     <Chip label="Git" color="primary" variant="outlined" />
+                                    <Chip label="Bitbucket" color="primary" variant="outlined" />
+                                    <Chip label="Azure DevOps" color="primary" variant="outlined" />
+                                    <Chip label="Local Repo" color="primary" variant="outlined" />
                                     <Chip label="Confluence" color="primary" variant="outlined" />
                                     <Chip label="Jira" color="primary" variant="outlined" />
                                 </Stack>
@@ -753,12 +912,30 @@ export default function ProjectSettingsPage() {
                                         />
 
                                         <FormControl fullWidth size="small">
+                                            <InputLabel id="project-settings-llm-profile">LLM Profile</InputLabel>
+                                            <Select
+                                                labelId="project-settings-llm-profile"
+                                                label="LLM Profile"
+                                                value={editForm.llm_profile_id}
+                                                onChange={(e) => setEditForm((f) => ({ ...f, llm_profile_id: e.target.value }))}
+                                            >
+                                                <MenuItem value="">No profile (custom settings below)</MenuItem>
+                                                {llmProfiles.map((profile) => (
+                                                    <MenuItem key={profile.id} value={profile.id}>
+                                                        {profile.name} · {profile.provider.toUpperCase()} · {profile.model}
+                                                    </MenuItem>
+                                                ))}
+                                            </Select>
+                                        </FormControl>
+
+                                        <FormControl fullWidth size="small">
                                             <InputLabel id="project-settings-llm-provider">LLM Provider</InputLabel>
                                             <Select
                                                 labelId="project-settings-llm-provider"
                                                 label="LLM Provider"
                                                 value={editForm.llm_provider}
                                                 onChange={(e) => applyProviderChange(e.target.value)}
+                                                disabled={Boolean(editForm.llm_profile_id)}
                                             >
                                                 {providerOptions.map((option) => (
                                                     <MenuItem key={option.value} value={option.value}>
@@ -775,6 +952,7 @@ export default function ProjectSettingsPage() {
                                                 label="LLM Model"
                                                 value={editForm.llm_model}
                                                 onChange={(e) => setEditForm((f) => ({ ...f, llm_model: e.target.value }))}
+                                                disabled={Boolean(editForm.llm_profile_id)}
                                             >
                                                 {editModelOptions.map((model) => (
                                                     <MenuItem key={model} value={model}>
@@ -790,6 +968,7 @@ export default function ProjectSettingsPage() {
                                             onChange={(e) => setEditForm((f) => ({ ...f, llm_model: e.target.value }))}
                                             fullWidth
                                             helperText="Override with any OpenAI-compatible model ID."
+                                            disabled={Boolean(editForm.llm_profile_id)}
                                         />
 
                                         <TextField
@@ -798,6 +977,7 @@ export default function ProjectSettingsPage() {
                                             onChange={(e) => setEditForm((f) => ({ ...f, llm_base_url: e.target.value }))}
                                             fullWidth
                                             sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}
+                                            disabled={Boolean(editForm.llm_profile_id)}
                                         />
 
                                         <TextField
@@ -811,6 +991,7 @@ export default function ProjectSettingsPage() {
                                                     ? "Required for ChatGPT API."
                                                     : "Usually 'ollama' for local models."
                                             }
+                                            disabled={Boolean(editForm.llm_profile_id)}
                                         />
                                     </Box>
 
@@ -856,7 +1037,7 @@ export default function ProjectSettingsPage() {
                                         Source Connectors
                                     </Typography>
                                     <Typography variant="body2" color="text.secondary" sx={{ mt: 0.8 }}>
-                                        Configure Git, Confluence, and Jira connectors directly here.
+                                        Configure GitHub, Bitbucket, Azure DevOps, Local Repo, Confluence, and Jira connectors directly here.
                                     </Typography>
 
                                     <Box
@@ -914,6 +1095,177 @@ export default function ProjectSettingsPage() {
                                                         disabled={savingConnector || savingProject || ingesting}
                                                     >
                                                         Save Git
+                                                    </Button>
+                                                </Stack>
+                                            </CardContent>
+                                        </Card>
+
+                                        <Card variant="outlined">
+                                            <CardContent sx={{ p: 1.5 }}>
+                                                <Stack spacing={1.1}>
+                                                    <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                                                        Bitbucket Source
+                                                    </Typography>
+                                                    <FormControlLabel
+                                                        control={
+                                                            <Switch
+                                                                checked={bitbucketForm.isEnabled}
+                                                                onChange={(e) =>
+                                                                    setBitbucketForm((f) => ({ ...f, isEnabled: e.target.checked }))
+                                                                }
+                                                            />
+                                                        }
+                                                        label="Enabled"
+                                                    />
+                                                    <TextField
+                                                        label="Workspace"
+                                                        value={bitbucketForm.workspace}
+                                                        onChange={(e) => setBitbucketForm((f) => ({ ...f, workspace: e.target.value }))}
+                                                    />
+                                                    <TextField
+                                                        label="Repository Slug"
+                                                        value={bitbucketForm.repo}
+                                                        onChange={(e) => setBitbucketForm((f) => ({ ...f, repo: e.target.value }))}
+                                                    />
+                                                    <TextField
+                                                        label="Branch"
+                                                        value={bitbucketForm.branch}
+                                                        onChange={(e) => setBitbucketForm((f) => ({ ...f, branch: e.target.value }))}
+                                                    />
+                                                    <TextField
+                                                        label="Username"
+                                                        value={bitbucketForm.username}
+                                                        onChange={(e) => setBitbucketForm((f) => ({ ...f, username: e.target.value }))}
+                                                    />
+                                                    <TextField
+                                                        label="App Password"
+                                                        value={bitbucketForm.app_password}
+                                                        onChange={(e) => setBitbucketForm((f) => ({ ...f, app_password: e.target.value }))}
+                                                    />
+                                                    <TextField
+                                                        label="API Base URL"
+                                                        value={bitbucketForm.base_url}
+                                                        onChange={(e) => setBitbucketForm((f) => ({ ...f, base_url: e.target.value }))}
+                                                    />
+                                                    <TextField
+                                                        label="Paths (comma-separated)"
+                                                        value={bitbucketForm.paths}
+                                                        onChange={(e) => setBitbucketForm((f) => ({ ...f, paths: e.target.value }))}
+                                                        placeholder="src, docs"
+                                                    />
+                                                    <Button
+                                                        variant="outlined"
+                                                        onClick={() => void saveConnector("bitbucket")}
+                                                        disabled={savingConnector || savingProject || ingesting}
+                                                    >
+                                                        Save Bitbucket
+                                                    </Button>
+                                                </Stack>
+                                            </CardContent>
+                                        </Card>
+
+                                        <Card variant="outlined">
+                                            <CardContent sx={{ p: 1.5 }}>
+                                                <Stack spacing={1.1}>
+                                                    <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                                                        Azure DevOps Source
+                                                    </Typography>
+                                                    <FormControlLabel
+                                                        control={
+                                                            <Switch
+                                                                checked={azureDevOpsForm.isEnabled}
+                                                                onChange={(e) =>
+                                                                    setAzureDevOpsForm((f) => ({ ...f, isEnabled: e.target.checked }))
+                                                                }
+                                                            />
+                                                        }
+                                                        label="Enabled"
+                                                    />
+                                                    <TextField
+                                                        label="Organization"
+                                                        value={azureDevOpsForm.organization}
+                                                        onChange={(e) =>
+                                                            setAzureDevOpsForm((f) => ({ ...f, organization: e.target.value }))
+                                                        }
+                                                    />
+                                                    <TextField
+                                                        label="Project"
+                                                        value={azureDevOpsForm.project}
+                                                        onChange={(e) => setAzureDevOpsForm((f) => ({ ...f, project: e.target.value }))}
+                                                    />
+                                                    <TextField
+                                                        label="Repository"
+                                                        value={azureDevOpsForm.repository}
+                                                        onChange={(e) =>
+                                                            setAzureDevOpsForm((f) => ({ ...f, repository: e.target.value }))
+                                                        }
+                                                    />
+                                                    <TextField
+                                                        label="Branch"
+                                                        value={azureDevOpsForm.branch}
+                                                        onChange={(e) => setAzureDevOpsForm((f) => ({ ...f, branch: e.target.value }))}
+                                                    />
+                                                    <TextField
+                                                        label="PAT"
+                                                        value={azureDevOpsForm.pat}
+                                                        onChange={(e) => setAzureDevOpsForm((f) => ({ ...f, pat: e.target.value }))}
+                                                    />
+                                                    <TextField
+                                                        label="API Base URL"
+                                                        value={azureDevOpsForm.base_url}
+                                                        onChange={(e) =>
+                                                            setAzureDevOpsForm((f) => ({ ...f, base_url: e.target.value }))
+                                                        }
+                                                    />
+                                                    <TextField
+                                                        label="Paths (comma-separated)"
+                                                        value={azureDevOpsForm.paths}
+                                                        onChange={(e) => setAzureDevOpsForm((f) => ({ ...f, paths: e.target.value }))}
+                                                        placeholder="src, docs"
+                                                    />
+                                                    <Button
+                                                        variant="outlined"
+                                                        onClick={() => void saveConnector("azure_devops")}
+                                                        disabled={savingConnector || savingProject || ingesting}
+                                                    >
+                                                        Save Azure DevOps
+                                                    </Button>
+                                                </Stack>
+                                            </CardContent>
+                                        </Card>
+
+                                        <Card variant="outlined">
+                                            <CardContent sx={{ p: 1.5 }}>
+                                                <Stack spacing={1.1}>
+                                                    <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                                                        Local Repository Source
+                                                    </Typography>
+                                                    <FormControlLabel
+                                                        control={
+                                                            <Switch
+                                                                checked={localConnectorForm.isEnabled}
+                                                                onChange={(e) =>
+                                                                    setLocalConnectorForm((f) => ({ ...f, isEnabled: e.target.checked }))
+                                                                }
+                                                            />
+                                                        }
+                                                        label="Enabled"
+                                                    />
+                                                    <TextField
+                                                        label="Paths (comma-separated)"
+                                                        value={localConnectorForm.paths}
+                                                        onChange={(e) =>
+                                                            setLocalConnectorForm((f) => ({ ...f, paths: e.target.value }))
+                                                        }
+                                                        placeholder="src, docs"
+                                                        helperText="Uses project local repo path on backend."
+                                                    />
+                                                    <Button
+                                                        variant="outlined"
+                                                        onClick={() => void saveConnector("local")}
+                                                        disabled={savingConnector || savingProject || ingesting}
+                                                    >
+                                                        Save Local Source
                                                     </Button>
                                                 </Stack>
                                             </CardContent>

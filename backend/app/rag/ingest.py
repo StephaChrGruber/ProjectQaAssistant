@@ -1,5 +1,5 @@
 from ..connectors.loader import load_connectors
-from ..connectors import confluence, jira, github
+from ..connectors import azure_devops, bitbucket, confluence, github, jira, local_repo
 from .chroma_store import upsert_chunks, _collection
 from ..settings import settings
 import logging
@@ -26,6 +26,15 @@ async def ingest_project(project) -> dict:
             elif c.type == "github":
                 docs = await github.fetch_github_docs(c.config)
                 chunks = github.to_chunks(docs)
+            elif c.type == "bitbucket":
+                docs = await bitbucket.fetch_bitbucket_docs(c.config)
+                chunks = bitbucket.to_chunks(docs)
+            elif c.type == "azure_devops":
+                docs = await azure_devops.fetch_azure_devops_docs(c.config)
+                chunks = azure_devops.to_chunks(docs)
+            elif c.type == "local":
+                docs = await local_repo.fetch_local_repo_docs(project, c.config)
+                chunks = local_repo.to_chunks(docs)
             else:
                 continue
 

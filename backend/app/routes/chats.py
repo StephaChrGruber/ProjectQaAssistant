@@ -20,6 +20,10 @@ class ChatToolPolicyReq(BaseModel):
     cache_ttl_overrides: dict[str, int] = Field(default_factory=dict)
 
 
+class ChatLlmProfileReq(BaseModel):
+    llm_profile_id: str | None = None
+
+
 def _clean_policy(req: ChatToolPolicyReq) -> dict[str, Any]:
     def clean_list(values: list[str]) -> list[str]:
         out: list[str] = []
@@ -60,7 +64,7 @@ async def _ensure_chat_doc(payload: ChatDoc):
     # Upsert: create if missing.
     await get_db()[COLL].update_one(
         {"chat_id": payload.chat_id},
-        {"$setOnInsert": {**payload.model_dump(), "tool_policy": {}}},
+        {"$setOnInsert": {**payload.model_dump(), "tool_policy": {}, "llm_profile_id": None}},
         upsert=True,
     )
     return await get_db()[COLL].find_one({"chat_id": payload.chat_id}, {"_id": 0})
@@ -171,3 +175,31 @@ async def put_chat_tool_policy(chat_id: str, req: ChatToolPolicyReq):
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Chat not found")
     return {"chat_id": chat_id, "tool_policy": policy}
+
+
+@router.get("/{chat_id}/llm-profile")
+async def get_chat_llm_profile(chat_id: str):
+    doc = await get_db()[COLL].find_one({"chat_id": chat_id}, {"_id": 0, "chat_id": 1, "llm_profile_id": 1})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    profile_id = (doc.get("llm_profile_id") or "").strip() or None
+    return {"chat_id": chat_id, "llm_profile_id": profile_id}
+
+
+@router.put("/{chat_id}/llm-profile")
+async def put_chat_llm_profile(chat_id: str, req: ChatLlmProfileReq):
+    profile_id = (req.llm_profile_id or "").strip() or None
+    update_doc: dict[str, Any] = {"updated_at": datetime.utcnow()}
+    if profile_id is None:
+        update_doc["llm_profile_id"] = None
+    else:
+        update_doc["llm_profile_id"] = profile_id
+
+    res = await get_db()[COLL].update_one(
+        {"chat_id": chat_id},
+        {"$set": update_doc},
+        upsert=False,
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    return {"chat_id": chat_id, "llm_profile_id": profile_id}

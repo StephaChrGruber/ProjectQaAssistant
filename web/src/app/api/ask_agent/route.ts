@@ -13,7 +13,12 @@ export async function POST(req: Request) {
         project_key: body.project_key ?? body.projectKey ?? body.project_id ?? body.projectId,
         branch: body.branch ?? "main",
         user: body.user ?? "dev",
+        chat_id: body.chat_id ?? body.chatId ?? null,
         top_k: body.top_k ?? body.topK ?? 8,
+        llm_base_url: body.llm_base_url ?? body.llmBaseUrl ?? null,
+        llm_api_key: body.llm_api_key ?? body.llmApiKey ?? null,
+        llm_model: body.llm_model ?? body.llmModel ?? null,
+        llm_profile_id: body.llm_profile_id ?? body.llmProfileId ?? null,
 
         // IMPORTANT: backend expects "question"
         question: body.question ?? body.query ?? "",

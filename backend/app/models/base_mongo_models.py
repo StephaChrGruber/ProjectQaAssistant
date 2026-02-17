@@ -4,7 +4,7 @@ from beanie import Document
 from pydantic import Field
 
 Role = Literal["admin", "member", "viewer"]
-ConnectorType = Literal["confluence", "jira", "github"]
+ConnectorType = Literal["confluence", "jira", "github", "bitbucket", "azure_devops", "local"]
 JobStatus = Literal["queued", "running", "succeeded", "failed"]
 
 class User(Document):
@@ -45,6 +45,7 @@ class Project(Document):
     llm_base_url: Optional[str] = None
     llm_model: Optional[str] = None
     llm_api_key: Optional[str] = None
+    llm_profile_id: Optional[str] = None
     createdAt: datetime = Field(default_factory=datetime.utcnow)
 
     class Settings:
@@ -70,6 +71,21 @@ class Connector(Document):
 
     class Settings:
         name = "connectors"
+
+
+class LlmProfile(Document):
+    name: str
+    description: Optional[str] = None
+    provider: str  # e.g. "ollama" | "openai"
+    base_url: Optional[str] = None
+    model: str
+    api_key: Optional[str] = None
+    isEnabled: bool = True
+    createdAt: datetime = Field(default_factory=datetime.utcnow)
+    updatedAt: datetime = Field(default_factory=datetime.utcnow)
+
+    class Settings:
+        name = "llm_profiles"
 
 class AuditLog(Document):
     userId: Optional[str] = None

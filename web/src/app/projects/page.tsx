@@ -102,7 +102,7 @@ export default function ProjectsPage() {
                                         Workspaces
                                     </Typography>
                                     <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                                        Open a project chat with branch-aware retrieval over Git, Confluence, and Jira.
+                                        Open a project chat with branch-aware retrieval over GitHub/Bitbucket/Azure DevOps, local repo, Confluence, and Jira.
                                     </Typography>
                                 </Box>
 

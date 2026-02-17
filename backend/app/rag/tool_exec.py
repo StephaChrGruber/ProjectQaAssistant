@@ -9,6 +9,7 @@ import shlex
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 import chromadb
 import httpx
@@ -156,20 +157,6 @@ async def _project_doc(project_id: str) -> dict[str, Any]:
     return doc
 
 
-async def _github_connector_config(project_id: str) -> Optional[dict]:
-    db = get_db()
-    connector = await db["connectors"].find_one(
-        {"projectId": project_id, "type": "github", "isEnabled": True}
-    )
-    if not connector:
-        return None
-    config = connector.get("config") or {}
-    required = ("owner", "repo", "token")
-    if not all(str(config.get(k, "")).strip() for k in required):
-        return None
-    return config
-
-
 def _github_headers(token: str) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {token}",
@@ -221,6 +208,205 @@ async def _github_list_tree(config: dict, ref: str) -> list[str]:
             if p:
                 out.append(p)
         return out
+
+
+def _bitbucket_headers(config: dict) -> dict[str, str]:
+    token = str(config.get("token") or "").strip()
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+    username = str(config.get("username") or "").strip()
+    app_password = str(config.get("app_password") or config.get("appPassword") or "").strip()
+    if username and app_password:
+        raw = f"{username}:{app_password}".encode("utf-8")
+        return {"Authorization": f"Basic {base64.b64encode(raw).decode('ascii')}"}
+    return {}
+
+
+def _bitbucket_base_url(config: dict) -> str:
+    return str(config.get("base_url") or config.get("baseUrl") or "https://api.bitbucket.org/2.0").rstrip("/")
+
+
+async def _bitbucket_list_tree(config: dict, ref: str) -> list[str]:
+    workspace = str(config.get("workspace") or "").strip()
+    repo_slug = str(config.get("repo_slug") or config.get("repo") or "").strip()
+    if not workspace or not repo_slug:
+        return []
+
+    url = f"{_bitbucket_base_url(config)}/repositories/{workspace}/{repo_slug}/src/{quote(ref, safe='')}"
+    headers = _bitbucket_headers(config)
+
+    out: list[str] = []
+    async with httpx.AsyncClient(timeout=30) as client:
+        next_url: Optional[str] = url
+        params: Optional[dict[str, Any]] = {"pagelen": 100}
+        while next_url:
+            resp = await client.get(next_url, headers=headers, params=params)
+            resp.raise_for_status()
+            data = resp.json() or {}
+            for item in data.get("values") or []:
+                if str(item.get("type") or "") != "commit_file":
+                    continue
+                p = str(item.get("path") or "").strip()
+                if p:
+                    out.append(p)
+            next_url = data.get("next")
+            params = None
+    return out
+
+
+async def _bitbucket_open_file_content(config: dict, path: str, ref: Optional[str] = None) -> tuple[str, str]:
+    workspace = str(config.get("workspace") or "").strip()
+    repo_slug = str(config.get("repo_slug") or config.get("repo") or "").strip()
+    if not workspace or not repo_slug:
+        raise ValueError("Bitbucket connector missing workspace/repo")
+
+    branch = (ref or str(config.get("branch") or "").strip() or "main")
+    url = (
+        f"{_bitbucket_base_url(config)}/repositories/{workspace}/{repo_slug}/src/"
+        f"{quote(branch, safe='')}/{quote(path, safe='/')}"
+    )
+    headers = _bitbucket_headers(config)
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        web_url = f"https://bitbucket.org/{workspace}/{repo_slug}/src/{branch}/{path}"
+        return resp.text, web_url
+
+
+def _azure_headers(config: dict) -> dict[str, str]:
+    pat = str(config.get("pat") or config.get("token") or "").strip()
+    if not pat:
+        return {}
+    raw = f":{pat}".encode("utf-8")
+    return {"Authorization": f"Basic {base64.b64encode(raw).decode('ascii')}"}
+
+
+def _azure_base_url(config: dict) -> str:
+    return str(config.get("base_url") or config.get("baseUrl") or "https://dev.azure.com").rstrip("/")
+
+
+def _azure_parts(config: dict) -> tuple[str, str, str]:
+    org = str(config.get("organization") or config.get("org") or "").strip()
+    project = str(config.get("project") or "").strip()
+    repo = str(config.get("repository") or config.get("repo") or "").strip()
+    return org, project, repo
+
+
+async def _azure_list_tree(config: dict, ref: str) -> list[str]:
+    org, project, repo = _azure_parts(config)
+    if not org or not project or not repo:
+        return []
+    api_version = str(config.get("api_version") or "7.1").strip() or "7.1"
+    endpoint = f"{_azure_base_url(config)}/{org}/{project}/_apis/git/repositories/{repo}/items"
+    params = {
+        "scopePath": "/",
+        "recursionLevel": "Full",
+        "includeContentMetadata": "true",
+        "versionDescriptor.versionType": "branch",
+        "versionDescriptor.version": ref,
+        "api-version": api_version,
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(endpoint, headers=_azure_headers(config), params=params)
+        resp.raise_for_status()
+        data = resp.json() or {}
+    out: list[str] = []
+    for item in data.get("value") or []:
+        if bool(item.get("isFolder")):
+            continue
+        p = str(item.get("path") or "").lstrip("/").strip()
+        if p:
+            out.append(p)
+    return out
+
+
+async def _azure_open_file_content(config: dict, path: str, ref: Optional[str] = None) -> tuple[str, str]:
+    org, project, repo = _azure_parts(config)
+    if not org or not project or not repo:
+        raise ValueError("Azure DevOps connector missing organization/project/repository")
+
+    branch = (ref or str(config.get("branch") or "").strip() or "main")
+    api_version = str(config.get("api_version") or "7.1").strip() or "7.1"
+    endpoint = f"{_azure_base_url(config)}/{org}/{project}/_apis/git/repositories/{repo}/items"
+    headers = _azure_headers(config)
+    params = {
+        "path": f"/{path.lstrip('/')}",
+        "includeContent": "true",
+        "versionDescriptor.versionType": "branch",
+        "versionDescriptor.version": branch,
+        "api-version": api_version,
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(endpoint, headers=headers, params=params)
+        resp.raise_for_status()
+        ctype = str(resp.headers.get("content-type") or "").lower()
+        if "application/json" in ctype:
+            data = resp.json() or {}
+            content = data.get("content")
+            if isinstance(content, str):
+                web_url = f"https://dev.azure.com/{org}/{project}/_git/{repo}?path=/{path}&version=GB{branch}"
+                return content, web_url
+        raw_resp = await client.get(
+            endpoint,
+            headers=headers,
+            params={
+                "path": f"/{path.lstrip('/')}",
+                "download": "true",
+                "versionDescriptor.versionType": "branch",
+                "versionDescriptor.version": branch,
+                "api-version": api_version,
+            },
+        )
+        raw_resp.raise_for_status()
+        web_url = f"https://dev.azure.com/{org}/{project}/_git/{repo}?path=/{path}&version=GB{branch}"
+        return raw_resp.text, web_url
+
+
+async def _remote_repo_connector(project_id: str) -> Optional[dict[str, Any]]:
+    db = get_db()
+    rows = await db["connectors"].find(
+        {"projectId": project_id, "isEnabled": True, "type": {"$in": ["github", "bitbucket", "azure_devops"]}}
+    ).to_list(length=20)
+    by_type = {str(r.get("type") or ""): r for r in rows}
+    for t in ("github", "bitbucket", "azure_devops"):
+        row = by_type.get(t)
+        if not row:
+            continue
+        return {"type": t, "config": row.get("config") or {}}
+    return None
+
+
+def _remote_ref(remote: dict[str, Any], requested_ref: Optional[str]) -> str:
+    if requested_ref and requested_ref.strip():
+        return requested_ref.strip()
+    config = remote.get("config") or {}
+    return str(config.get("branch") or "main").strip() or "main"
+
+
+async def _remote_list_tree(remote: dict[str, Any], requested_ref: Optional[str]) -> list[str]:
+    rtype = remote.get("type")
+    config = remote.get("config") or {}
+    ref = _remote_ref(remote, requested_ref)
+    if rtype == "github":
+        return await _github_list_tree(config, ref)
+    if rtype == "bitbucket":
+        return await _bitbucket_list_tree(config, ref)
+    if rtype == "azure_devops":
+        return await _azure_list_tree(config, ref)
+    return []
+
+
+async def _remote_open_file(remote: dict[str, Any], path: str, requested_ref: Optional[str]) -> tuple[str, str]:
+    rtype = remote.get("type")
+    config = remote.get("config") or {}
+    ref = _remote_ref(remote, requested_ref)
+    if rtype == "github":
+        return await _github_open_file_content(config, path, ref=ref)
+    if rtype == "bitbucket":
+        return await _bitbucket_open_file_content(config, path, ref=ref)
+    if rtype == "azure_devops":
+        return await _azure_open_file_content(config, path, ref=ref)
+    raise ValueError("Unsupported remote connector")
 
 
 def _iter_local_worktree_files(repo_path: str, glob_pat: Optional[str]) -> list[str]:
@@ -294,16 +480,16 @@ async def repo_grep(req: RepoGrepRequest) -> RepoGrepResponse:
     root = Path(meta.repo_path) if meta.repo_path else None
 
     if not (root and root.exists()):
-        gh = await _github_connector_config(req.project_id)
-        if not gh:
+        remote = await _remote_repo_connector(req.project_id)
+        if not remote:
             return RepoGrepResponse(matches=[])
-        files = await _github_list_tree(gh, req.branch or str(gh.get("branch") or "main"))
+        files = await _remote_list_tree(remote, req.branch)
         matches: list[GrepMatch] = []
         for rel in files:
             if not _glob_match(rel, req.glob):
                 continue
             try:
-                text, _ = await _github_open_file_content(gh, rel, ref=req.branch)
+                text, _ = await _remote_open_file(remote, rel, req.branch)
             except Exception:
                 continue
             lines = text.splitlines()
@@ -411,14 +597,14 @@ async def open_file(req: OpenFileRequest) -> OpenFileResponse:
         s, e, sliced = _line_slice(text, req.start_line, req.end_line)
         return OpenFileResponse(path=req.path, ref=None, start_line=s, end_line=e, content=sliced)
 
-    gh = await _github_connector_config(req.project_id)
-    if gh:
-        text, _ = await _github_open_file_content(gh, req.path, ref=req.ref or req.branch)
+    remote = await _remote_repo_connector(req.project_id)
+    if remote:
+        text, _ = await _remote_open_file(remote, req.path, req.ref or req.branch)
         text, _ = _limit_text(text, req.max_chars)
         s, e, sliced = _line_slice(text, req.start_line, req.end_line)
         return OpenFileResponse(path=req.path, ref=req.ref or req.branch, start_line=s, end_line=e, content=sliced)
 
-    raise FileNotFoundError(f"File not found and no GitHub connector available: {req.path}")
+    raise FileNotFoundError(f"File not found and no remote repository connector available: {req.path}")
 
 
 async def keyword_search(req: KeywordSearchRequest) -> KeywordSearchResponse:
@@ -619,9 +805,9 @@ async def repo_tree(req: RepoTreeRequest) -> RepoTreeResponse:
                         entries.append(RepoTreeNode(path=rel, type="file", depth=depth, size=int(p.stat().st_size)))
 
     else:
-        gh = await _github_connector_config(req.project_id)
-        if gh:
-            files = await _github_list_tree(gh, branch)
+        remote = await _remote_repo_connector(req.project_id)
+        if remote:
+            files = await _remote_list_tree(remote, branch)
             dir_set: set[str] = set()
             for rel in files:
                 if _is_ignored_path(rel):
@@ -943,13 +1129,13 @@ async def read_docs_folder(req: ReadDocsFolderRequest) -> ReadDocsFolderResponse
                     text = _read_text_file(p, req.max_chars_per_file)
                     files.append(ReadDocsFile(path=rel, content=text))
     else:
-        gh = await _github_connector_config(req.project_id)
-        if gh:
-            all_files = await _github_list_tree(gh, branch)
+        remote = await _remote_repo_connector(req.project_id)
+        if remote:
+            all_files = await _remote_list_tree(remote, branch)
             md_files = [p for p in all_files if p.startswith(docs_root + "/") and p.lower().endswith(".md")]
             for rel in md_files[: req.max_files]:
                 try:
-                    text, _ = await _github_open_file_content(gh, rel, ref=branch)
+                    text, _ = await _remote_open_file(remote, rel, branch)
                 except Exception:
                     continue
                 text, _ = _limit_text(text, req.max_chars_per_file)

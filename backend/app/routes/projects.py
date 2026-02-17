@@ -58,6 +58,7 @@ async def list_projects(x_dev_user: str | None = Header(default=None)):
             "llm_provider": 1,
             "llm_base_url": 1,
             "llm_model": 1,
+            "llm_profile_id": 1,
         },
     ).sort("name", 1)
     items = await cursor.to_list(length=500)

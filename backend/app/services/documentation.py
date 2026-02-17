@@ -15,6 +15,7 @@ import requests
 from bson import ObjectId
 
 from ..db import get_db
+from ..services.llm_profiles import resolve_project_llm_config
 from ..settings import settings
 
 logger = logging.getLogger(__name__)
@@ -1426,10 +1427,11 @@ async def generate_project_documentation(project_id: str, branch: Optional[str] 
     project_name = str(project.get("name") or project.get("key") or project_id)
     fallback = _fallback_docs(project_name, chosen_branch, source_paths, selected_paths)
 
-    provider = (project.get("llm_provider") or "").strip().lower() or "ollama"
-    llm_base = _normalize_llm_base(project.get("llm_base_url"), provider)
-    llm_key = _llm_key(provider, project.get("llm_api_key"))
-    llm_model = _llm_model(provider, project.get("llm_model"))
+    llm = await resolve_project_llm_config(project)
+    provider = str(llm.get("provider") or "ollama")
+    llm_base = _normalize_llm_base(llm.get("llm_base_url"), provider)
+    llm_key = _llm_key(provider, llm.get("llm_api_key"))
+    llm_model = _llm_model(provider, llm.get("llm_model"))
     logger.info(
         "docs.generate.llm project_id=%s provider=%s model=%s base=%s has_api_key=%s",
         project_id,
@@ -1527,10 +1529,11 @@ async def generate_project_documentation_from_local_context(
     project_name = str(project.get("name") or project.get("key") or project_id)
     fallback = _fallback_docs(project_name, chosen_branch, all_paths, selected_paths)
 
-    provider = (project.get("llm_provider") or "").strip().lower() or "ollama"
-    llm_base = _normalize_llm_base(project.get("llm_base_url"), provider)
-    llm_key = _llm_key(provider, project.get("llm_api_key"))
-    llm_model = _llm_model(provider, project.get("llm_model"))
+    llm = await resolve_project_llm_config(project)
+    provider = str(llm.get("provider") or "ollama")
+    llm_base = _normalize_llm_base(llm.get("llm_base_url"), provider)
+    llm_key = _llm_key(provider, llm.get("llm_api_key"))
+    llm_model = _llm_model(provider, llm.get("llm_model"))
     logger.info(
         "docs.generate_local.llm project_id=%s provider=%s model=%s base=%s has_api_key=%s",
         project_id,
