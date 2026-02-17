@@ -306,6 +306,7 @@ function normalizedOpenAiKey(input?: string): string {
     const key = (input || "").trim()
     if (!key) return ""
     if (key.toLowerCase() === "ollama") return ""
+    if (key.startsWith("***")) return ""
     return key
 }
 

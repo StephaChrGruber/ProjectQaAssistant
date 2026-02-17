@@ -46,6 +46,7 @@ class Project(Document):
     llm_model: Optional[str] = None
     llm_api_key: Optional[str] = None
     llm_profile_id: Optional[str] = None
+    extra: Dict[str, Any] = Field(default_factory=dict)
     createdAt: datetime = Field(default_factory=datetime.utcnow)
 
     class Settings:

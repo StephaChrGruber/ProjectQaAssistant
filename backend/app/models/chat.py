@@ -16,6 +16,7 @@ class ChatDoc(BaseModel):
     branch: str
     user: str
     messages: list[ChatMessage] = Field(default_factory=list)
+    memory_summary: dict | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -29,5 +30,6 @@ class ChatResponse(BaseModel):
     branch: str
     user: str
     messages: list[ChatMessage]
+    memory_summary: dict | None = None
     created_at: datetime
     updated_at: datetime

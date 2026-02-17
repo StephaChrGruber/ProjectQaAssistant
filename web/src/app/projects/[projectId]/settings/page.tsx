@@ -46,6 +46,7 @@ type ProjectDoc = {
     llm_model?: string
     llm_api_key?: string
     llm_profile_id?: string
+    extra?: Record<string, any>
 }
 
 type MeResponse = {
@@ -75,6 +76,14 @@ type ProjectEditForm = {
     llm_model: string
     llm_api_key: string
     llm_profile_id: string
+    grounding_require_sources: boolean
+    grounding_min_sources: number
+    routing_enabled: boolean
+    routing_fast_profile_id: string
+    routing_strong_profile_id: string
+    routing_fallback_profile_id: string
+    security_read_only_non_admin: boolean
+    security_allow_write_members: boolean
 }
 
 type GitForm = {
@@ -152,6 +161,43 @@ type LlmOptionsResponse = {
     ollama_discovery_error?: string | null
 }
 
+type QaMetricsResponse = {
+    project_id: string
+    hours: number
+    branch?: string | null
+    tool_calls: number
+    tool_errors: number
+    tool_timeouts: number
+    tool_latency_avg_ms: number
+    tool_latency_p95_ms: number
+    assistant_messages: number
+    answers_with_sources: number
+    source_coverage_pct: number
+    grounded_failures: number
+    avg_tool_calls_per_answer: number
+    tool_summary: Array<{
+        tool: string
+        calls: number
+        errors: number
+        timeouts: number
+        avg_duration_ms: number
+        p95_duration_ms: number
+    }>
+}
+
+type EvalRunResponse = {
+    id?: string
+    summary?: {
+        total?: number
+        ok?: number
+        failed?: number
+        with_sources?: number
+        source_coverage_pct?: number
+        avg_latency_ms?: number
+        avg_tool_calls?: number
+    }
+}
+
 const FALLBACK_OLLAMA_MODELS = ["llama3.2:3b", "llama3.1:8b", "mistral:7b", "qwen2.5:7b"]
 const FALLBACK_OPENAI_MODELS = ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1", "gpt-4o"]
 
@@ -193,6 +239,7 @@ function normalizedOpenAiKey(input?: string): string {
     const key = (input || "").trim()
     if (!key) return ""
     if (key.toLowerCase() === "ollama") return ""
+    if (key.startsWith("***")) return ""
     return key
 }
 
@@ -306,6 +353,14 @@ export default function ProjectSettingsPage() {
         llm_model: "llama3.2:3b",
         llm_api_key: "ollama",
         llm_profile_id: "",
+        grounding_require_sources: true,
+        grounding_min_sources: 1,
+        routing_enabled: false,
+        routing_fast_profile_id: "",
+        routing_strong_profile_id: "",
+        routing_fallback_profile_id: "",
+        security_read_only_non_admin: true,
+        security_allow_write_members: false,
     })
 
     const [gitForm, setGitForm] = useState<GitForm>(emptyGit())
@@ -320,6 +375,14 @@ export default function ProjectSettingsPage() {
     const [loadingLlmOptions, setLoadingLlmOptions] = useState(false)
     const [llmOptionsError, setLlmOptionsError] = useState<string | null>(null)
     const [pathPickerOpen, setPathPickerOpen] = useState(false)
+    const [qaMetrics, setQaMetrics] = useState<QaMetricsResponse | null>(null)
+    const [loadingQaMetrics, setLoadingQaMetrics] = useState(false)
+    const [evaluationQuestions, setEvaluationQuestions] = useState<string>(
+        "What is the architecture of this project?\nHow do I run this project locally?\nWhich connectors are configured?"
+    )
+    const [runningEvaluations, setRunningEvaluations] = useState(false)
+    const [latestEvalRun, setLatestEvalRun] = useState<EvalRunResponse | null>(null)
+    const [runningIncrementalIngest, setRunningIncrementalIngest] = useState(false)
 
     const projectLabel = useMemo(
         () => project?.name || project?.key || projectId,
@@ -514,6 +577,9 @@ export default function ProjectSettingsPage() {
                 const provider = projectRes.llm_provider || "ollama"
                 const defaultBase = defaultBaseUrlForProvider(provider)
                 const defaultModel = modelOptionsForProvider(provider, projectRes.llm_model)[0] || ""
+                const grounding = (projectRes.extra?.grounding || {}) as Record<string, any>
+                const routing = (projectRes.extra?.llm_routing || {}) as Record<string, any>
+                const security = (projectRes.extra?.security || {}) as Record<string, any>
                 setEditForm({
                     name: projectRes.name || "",
                     description: projectRes.description || "",
@@ -524,6 +590,14 @@ export default function ProjectSettingsPage() {
                     llm_model: projectRes.llm_model || defaultModel,
                     llm_api_key: projectRes.llm_api_key || (provider === "ollama" ? "ollama" : ""),
                     llm_profile_id: projectRes.llm_profile_id || "",
+                    grounding_require_sources: grounding.require_sources ?? true,
+                    grounding_min_sources: Number(grounding.min_sources || 1),
+                    routing_enabled: Boolean(routing.enabled),
+                    routing_fast_profile_id: String(routing.fast_profile_id || ""),
+                    routing_strong_profile_id: String(routing.strong_profile_id || ""),
+                    routing_fallback_profile_id: String(routing.fallback_profile_id || ""),
+                    security_read_only_non_admin: security.read_only_for_non_admin ?? true,
+                    security_allow_write_members: Boolean(security.allow_write_tools_for_members),
                 })
 
                 let b: string[] = []
@@ -547,6 +621,7 @@ export default function ProjectSettingsPage() {
                         loadLlmOptions(),
                         loadLlmProfiles(),
                         loadConnectors(projectRes.default_branch || "main"),
+                        loadQaMetrics(),
                     ])
                 }
             } catch (err) {
@@ -563,6 +638,11 @@ export default function ProjectSettingsPage() {
     useEffect(() => {
         void loadChats().catch((err) => setError(errText(err)))
     }, [loadChats])
+
+    useEffect(() => {
+        if (!me?.isGlobalAdmin) return
+        void loadQaMetrics()
+    }, [me?.isGlobalAdmin, branch])
 
     async function onSaveProjectSettings() {
         if (!me?.isGlobalAdmin) return
@@ -582,6 +662,23 @@ export default function ProjectSettingsPage() {
                     llm_model: editForm.llm_model.trim() || null,
                     llm_api_key: editForm.llm_api_key.trim() || null,
                     llm_profile_id: editForm.llm_profile_id.trim() || null,
+                    extra: {
+                        ...((project?.extra || {}) as Record<string, unknown>),
+                        grounding: {
+                            require_sources: Boolean(editForm.grounding_require_sources),
+                            min_sources: Math.max(1, Math.min(5, Number(editForm.grounding_min_sources || 1))),
+                        },
+                        llm_routing: {
+                            enabled: Boolean(editForm.routing_enabled),
+                            fast_profile_id: editForm.routing_fast_profile_id.trim() || null,
+                            strong_profile_id: editForm.routing_strong_profile_id.trim() || null,
+                            fallback_profile_id: editForm.routing_fallback_profile_id.trim() || null,
+                        },
+                        security: {
+                            read_only_for_non_admin: Boolean(editForm.security_read_only_non_admin),
+                            allow_write_tools_for_members: Boolean(editForm.security_allow_write_members),
+                        },
+                    },
                 }),
             })
             setProject(updated)
@@ -708,6 +805,80 @@ export default function ProjectSettingsPage() {
             setError(errText(err))
         } finally {
             setIngesting(false)
+        }
+    }
+
+    async function loadQaMetrics() {
+        if (!me?.isGlobalAdmin) return
+        setLoadingQaMetrics(true)
+        try {
+            const out = await backendJson<QaMetricsResponse>(
+                `/api/projects/${projectId}/qa-metrics?hours=72&branch=${encodeURIComponent(branch)}`
+            )
+            setQaMetrics(out)
+        } catch (err) {
+            setError(errText(err))
+        } finally {
+            setLoadingQaMetrics(false)
+        }
+    }
+
+    async function runIncrementalIngest() {
+        if (!me?.isGlobalAdmin) return
+        setRunningIncrementalIngest(true)
+        setError(null)
+        setNotice(null)
+        try {
+            const connectors = ["github", "bitbucket", "azure_devops", "local", "confluence", "jira"]
+            const out = await backendJson<{ totalDocs?: number; totalChunks?: number; requested_connectors?: string[] }>(
+                `/api/admin/projects/${projectId}/ingest/incremental`,
+                {
+                    method: "POST",
+                    body: JSON.stringify({
+                        connectors,
+                        reason: "settings_incremental_refresh",
+                    }),
+                }
+            )
+            setNotice(
+                `Incremental ingestion finished. Docs: ${out.totalDocs || 0}, chunks: ${out.totalChunks || 0}.`
+            )
+        } catch (err) {
+            setError(errText(err))
+        } finally {
+            setRunningIncrementalIngest(false)
+        }
+    }
+
+    async function runEvaluations() {
+        if (!me?.isGlobalAdmin) return
+        setRunningEvaluations(true)
+        setError(null)
+        setNotice(null)
+        try {
+            const questions = evaluationQuestions
+                .split("\n")
+                .map((q) => q.trim())
+                .filter(Boolean)
+            if (!questions.length) {
+                setError("Add at least one evaluation question.")
+                return
+            }
+            const run = await backendJson<EvalRunResponse>(`/api/admin/projects/${projectId}/evaluations/run`, {
+                method: "POST",
+                body: JSON.stringify({
+                    questions,
+                    branch,
+                    max_questions: 12,
+                }),
+            })
+            setLatestEvalRun(run)
+            setNotice("Evaluation run completed.")
+            await loadQaMetrics()
+        } catch (err) {
+            setError(errText(err))
+        } finally {
+            setRunningEvaluations(false)
         }
     }
 
@@ -992,6 +1163,135 @@ export default function ProjectSettingsPage() {
                                                     : "Usually 'ollama' for local models."
                                             }
                                             disabled={Boolean(editForm.llm_profile_id)}
+                                        />
+
+                                        <Divider sx={{ gridColumn: { xs: "auto", md: "1 / span 2" }, my: 0.5 }} />
+
+                                        <FormControlLabel
+                                            control={
+                                                <Switch
+                                                    checked={editForm.grounding_require_sources}
+                                                    onChange={(e) =>
+                                                        setEditForm((f) => ({ ...f, grounding_require_sources: e.target.checked }))
+                                                    }
+                                                />
+                                            }
+                                            label="Require grounded answers with sources"
+                                            sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}
+                                        />
+                                        <TextField
+                                            label="Minimum Sources"
+                                            type="number"
+                                            value={editForm.grounding_min_sources}
+                                            onChange={(e) =>
+                                                setEditForm((f) => ({
+                                                    ...f,
+                                                    grounding_min_sources: Math.max(1, Math.min(5, Number(e.target.value || 1))),
+                                                }))
+                                            }
+                                            inputProps={{ min: 1, max: 5 }}
+                                        />
+                                        <Box />
+
+                                        <FormControlLabel
+                                            control={
+                                                <Switch
+                                                    checked={editForm.routing_enabled}
+                                                    onChange={(e) =>
+                                                        setEditForm((f) => ({ ...f, routing_enabled: e.target.checked }))
+                                                    }
+                                                />
+                                            }
+                                            label="Enable smart model routing"
+                                            sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}
+                                        />
+                                        <FormControl fullWidth size="small">
+                                            <InputLabel id="settings-fast-profile">Fast Route Profile</InputLabel>
+                                            <Select
+                                                labelId="settings-fast-profile"
+                                                label="Fast Route Profile"
+                                                value={editForm.routing_fast_profile_id}
+                                                onChange={(e) =>
+                                                    setEditForm((f) => ({ ...f, routing_fast_profile_id: e.target.value }))
+                                                }
+                                                disabled={!editForm.routing_enabled}
+                                            >
+                                                <MenuItem value="">None</MenuItem>
+                                                {llmProfiles.map((profile) => (
+                                                    <MenuItem key={profile.id} value={profile.id}>
+                                                        {profile.name} · {profile.provider.toUpperCase()} · {profile.model}
+                                                    </MenuItem>
+                                                ))}
+                                            </Select>
+                                        </FormControl>
+                                        <FormControl fullWidth size="small">
+                                            <InputLabel id="settings-strong-profile">Strong Route Profile</InputLabel>
+                                            <Select
+                                                labelId="settings-strong-profile"
+                                                label="Strong Route Profile"
+                                                value={editForm.routing_strong_profile_id}
+                                                onChange={(e) =>
+                                                    setEditForm((f) => ({ ...f, routing_strong_profile_id: e.target.value }))
+                                                }
+                                                disabled={!editForm.routing_enabled}
+                                            >
+                                                <MenuItem value="">None</MenuItem>
+                                                {llmProfiles.map((profile) => (
+                                                    <MenuItem key={profile.id} value={profile.id}>
+                                                        {profile.name} · {profile.provider.toUpperCase()} · {profile.model}
+                                                    </MenuItem>
+                                                ))}
+                                            </Select>
+                                        </FormControl>
+                                        <FormControl fullWidth size="small" sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}>
+                                            <InputLabel id="settings-fallback-profile">Fallback Route Profile</InputLabel>
+                                            <Select
+                                                labelId="settings-fallback-profile"
+                                                label="Fallback Route Profile"
+                                                value={editForm.routing_fallback_profile_id}
+                                                onChange={(e) =>
+                                                    setEditForm((f) => ({ ...f, routing_fallback_profile_id: e.target.value }))
+                                                }
+                                                disabled={!editForm.routing_enabled}
+                                            >
+                                                <MenuItem value="">None</MenuItem>
+                                                {llmProfiles.map((profile) => (
+                                                    <MenuItem key={profile.id} value={profile.id}>
+                                                        {profile.name} · {profile.provider.toUpperCase()} · {profile.model}
+                                                    </MenuItem>
+                                                ))}
+                                            </Select>
+                                        </FormControl>
+
+                                        <FormControlLabel
+                                            control={
+                                                <Switch
+                                                    checked={editForm.security_read_only_non_admin}
+                                                    onChange={(e) =>
+                                                        setEditForm((f) => ({
+                                                            ...f,
+                                                            security_read_only_non_admin: e.target.checked,
+                                                        }))
+                                                    }
+                                                />
+                                            }
+                                            label="Force read-only tools for non-admin users"
+                                            sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}
+                                        />
+                                        <FormControlLabel
+                                            control={
+                                                <Switch
+                                                    checked={editForm.security_allow_write_members}
+                                                    onChange={(e) =>
+                                                        setEditForm((f) => ({
+                                                            ...f,
+                                                            security_allow_write_members: e.target.checked,
+                                                        }))
+                                                    }
+                                                />
+                                            }
+                                            label="Allow write tools for project members"
+                                            sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}
                                         />
                                     </Box>
 
@@ -1381,16 +1681,109 @@ export default function ProjectSettingsPage() {
                                         <Typography variant="body2" color="text.secondary">
                                             After changing sources, run ingestion to refresh indexed context.
                                         </Typography>
+                                        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                                            <Button
+                                                variant="contained"
+                                                color="success"
+                                                startIcon={<CloudUploadRounded />}
+                                                onClick={() => void runIngest()}
+                                                disabled={ingesting || savingConnector || savingProject || runningIncrementalIngest}
+                                            >
+                                                Run Ingestion
+                                            </Button>
+                                            <Button
+                                                variant="outlined"
+                                                color="success"
+                                                onClick={() => void runIncrementalIngest()}
+                                                disabled={runningIncrementalIngest || ingesting || savingConnector || savingProject}
+                                            >
+                                                {runningIncrementalIngest ? "Running..." : "Run Incremental"}
+                                            </Button>
+                                        </Stack>
+                                    </Stack>
+                                </CardContent>
+                            </Card>
+
+                            <Card variant="outlined">
+                                <CardContent sx={{ p: { xs: 1.5, md: 2.5 } }}>
+                                    <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                        <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                                            Reliability Dashboard
+                                        </Typography>
                                         <Button
-                                            variant="contained"
-                                            color="success"
-                                            startIcon={<CloudUploadRounded />}
-                                            onClick={() => void runIngest()}
-                                            disabled={ingesting || savingConnector || savingProject}
+                                            variant="outlined"
+                                            size="small"
+                                            onClick={() => void loadQaMetrics()}
+                                            disabled={loadingQaMetrics}
+                                            startIcon={<RefreshRounded />}
                                         >
-                                            Run Ingestion
+                                            Refresh
                                         </Button>
                                     </Stack>
+                                    {qaMetrics ? (
+                                        <Box
+                                            sx={{
+                                                mt: 1.4,
+                                                display: "grid",
+                                                gap: 1.2,
+                                                gridTemplateColumns: { xs: "1fr", md: "1fr 1fr 1fr" },
+                                            }}
+                                        >
+                                            <DetailCard title="Source Coverage" value={`${qaMetrics.source_coverage_pct}%`} />
+                                            <DetailCard title="Grounded Failures" value={String(qaMetrics.grounded_failures || 0)} />
+                                            <DetailCard title="Tool Errors" value={String(qaMetrics.tool_errors || 0)} />
+                                            <DetailCard title="Tool Timeouts" value={String(qaMetrics.tool_timeouts || 0)} />
+                                            <DetailCard title="Latency Avg / P95" value={`${qaMetrics.tool_latency_avg_ms} / ${qaMetrics.tool_latency_p95_ms} ms`} />
+                                            <DetailCard title="Avg Tool Calls/Answer" value={String(qaMetrics.avg_tool_calls_per_answer || 0)} />
+                                        </Box>
+                                    ) : (
+                                        <Typography variant="body2" color="text.secondary" sx={{ mt: 1.2 }}>
+                                            {loadingQaMetrics ? "Loading metrics..." : "No reliability metrics yet."}
+                                        </Typography>
+                                    )}
+                                </CardContent>
+                            </Card>
+
+                            <Card variant="outlined">
+                                <CardContent sx={{ p: { xs: 1.5, md: 2.5 } }}>
+                                    <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                                        Evaluation Runner
+                                    </Typography>
+                                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.8 }}>
+                                        Run regression questions and track grounded/source coverage trends.
+                                    </Typography>
+                                    <TextField
+                                        label="Questions (one per line)"
+                                        multiline
+                                        minRows={4}
+                                        value={evaluationQuestions}
+                                        onChange={(e) => setEvaluationQuestions(e.target.value)}
+                                        sx={{ mt: 1.3 }}
+                                        fullWidth
+                                    />
+                                    <Stack direction="row" spacing={1} sx={{ mt: 1.2 }}>
+                                        <Button
+                                            variant="contained"
+                                            onClick={() => void runEvaluations()}
+                                            disabled={runningEvaluations}
+                                        >
+                                            {runningEvaluations ? "Running..." : "Run Evaluations"}
+                                        </Button>
+                                    </Stack>
+                                    {latestEvalRun?.summary && (
+                                        <Box
+                                            sx={{
+                                                mt: 1.3,
+                                                display: "grid",
+                                                gap: 1.1,
+                                                gridTemplateColumns: { xs: "1fr", md: "1fr 1fr 1fr" },
+                                            }}
+                                        >
+                                            <DetailCard title="Questions" value={String(latestEvalRun.summary.total || 0)} />
+                                            <DetailCard title="Source Coverage" value={`${latestEvalRun.summary.source_coverage_pct || 0}%`} />
+                                            <DetailCard title="Avg Latency" value={`${latestEvalRun.summary.avg_latency_ms || 0} ms`} />
+                                        </Box>
+                                    )}
                                 </CardContent>
                             </Card>
                         </>

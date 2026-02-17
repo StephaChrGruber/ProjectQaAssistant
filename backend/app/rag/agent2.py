@@ -67,6 +67,8 @@ def _system_prompt(project_id: str, branch: str, user_id: str, runtime: ToolRunt
         "- Only include tool args that exist in that tool schema.\n"
         "- Do not invent arguments.\n"
         "- Prefer tools over guessing.\n"
+        "- Gather concrete evidence from tools before answering.\n"
+        "- If branch comparison is requested, use compare_branches.\n"
         "- If asked to update docs in repository, call generate_project_docs.\n"
         "- If user asks for a chart/graph/visualization, return a ```chart fenced JSON block using this schema:\n"
         '  {"type":"line|bar","title":"...","xKey":"...","series":[{"key":"...","label":"...","color":"#0088FE"}],"data":[{"x":"...","metric":123}]}\n'

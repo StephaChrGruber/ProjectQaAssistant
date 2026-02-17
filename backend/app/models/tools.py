@@ -206,6 +206,25 @@ class GitShowFileAtRefRequest(BaseModel):
     max_chars: int = 200_000
 
 
+class CompareBranchesRequest(BaseModel):
+    project_id: str
+    base_branch: str
+    target_branch: str
+    max_files: int = 200
+
+
+class BranchDiffFile(BaseModel):
+    path: str
+    status: str
+
+
+class CompareBranchesResponse(BaseModel):
+    base_branch: str
+    target_branch: str
+    changed_files: List[BranchDiffFile] = Field(default_factory=list)
+    summary: str = ""
+
+
 class SymbolSearchRequest(BaseModel):
     project_id: str
     branch: Optional[str] = None
@@ -282,6 +301,51 @@ class ReadChatMessagesResponse(BaseModel):
     total_messages: int = 0
     returned_messages: int = 0
     messages: List[ChatMessageItem] = Field(default_factory=list)
+
+
+class CreateJiraIssueRequest(BaseModel):
+    project_id: str
+    summary: str
+    description: str
+    issue_type: str = "Task"
+    project_key: Optional[str] = None
+
+
+class CreateJiraIssueResponse(BaseModel):
+    key: str
+    url: str
+    summary: str
+
+
+class WriteDocumentationFileRequest(BaseModel):
+    project_id: str
+    branch: Optional[str] = None
+    path: str
+    content: str
+    overwrite: bool = True
+
+
+class WriteDocumentationFileResponse(BaseModel):
+    path: str
+    bytes_written: int
+    branch: str
+    overwritten: bool
+
+
+class CreateChatTaskRequest(BaseModel):
+    project_id: str
+    chat_id: Optional[str] = None
+    title: str
+    details: str = ""
+    assignee: Optional[str] = None
+    due_date: Optional[str] = None
+
+
+class CreateChatTaskResponse(BaseModel):
+    id: str
+    title: str
+    status: str
+    created_at: str
 
 
 class ToolError(BaseModel):

@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -23,6 +24,13 @@ from ..models.tools import (
     ChromaOpenChunksResponse,
     ChromaSearchChunkResponse,
     ChromaSearchChunksRequest,
+    CompareBranchesRequest,
+    CompareBranchesResponse,
+    BranchDiffFile,
+    CreateChatTaskRequest,
+    CreateChatTaskResponse,
+    CreateJiraIssueRequest,
+    CreateJiraIssueResponse,
     GitDiffRequest,
     GitDiffResponse,
     GitLogItem,
@@ -52,6 +60,8 @@ from ..models.tools import (
     SymbolSearchHit,
     SymbolSearchRequest,
     SymbolSearchResponse,
+    WriteDocumentationFileRequest,
+    WriteDocumentationFileResponse,
 )
 from ..services.documentation import DocumentationError, generate_project_documentation
 from ..settings import settings
@@ -155,6 +165,41 @@ async def _project_doc(project_id: str) -> dict[str, Any]:
     if not doc:
         raise KeyError(f"Project not found: {project_id}")
     return doc
+
+
+async def _find_enabled_connector(project_id: str, connector_type: str) -> dict[str, Any] | None:
+    db = get_db()
+    return await db["connectors"].find_one(
+        {"projectId": project_id, "type": connector_type, "isEnabled": True}
+    )
+
+
+def _utc_iso_now() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
+
+
+def _extract_jira_project_key(config: dict[str, Any]) -> str | None:
+    explicit = str(config.get("projectKey") or config.get("project_key") or "").strip()
+    if explicit:
+        return explicit
+    jql = str(config.get("jql") or "").strip()
+    if not jql:
+        return None
+    m = re.search(r"\bproject\s*=\s*([A-Z][A-Z0-9_]+)", jql, flags=re.IGNORECASE)
+    if not m:
+        return None
+    return m.group(1).upper()
+
+
+def _assert_branch_checked_out(req_branch: str | None, repo_path: str) -> str:
+    current = _current_branch(repo_path)
+    want = (req_branch or "").strip()
+    if want and want != current:
+        raise RuntimeError(
+            f"Requested branch '{want}' is not checked out locally (current: '{current}'). "
+            "Switch local branch first or omit branch."
+        )
+    return current
 
 
 def _github_headers(token: str) -> dict[str, str]:
@@ -1024,6 +1069,63 @@ async def git_show_file_at_ref(req) -> OpenFileResponse:
     return await open_file(open_req)
 
 
+async def compare_branches(req: CompareBranchesRequest) -> CompareBranchesResponse:
+    req.max_files = max(1, min(req.max_files, 1000))
+    base_branch = (req.base_branch or "").strip()
+    target_branch = (req.target_branch or "").strip()
+    if not base_branch or not target_branch:
+        raise RuntimeError("base_branch and target_branch are required")
+
+    meta = await get_project_metadata(req.project_id)
+    root = Path(meta.repo_path)
+    if not root.exists():
+        raise RuntimeError("Local repository not available for compare_branches")
+
+    repo_path = str(root)
+    if not _branch_exists(repo_path, base_branch):
+        raise RuntimeError(f"Base branch not found locally: {base_branch}")
+    if not _branch_exists(repo_path, target_branch):
+        raise RuntimeError(f"Target branch not found locally: {target_branch}")
+
+    out = _git_stdout(
+        repo_path,
+        ["diff", "--name-status", f"{base_branch}...{target_branch}"],
+        timeout=35,
+        not_found_ok=True,
+    )
+    changed_files: list[BranchDiffFile] = []
+    stats = {"added": 0, "modified": 0, "deleted": 0, "renamed": 0, "other": 0}
+    status_map = {"A": "added", "M": "modified", "D": "deleted", "R": "renamed"}
+    for line in out.splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        parts = raw.split("\t")
+        if len(parts) < 2:
+            continue
+        code = (parts[0] or "").strip()
+        path = parts[-1].strip().replace("\\", "/")
+        if not path:
+            continue
+        status_key = status_map.get(code[:1], "other")
+        stats[status_key] = stats.get(status_key, 0) + 1
+        changed_files.append(BranchDiffFile(path=path, status=status_key))
+        if len(changed_files) >= req.max_files:
+            break
+
+    summary = (
+        f"{len(changed_files)} changed files "
+        f"(added={stats['added']}, modified={stats['modified']}, "
+        f"deleted={stats['deleted']}, renamed={stats['renamed']}, other={stats['other']})"
+    )
+    return CompareBranchesResponse(
+        base_branch=base_branch,
+        target_branch=target_branch,
+        changed_files=changed_files,
+        summary=summary,
+    )
+
+
 _SYMBOL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("class", re.compile(r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)),
     ("function", re.compile(r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)),
@@ -1129,12 +1231,7 @@ async def run_tests(req: RunTestsRequest) -> RunTestsResponse:
     if not repo_path or not Path(repo_path).exists():
         raise RuntimeError("Local repository not available for run_tests")
 
-    current = _current_branch(repo_path)
-    if req.branch and req.branch.strip() and req.branch.strip() != current:
-        raise RuntimeError(
-            f"Requested branch '{req.branch}' is not checked out locally (current: '{current}'). "
-            "Switch local branch first or omit branch."
-        )
+    _assert_branch_checked_out(req.branch, repo_path)
 
     default_cmd, allowed_cmds = _project_test_config(doc)
     cmd = (req.command or "").strip() or default_cmd or _detect_test_command(repo_path)
@@ -1248,3 +1345,126 @@ async def read_chat_messages(req: ReadChatMessagesRequest) -> ReadChatMessagesRe
         returned_messages=len(selected),
         messages=selected,
     )
+
+
+async def create_jira_issue(req: CreateJiraIssueRequest) -> CreateJiraIssueResponse:
+    summary = (req.summary or "").strip()
+    description = (req.description or "").strip()
+    if not summary:
+        raise RuntimeError("summary is required")
+    if not description:
+        raise RuntimeError("description is required")
+
+    connector = await _find_enabled_connector(req.project_id, "jira")
+    if not connector:
+        raise RuntimeError("Jira connector is not enabled for this project")
+
+    config = connector.get("config") or {}
+    base_url = str(config.get("baseUrl") or "").rstrip("/")
+    email = str(config.get("email") or "").strip()
+    api_token = str(config.get("apiToken") or "").strip()
+    if not base_url or not email or not api_token:
+        raise RuntimeError("Jira connector missing baseUrl/email/apiToken")
+
+    project_key = (req.project_key or "").strip().upper() or _extract_jira_project_key(config)
+    if not project_key:
+        raise RuntimeError("Jira project key is missing (set connector projectKey or provide project_key)")
+
+    issue_type = (req.issue_type or "Task").strip() or "Task"
+    auth = base64.b64encode(f"{email}:{api_token}".encode("utf-8")).decode("ascii")
+    headers = {
+        "Authorization": f"Basic {auth}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "fields": {
+            "project": {"key": project_key},
+            "summary": summary,
+            "issuetype": {"name": issue_type},
+            "description": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": description}],
+                    }
+                ],
+            },
+        }
+    }
+
+    endpoint = f"{base_url}/rest/api/3/issue"
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(endpoint, headers=headers, json=payload)
+        resp.raise_for_status()
+        body = resp.json() or {}
+
+    key = str(body.get("key") or "").strip()
+    if not key:
+        raise RuntimeError("Jira issue creation failed: missing issue key in response")
+    url = f"{base_url}/browse/{key}"
+    return CreateJiraIssueResponse(key=key, url=url, summary=summary)
+
+
+async def write_documentation_file(req: WriteDocumentationFileRequest) -> WriteDocumentationFileResponse:
+    raw_path = (req.path or "").strip().replace("\\", "/")
+    if not raw_path:
+        raise RuntimeError("path is required")
+    if ".." in raw_path.split("/"):
+        raise RuntimeError("path must not contain '..'")
+
+    if not raw_path.startswith("documentation/"):
+        raw_path = f"documentation/{raw_path.lstrip('/')}"
+    if not raw_path.lower().endswith(".md"):
+        raw_path = f"{raw_path}.md"
+
+    content = str(req.content or "")
+    if not content.strip():
+        raise RuntimeError("content is required")
+
+    doc = await _project_doc(req.project_id)
+    repo_path = str((doc.get("repo_path") or "").strip())
+    if not repo_path or not Path(repo_path).exists():
+        raise RuntimeError("Local repository not available for write_documentation_file")
+
+    branch = _assert_branch_checked_out(req.branch, repo_path)
+    full = _safe_join_repo(repo_path, raw_path)
+    full.parent.mkdir(parents=True, exist_ok=True)
+
+    already_exists = full.exists()
+    if already_exists and not bool(req.overwrite):
+        raise RuntimeError(f"File already exists and overwrite=false: {raw_path}")
+
+    normalized = content if content.endswith("\n") else content + "\n"
+    full.write_text(normalized, encoding="utf-8")
+    return WriteDocumentationFileResponse(
+        path=raw_path,
+        bytes_written=len(normalized.encode("utf-8")),
+        branch=branch,
+        overwritten=already_exists,
+    )
+
+
+async def create_chat_task(req: CreateChatTaskRequest) -> CreateChatTaskResponse:
+    title = (req.title or "").strip()
+    if not title:
+        raise RuntimeError("title is required")
+
+    now = _utc_iso_now()
+    db = get_db()
+    doc: dict[str, Any] = {
+        "project_id": req.project_id,
+        "chat_id": (req.chat_id or "").strip() or None,
+        "title": title,
+        "details": (req.details or "").strip(),
+        "assignee": (req.assignee or "").strip() or None,
+        "due_date": (req.due_date or "").strip() or None,
+        "status": "open",
+        "created_at": now,
+        "updated_at": now,
+    }
+    res = await db["chat_tasks"].insert_one(doc)
+    task_id = str(res.inserted_id)
+    return CreateChatTaskResponse(id=task_id, title=title, status="open", created_at=now)

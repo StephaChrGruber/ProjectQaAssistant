@@ -80,6 +80,7 @@ type ChatMessage = {
             cached_hits?: number
         }
         sources?: ChatAnswerSource[]
+        grounded?: boolean
     }
 }
 
@@ -105,6 +106,7 @@ type BranchesResponse = {
 type ChatResponse = {
     chat_id: string
     messages: ChatMessage[]
+    memory_summary?: ChatMemorySummary
 }
 
 type AskAgentResponse = {
@@ -124,6 +126,8 @@ type AskAgentResponse = {
         } | null
     }>
     sources?: ChatAnswerSource[]
+    grounded?: boolean
+    memory_summary?: ChatMemorySummary
 }
 
 type LlmProfileDoc = {
@@ -145,6 +149,15 @@ type ChatAnswerSource = {
     url?: string
     path?: string
     line?: number
+    snippet?: string
+    confidence?: number
+}
+
+type ChatMemorySummary = {
+    decisions?: string[]
+    open_questions?: string[]
+    next_steps?: string[]
+    updated_at?: string
 }
 
 type ToolCatalogItem = {
@@ -694,6 +707,7 @@ export default function ProjectChatPage() {
     const [selectedLlmProfileId, setSelectedLlmProfileId] = useState<string>("")
     const [savingLlmProfile, setSavingLlmProfile] = useState(false)
     const [expandedSourceMessages, setExpandedSourceMessages] = useState<Record<string, boolean>>({})
+    const [chatMemory, setChatMemory] = useState<ChatMemorySummary | null>(null)
 
     const scrollRef = useRef<HTMLDivElement | null>(null)
     const projectLabel = useMemo(() => project?.name || project?.key || projectId, [project, projectId])
@@ -708,6 +722,12 @@ export default function ProjectChatPage() {
         () => llmProfiles.find((p) => p.id === selectedLlmProfileId) || null,
         [llmProfiles, selectedLlmProfileId]
     )
+    const memoryHasItems = useMemo(() => {
+        const d = chatMemory?.decisions || []
+        const q = chatMemory?.open_questions || []
+        const n = chatMemory?.next_steps || []
+        return d.length > 0 || q.length > 0 || n.length > 0
+    }, [chatMemory])
 
     useEffect(() => {
         selectedChatIdRef.current = selectedChatId
@@ -750,6 +770,7 @@ export default function ProjectChatPage() {
     const loadMessages = useCallback(async (chatId: string) => {
         const doc = await backendJson<ChatResponse>(`/api/chats/${encodeURIComponent(chatId)}`)
         setMessages(doc.messages || [])
+        setChatMemory((doc.memory_summary as ChatMemorySummary) || null)
     }, [])
 
     const loadChats = useCallback(
@@ -1177,11 +1198,12 @@ export default function ProjectChatPage() {
                         role: "assistant",
                         content: res.answer || "",
                         ts: new Date().toISOString(),
-                        meta: { sources: res.sources || [] },
+                        meta: { sources: res.sources || [], grounded: res.grounded ?? undefined },
                     },
                 ])
             }
             setLastToolEvents(res.tool_events || [])
+            setChatMemory((res.memory_summary as ChatMemorySummary) || null)
 
             await loadMessages(selectedChatId)
             await loadChats(branch, selectedChatId)
@@ -1580,6 +1602,54 @@ export default function ProjectChatPage() {
                         <Alert severity="success">{docsNotice}</Alert>
                     </Box>
                 )}
+                {memoryHasItems && (
+                    <Box sx={{ px: { xs: 1.5, md: 3 }, pt: 1.25 }}>
+                        <Paper variant="outlined" sx={{ p: { xs: 1.2, md: 1.5 }, maxWidth: 980, mx: "auto" }}>
+                            <Typography variant="overline" color="primary" sx={{ letterSpacing: "0.12em" }}>
+                                Session Memory
+                            </Typography>
+                            <Box
+                                sx={{
+                                    mt: 0.8,
+                                    display: "grid",
+                                    gap: 1.2,
+                                    gridTemplateColumns: { xs: "1fr", md: "1fr 1fr 1fr" },
+                                }}
+                            >
+                                <Box>
+                                    <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.08em" }}>
+                                        Decisions
+                                    </Typography>
+                                    {(chatMemory?.decisions || []).slice(0, 5).map((item, idx) => (
+                                        <Typography key={`mem-d-${idx}`} variant="body2" sx={{ mt: 0.4 }}>
+                                            - {item}
+                                        </Typography>
+                                    ))}
+                                </Box>
+                                <Box>
+                                    <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.08em" }}>
+                                        Open Questions
+                                    </Typography>
+                                    {(chatMemory?.open_questions || []).slice(0, 5).map((item, idx) => (
+                                        <Typography key={`mem-q-${idx}`} variant="body2" sx={{ mt: 0.4 }}>
+                                            - {item}
+                                        </Typography>
+                                    ))}
+                                </Box>
+                                <Box>
+                                    <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.08em" }}>
+                                        Next Steps
+                                    </Typography>
+                                    {(chatMemory?.next_steps || []).slice(0, 5).map((item, idx) => (
+                                        <Typography key={`mem-n-${idx}`} variant="body2" sx={{ mt: 0.4 }}>
+                                            - {item}
+                                        </Typography>
+                                    ))}
+                                </Box>
+                            </Box>
+                        </Paper>
+                    </Box>
+                )}
 
                 <Box
                     ref={scrollRef}
@@ -1782,6 +1852,11 @@ export default function ProjectChatPage() {
                                                     >
                                                         SOURCES
                                                     </Typography>
+                                                    {m.meta?.grounded === false && (
+                                                        <Typography variant="caption" color="warning.main" sx={{ display: "block", mb: 0.6 }}>
+                                                            Grounding check failed for this answer.
+                                                        </Typography>
+                                                    )}
                                                     <Stack spacing={0.2}>
                                                         {sources.length > 0 ? (
                                                             previewSources.map((src, sidx) => {
@@ -1789,26 +1864,41 @@ export default function ProjectChatPage() {
                                                                     (src.url && /^https?:\/\//i.test(src.url)) ||
                                                                     isDocumentationPath(src.path)
                                                                 )
+                                                                const confidence =
+                                                                    typeof src.confidence === "number"
+                                                                        ? Math.max(0, Math.min(100, Math.round(src.confidence * 100)))
+                                                                        : null
                                                                 return (
-                                                                    <Button
-                                                                        key={`${sourceDisplayText(src)}-${sidx}`}
-                                                                        variant="text"
-                                                                        size="small"
-                                                                        onClick={() => {
-                                                                            void handleAnswerSourceClick(src)
-                                                                        }}
-                                                                        disabled={!clickable}
-                                                                        sx={{
-                                                                            justifyContent: "flex-start",
-                                                                            textTransform: "none",
-                                                                            px: 0,
-                                                                            minHeight: "auto",
-                                                                            fontSize: 12,
-                                                                            lineHeight: 1.35,
-                                                                        }}
-                                                                    >
-                                                                        {sourceDisplayText(src)}
-                                                                    </Button>
+                                                                    <Box key={`${sourceDisplayText(src)}-${sidx}`} sx={{ py: 0.2 }}>
+                                                                        <Button
+                                                                            variant="text"
+                                                                            size="small"
+                                                                            onClick={() => {
+                                                                                void handleAnswerSourceClick(src)
+                                                                            }}
+                                                                            disabled={!clickable}
+                                                                            sx={{
+                                                                                justifyContent: "flex-start",
+                                                                                textTransform: "none",
+                                                                                px: 0,
+                                                                                minHeight: "auto",
+                                                                                fontSize: 12,
+                                                                                lineHeight: 1.35,
+                                                                            }}
+                                                                        >
+                                                                            {sourceDisplayText(src)}
+                                                                            {confidence !== null ? ` (${confidence}%)` : ""}
+                                                                        </Button>
+                                                                        {src.snippet ? (
+                                                                            <Typography
+                                                                                variant="caption"
+                                                                                color="text.secondary"
+                                                                                sx={{ display: "block", lineHeight: 1.3, pl: 0.1 }}
+                                                                            >
+                                                                                {src.snippet}
+                                                                            </Typography>
+                                                                        ) : null}
+                                                                    </Box>
                                                                 )
                                                             })
                                                         ) : (
@@ -1825,26 +1915,41 @@ export default function ProjectChatPage() {
                                                                                 (src.url && /^https?:\/\//i.test(src.url)) ||
                                                                                 isDocumentationPath(src.path)
                                                                             )
+                                                                            const confidence =
+                                                                                typeof src.confidence === "number"
+                                                                                    ? Math.max(0, Math.min(100, Math.round(src.confidence * 100)))
+                                                                                    : null
                                                                             return (
-                                                                                <Button
-                                                                                    key={`${sourceDisplayText(src)}-hidden-${sidx}`}
-                                                                                    variant="text"
-                                                                                    size="small"
-                                                                                    onClick={() => {
-                                                                                        void handleAnswerSourceClick(src)
-                                                                                    }}
-                                                                                    disabled={!clickable}
-                                                                                    sx={{
-                                                                                        justifyContent: "flex-start",
-                                                                                        textTransform: "none",
-                                                                                        px: 0,
-                                                                                        minHeight: "auto",
-                                                                                        fontSize: 12,
-                                                                                        lineHeight: 1.35,
-                                                                                    }}
-                                                                                >
-                                                                                    {sourceDisplayText(src)}
-                                                                                </Button>
+                                                                                <Box key={`${sourceDisplayText(src)}-hidden-${sidx}`} sx={{ py: 0.2 }}>
+                                                                                    <Button
+                                                                                        variant="text"
+                                                                                        size="small"
+                                                                                        onClick={() => {
+                                                                                            void handleAnswerSourceClick(src)
+                                                                                        }}
+                                                                                        disabled={!clickable}
+                                                                                        sx={{
+                                                                                            justifyContent: "flex-start",
+                                                                                            textTransform: "none",
+                                                                                            px: 0,
+                                                                                            minHeight: "auto",
+                                                                                            fontSize: 12,
+                                                                                            lineHeight: 1.35,
+                                                                                        }}
+                                                                                    >
+                                                                                        {sourceDisplayText(src)}
+                                                                                        {confidence !== null ? ` (${confidence}%)` : ""}
+                                                                                    </Button>
+                                                                                    {src.snippet ? (
+                                                                                        <Typography
+                                                                                            variant="caption"
+                                                                                            color="text.secondary"
+                                                                                            sx={{ display: "block", lineHeight: 1.3, pl: 0.1 }}
+                                                                                        >
+                                                                                            {src.snippet}
+                                                                                        </Typography>
+                                                                                    ) : null}
+                                                                                </Box>
                                                                             )
                                                                         })}
                                                                     </Stack>

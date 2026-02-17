@@ -12,9 +12,12 @@ from typing import Any, Awaitable, Callable, Deque, Dict, Optional
 from pydantic import BaseModel, ValidationError
 
 from ..models.tools import (
+    CompareBranchesRequest,
     ChromaCountRequest,
     ChromaOpenChunksRequest,
     ChromaSearchChunksRequest,
+    CreateChatTaskRequest,
+    CreateJiraIssueRequest,
     GenerateProjectDocsRequest,
     GetProjectMetadataRequest,
     GitDiffRequest,
@@ -31,11 +34,15 @@ from ..models.tools import (
     SymbolSearchRequest,
     ToolEnvelope,
     ToolError,
+    WriteDocumentationFileRequest,
 )
 from .tool_exec import (
+    compare_branches,
     chroma_count,
     chroma_open_chunks,
     chroma_search_chunks,
+    create_chat_task,
+    create_jira_issue,
     generate_project_docs,
     get_project_metadata,
     git_diff,
@@ -50,6 +57,7 @@ from .tool_exec import (
     repo_tree,
     run_tests,
     symbol_search,
+    write_documentation_file,
 )
 
 logger = logging.getLogger(__name__)
@@ -682,6 +690,18 @@ def build_default_tool_runtime() -> ToolRuntime:
     )
     rt.register(
         ToolSpec(
+            name="compare_branches",
+            description="Compares two branches and returns changed files summary.",
+            model=CompareBranchesRequest,
+            handler=compare_branches,
+            timeout_sec=45,
+            rate_limit_per_min=60,
+            max_retries=1,
+            cache_ttl_sec=10,
+        )
+    )
+    rt.register(
+        ToolSpec(
             name="read_docs_folder",
             description="Reads markdown files from documentation folder for a branch.",
             model=ReadDocsFolderRequest,
@@ -711,6 +731,39 @@ def build_default_tool_runtime() -> ToolRuntime:
             handler=run_tests,
             timeout_sec=900,
             rate_limit_per_min=15,
+            read_only=False,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="write_documentation_file",
+            description="Writes/updates a markdown file under documentation/ in the local repository.",
+            model=WriteDocumentationFileRequest,
+            handler=write_documentation_file,
+            timeout_sec=45,
+            rate_limit_per_min=30,
+            read_only=False,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="create_jira_issue",
+            description="Creates a Jira issue using configured Jira connector.",
+            model=CreateJiraIssueRequest,
+            handler=create_jira_issue,
+            timeout_sec=45,
+            rate_limit_per_min=20,
+            read_only=False,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="create_chat_task",
+            description="Creates an actionable task item linked to the current chat.",
+            model=CreateChatTaskRequest,
+            handler=create_chat_task,
+            timeout_sec=20,
+            rate_limit_per_min=40,
             read_only=False,
         )
     )

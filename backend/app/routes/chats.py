@@ -111,6 +111,17 @@ async def get_chat(chat_id: str):
         raise HTTPException(status_code=404, detail="Chat not found")
     return doc
 
+
+@router.get("/{chat_id}/memory")
+async def get_chat_memory(chat_id: str):
+    doc = await get_db()[COLL].find_one({"chat_id": chat_id}, {"_id": 0, "chat_id": 1, "memory_summary": 1})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    summary = doc.get("memory_summary")
+    if not isinstance(summary, dict):
+        summary = {"decisions": [], "open_questions": [], "next_steps": []}
+    return {"chat_id": chat_id, "memory_summary": summary}
+
 @router.post("/ensure", response_model=ChatResponse)
 async def ensure_chat(payload: ChatDoc):
     return await _ensure_chat_doc(payload)

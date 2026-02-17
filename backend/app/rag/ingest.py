@@ -7,8 +7,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-async def ingest_project(project) -> dict:
+async def ingest_project(project, *, connectors_filter: list[str] | None = None) -> dict:
     connectors = await load_connectors(str(project.id))
+    if connectors_filter:
+        wanted = {str(x).strip() for x in connectors_filter if str(x).strip()}
+        connectors = [c for c in connectors if c.type in wanted]
 
     total_docs = 0
     total_chunks = 0

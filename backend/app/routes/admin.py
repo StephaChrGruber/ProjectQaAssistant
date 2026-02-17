@@ -9,6 +9,8 @@ from ..deps import current_user
 from ..models.base_mongo_models import Project, Membership, Connector, LlmProfile
 from ..settings import settings
 from ..db import get_db
+from ..rag.agent2 import answer_with_agent
+from ..services.llm_profiles import resolve_project_llm_config
 
 router = APIRouter()
 
@@ -27,6 +29,19 @@ FALLBACK_OPENAI_MODELS = [
     "gpt-4.1",
     "gpt-4o",
 ]
+SECRET_MASK_PREFIX = "***"
+SENSITIVE_KEYS = {
+    "token",
+    "api_token",
+    "apitoken",
+    "app_password",
+    "apppassword",
+    "pat",
+    "password",
+    "secret",
+    "api_key",
+    "llm_api_key",
+}
 
 MAX_PATH_PICKER_ENTRIES = 500
 
@@ -41,6 +56,7 @@ class CreateProject(BaseModel):
     llm_model: str | None = None
     llm_api_key: str | None = None
     llm_profile_id: str | None = None
+    extra: dict | None = None
 
 
 class UpdateProject(BaseModel):
@@ -53,6 +69,7 @@ class UpdateProject(BaseModel):
     llm_model: str | None = None
     llm_api_key: str | None = None
     llm_profile_id: str | None = None
+    extra: dict | None = None
 
 
 class UpsertConnector(BaseModel):
@@ -80,7 +97,16 @@ class UpdateLlmProfile(BaseModel):
     isEnabled: bool | None = None
 
 
+class RunEvaluationsReq(BaseModel):
+    questions: list[str]
+    branch: str | None = None
+    user: str | None = None
+    max_questions: int = 8
+
+
 def _serialize_project(p: Project) -> dict:
+    llm_key = p.llm_api_key
+    masked_llm_key = _mask_secret_value(llm_key) if llm_key else None
     return {
         "id": str(p.id),
         "key": p.key,
@@ -91,8 +117,9 @@ def _serialize_project(p: Project) -> dict:
         "llm_provider": p.llm_provider,
         "llm_base_url": p.llm_base_url,
         "llm_model": p.llm_model,
-        "llm_api_key": p.llm_api_key,
+        "llm_api_key": masked_llm_key,
         "llm_profile_id": p.llm_profile_id,
+        "extra": p.extra or {},
         "createdAt": p.createdAt.isoformat() if p.createdAt else None,
     }
 
@@ -110,7 +137,55 @@ def _serialize_llm_profile(profile: LlmProfile, *, include_secrets: bool = True)
         "updatedAt": profile.updatedAt.isoformat() if profile.updatedAt else None,
     }
     if include_secrets:
-        out["api_key"] = profile.api_key
+        out["api_key"] = _mask_secret_value(profile.api_key) if profile.api_key else None
+    return out
+
+
+def _is_sensitive_key(key: str) -> bool:
+    low = str(key or "").strip().lower()
+    normalized = low.replace("-", "_")
+    return normalized in SENSITIVE_KEYS
+
+
+def _is_masked_secret(value: str | None) -> bool:
+    raw = (value or "").strip()
+    return bool(raw) and (raw == "__KEEP__" or raw.startswith(SECRET_MASK_PREFIX))
+
+
+def _mask_secret_value(value: str | None) -> str | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    if len(raw) <= 4:
+        return SECRET_MASK_PREFIX
+    return f"{SECRET_MASK_PREFIX}{raw[-4:]}"
+
+
+def _mask_secrets_in_config(value: object) -> object:
+    if isinstance(value, dict):
+        out: dict[str, object] = {}
+        for k, v in value.items():
+            if _is_sensitive_key(str(k)):
+                out[str(k)] = _mask_secret_value(str(v) if v is not None else "")
+            else:
+                out[str(k)] = _mask_secrets_in_config(v)
+        return out
+    if isinstance(value, list):
+        return [_mask_secrets_in_config(x) for x in value]
+    return value
+
+
+def _merge_masked_secrets(existing: dict, incoming: dict) -> dict:
+    if not isinstance(existing, dict):
+        existing = {}
+    if not isinstance(incoming, dict):
+        incoming = {}
+    out = dict(incoming)
+    for k, v in list(out.items()):
+        key = str(k)
+        if _is_sensitive_key(key) and isinstance(v, str) and _is_masked_secret(v):
+            if key in existing:
+                out[key] = existing.get(key)
     return out
 
 
@@ -257,6 +332,25 @@ def _is_allowed_path(path: Path, roots: list[Path]) -> bool:
             return True
     return False
 
+
+def _eval_sources_count_from_tool_events(tool_events: list[dict]) -> int:
+    count = 0
+    for ev in tool_events or []:
+        if not isinstance(ev, dict) or not bool(ev.get("ok")):
+            continue
+        result = ev.get("result")
+        if isinstance(result, dict):
+            for key in ("matches", "items", "hits", "files", "entries", "changed_files"):
+                val = result.get(key)
+                if isinstance(val, list):
+                    count += len(val)
+                    break
+            else:
+                count += 1
+        else:
+            count += 1
+    return count
+
 @router.post("/admin/projects")
 async def create_project(req: CreateProject, user=Depends(current_user)):
     if not user.isGlobalAdmin:
@@ -277,8 +371,9 @@ async def create_project(req: CreateProject, user=Depends(current_user)):
         llm_provider=req.llm_provider,
         llm_base_url=req.llm_base_url,
         llm_model=req.llm_model,
-        llm_api_key=req.llm_api_key,
+        llm_api_key=None if _is_masked_secret(req.llm_api_key) else req.llm_api_key,
         llm_profile_id=llm_profile_id,
+        extra=req.extra if isinstance(req.extra, dict) else {},
     )
     await p.insert()
 
@@ -304,7 +399,7 @@ async def list_projects(user=Depends(current_user)):
                         "id": str(c.id),
                         "type": c.type,
                         "isEnabled": c.isEnabled,
-                        "config": c.config,
+                        "config": _mask_secrets_in_config(c.config or {}),
                         "updatedAt": c.updatedAt.isoformat() if c.updatedAt else None,
                     }
                     for c in connectors
@@ -326,6 +421,10 @@ async def update_project(project_id: str, req: UpdateProject, user=Depends(curre
     data = req.model_dump(exclude_unset=True)
     if "llm_profile_id" in data:
         data["llm_profile_id"] = await _validate_llm_profile_id(data.get("llm_profile_id"))
+    if "llm_api_key" in data and isinstance(data.get("llm_api_key"), str) and _is_masked_secret(data.get("llm_api_key")):
+        data.pop("llm_api_key", None)
+    if "extra" in data and not isinstance(data.get("extra"), dict):
+        data["extra"] = {}
     for k, v in data.items():
         setattr(p, k, v)
     await p.save()
@@ -415,7 +514,7 @@ async def list_project_connectors(project_id: str, user=Depends(current_user)):
             "id": str(c.id),
             "type": c.type,
             "isEnabled": c.isEnabled,
-            "config": c.config,
+            "config": _mask_secrets_in_config(c.config or {}),
             "updatedAt": c.updatedAt.isoformat() if c.updatedAt else None,
         }
         for c in connectors
@@ -445,7 +544,7 @@ async def upsert_connector(
 
     if existing:
         existing.isEnabled = req.isEnabled
-        existing.config = req.config
+        existing.config = _merge_masked_secrets(existing.config or {}, req.config or {})
         existing.updatedAt = now
         await existing.save()
         doc = existing
@@ -454,7 +553,7 @@ async def upsert_connector(
             projectId=project_id,
             type=normalized_type,
             isEnabled=req.isEnabled,
-            config=req.config,
+            config=req.config or {},
             createdAt=now,
             updatedAt=now,
         )
@@ -464,7 +563,7 @@ async def upsert_connector(
         "id": str(doc.id),
         "type": doc.type,
         "isEnabled": doc.isEnabled,
-        "config": doc.config,
+        "config": _mask_secrets_in_config(doc.config or {}),
         "updatedAt": doc.updatedAt.isoformat() if doc.updatedAt else None,
     }
 
@@ -619,7 +718,7 @@ async def create_llm_profile(req: CreateLlmProfile, user=Depends(current_user)):
         provider=(req.provider or "ollama").strip().lower() or "ollama",
         base_url=(req.base_url or "").strip() or None,
         model=req.model.strip(),
-        api_key=(req.api_key or "").strip() or None,
+        api_key=None if _is_masked_secret(req.api_key) else (req.api_key or "").strip() or None,
         isEnabled=bool(req.isEnabled),
         createdAt=now,
         updatedAt=now,
@@ -649,6 +748,8 @@ async def update_llm_profile(profile_id: str, req: UpdateLlmProfile, user=Depend
         if k == "model" and isinstance(v, str):
             v = v.strip()
         if k == "api_key" and isinstance(v, str):
+            if _is_masked_secret(v):
+                continue
             v = v.strip() or None
         setattr(doc, k, v)
     doc.updatedAt = datetime.utcnow()
@@ -677,3 +778,110 @@ async def delete_llm_profile(profile_id: str, user=Depends(current_user)):
         "project_refs_cleared": int(project_refs),
         "chat_refs_cleared": int(chat_refs),
     }
+
+
+@router.post("/admin/projects/{project_id}/evaluations/run")
+async def run_project_evaluations(project_id: str, req: RunEvaluationsReq, user=Depends(current_user)):
+    if not user.isGlobalAdmin:
+        raise HTTPException(403, "Global admin required")
+
+    project = await Project.get(project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+
+    clean_questions = [str(q).strip() for q in (req.questions or []) if str(q).strip()]
+    if not clean_questions:
+        raise HTTPException(400, "questions must not be empty")
+    max_questions = max(1, min(int(req.max_questions), 30))
+    clean_questions = clean_questions[:max_questions]
+
+    llm = await resolve_project_llm_config(project.model_dump())
+    branch = (req.branch or project.default_branch or "main").strip() or "main"
+    eval_user = (req.user or "eval@system").strip() or "eval@system"
+
+    rows: list[dict] = []
+    started = datetime.utcnow()
+    for idx, question in enumerate(clean_questions, start=1):
+        q_started = datetime.utcnow()
+        ok = True
+        error_text: str | None = None
+        answer = ""
+        tool_events: list[dict] = []
+        try:
+            out = await answer_with_agent(
+                project_id=project_id,
+                branch=branch,
+                user_id=eval_user,
+                question=question,
+                llm_base_url=llm.get("llm_base_url"),
+                llm_api_key=llm.get("llm_api_key"),
+                llm_model=llm.get("llm_model"),
+                chat_id=f"{project_id}::eval::{idx}",
+                include_tool_events=True,
+            )
+            answer = str((out or {}).get("answer") or "")
+            tool_events = (out or {}).get("tool_events") or []
+        except Exception as err:
+            ok = False
+            error_text = str(err)
+
+        q_finished = datetime.utcnow()
+        tool_calls = len(tool_events)
+        sources_count = _eval_sources_count_from_tool_events(tool_events)
+        rows.append(
+            {
+                "question": question,
+                "ok": ok,
+                "error": error_text,
+                "answer_chars": len(answer),
+                "tool_calls": tool_calls,
+                "sources_count": sources_count,
+                "latency_ms": int((q_finished - q_started).total_seconds() * 1000),
+            }
+        )
+
+    finished = datetime.utcnow()
+    total = len(rows)
+    ok_count = sum(1 for r in rows if r["ok"])
+    with_sources = sum(1 for r in rows if int(r.get("sources_count") or 0) > 0)
+    avg_latency = int(round(sum(int(r["latency_ms"]) for r in rows) / total)) if total else 0
+    avg_tool_calls = round(sum(float(r["tool_calls"]) for r in rows) / total, 2) if total else 0.0
+    source_coverage = round((with_sources / total) * 100, 2) if total else 0.0
+
+    run_doc = {
+        "project_id": project_id,
+        "branch": branch,
+        "user": eval_user,
+        "started_at": started,
+        "finished_at": finished,
+        "questions": rows,
+        "summary": {
+            "total": total,
+            "ok": ok_count,
+            "failed": total - ok_count,
+            "with_sources": with_sources,
+            "source_coverage_pct": source_coverage,
+            "avg_latency_ms": avg_latency,
+            "avg_tool_calls": avg_tool_calls,
+        },
+    }
+    insert_res = await get_db()["evaluation_runs"].insert_one(run_doc)
+    run_doc["id"] = str(insert_res.inserted_id)
+    return run_doc
+
+
+@router.get("/admin/projects/{project_id}/evaluations")
+async def list_project_evaluations(project_id: str, limit: int = 20, user=Depends(current_user)):
+    if not user.isGlobalAdmin:
+        raise HTTPException(403, "Global admin required")
+    safe_limit = max(1, min(int(limit), 100))
+    rows = await get_db()["evaluation_runs"].find(
+        {"project_id": project_id},
+        {"questions.answer": 0},
+    ).sort("started_at", -1).limit(safe_limit).to_list(length=safe_limit)
+    out: list[dict] = []
+    for row in rows:
+        item = dict(row)
+        item["id"] = str(item.pop("_id"))
+        out.append(item)
+    return {"project_id": project_id, "items": out}
