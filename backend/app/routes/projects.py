@@ -207,18 +207,18 @@ async def _azure_branches(config: dict[str, Any], limit: int = 1000) -> list[str
 async def _remote_project_branches(project_id: str, default_branch: str) -> list[str]:
     logger.info("projects.branches.remote_lookup.start project=%s default=%s", project_id, default_branch)
     rows = await get_db()["connectors"].find(
-        {"projectId": project_id, "isEnabled": True, "type": {"$in": ["github", "bitbucket", "azure_devops"]}}
+        {"projectId": project_id, "isEnabled": True, "type": {"$in": ["github", "git", "bitbucket", "azure_devops"]}}
     ).to_list(length=20)
     by_type = {str(r.get("type") or ""): r for r in rows}
-    for t in ("github", "bitbucket", "azure_devops"):
+    for t in ("github", "git", "bitbucket", "azure_devops"):
         row = by_type.get(t)
         if not row:
             continue
         config = row.get("config") or {}
         try:
-            if t == "github":
+            if t in {"github", "git"}:
                 out = _ordered_branches(default_branch, await _github_branches(config))
-                logger.info("projects.branches.remote_lookup.done project=%s connector=github count=%s", project_id, len(out))
+                logger.info("projects.branches.remote_lookup.done project=%s connector=%s count=%s", project_id, t, len(out))
                 return out
             if t == "bitbucket":
                 out = _ordered_branches(default_branch, await _bitbucket_branches(config))

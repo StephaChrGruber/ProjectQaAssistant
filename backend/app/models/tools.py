@@ -196,9 +196,10 @@ class GitCheckoutBranchResponse(BaseModel):
 
 
 class GitCreateBranchRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
     project_id: str
     branch: str
-    source_ref: Optional[str] = None
+    source_ref: Optional[str] = Field(default=None, alias="from_ref")
     checkout: bool = True
     set_default_branch: bool = True
 

@@ -437,14 +437,15 @@ async def _azure_open_file_content(config: dict, path: str, ref: Optional[str] =
 async def _remote_repo_connector(project_id: str) -> Optional[dict[str, Any]]:
     db = get_db()
     rows = await db["connectors"].find(
-        {"projectId": project_id, "isEnabled": True, "type": {"$in": ["github", "bitbucket", "azure_devops"]}}
+        {"projectId": project_id, "isEnabled": True, "type": {"$in": ["github", "git", "bitbucket", "azure_devops"]}}
     ).to_list(length=20)
     by_type = {str(r.get("type") or ""): r for r in rows}
-    for t in ("github", "bitbucket", "azure_devops"):
+    for t in ("github", "git", "bitbucket", "azure_devops"):
         row = by_type.get(t)
         if not row:
             continue
-        return {"type": t, "config": row.get("config") or {}}
+        normalized_type = "github" if t == "git" else t
+        return {"type": normalized_type, "connector_type": t, "config": row.get("config") or {}}
     return None
 
 
@@ -890,7 +891,15 @@ async def _set_project_default_branch(project_id: str, branch: str) -> None:
 
 async def _set_remote_branch_config(project_id: str, remote: dict[str, Any], branch: str, *, set_default_branch: bool) -> None:
     db = get_db()
-    remote_type = str(remote.get("type") or "")
+    remote_type = str(remote.get("connector_type") or remote.get("type") or "")
+    if remote_type == "github":
+        # Backward compatibility: prefer updating legacy "git" connector rows if present.
+        legacy = await db["connectors"].find_one(
+            {"projectId": project_id, "type": "git"},
+            {"_id": 1},
+        )
+        if legacy:
+            remote_type = "git"
     if not remote_type:
         return
     await db["connectors"].update_one(
@@ -1542,6 +1551,11 @@ async def git_create_branch(req: GitCreateBranchRequest) -> GitCreateBranchRespo
 
     remote = await _remote_repo_connector(req.project_id)
     if not remote:
+        logger.error(
+            "git_create_branch.no_repo_or_connector project=%s repo_path=%s",
+            req.project_id,
+            meta.repo_path or "",
+        )
         raise RuntimeError("No local repository or remote git connector is available")
 
     config = remote.get("config") or {}
