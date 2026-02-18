@@ -11,6 +11,7 @@ from ..settings import settings
 from ..db import get_db
 from ..rag.agent2 import answer_with_agent
 from ..services.llm_profiles import resolve_project_llm_config
+from ..utils.mongo import to_jsonable
 
 router = APIRouter()
 
@@ -867,7 +868,7 @@ async def run_project_evaluations(project_id: str, req: RunEvaluationsReq, user=
     }
     insert_res = await get_db()["evaluation_runs"].insert_one(run_doc)
     run_doc["id"] = str(insert_res.inserted_id)
-    return run_doc
+    return to_jsonable(run_doc)
 
 
 @router.get("/admin/projects/{project_id}/evaluations")
