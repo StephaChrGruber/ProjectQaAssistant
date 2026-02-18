@@ -1341,7 +1341,7 @@ async def repo_grep(req: RepoGrepRequest, ctx: Any = None) -> RepoGrepResponse:
     repo_path_raw = str(meta.repo_path or "").strip()
     root = Path(repo_path_raw) if repo_path_raw else None
 
-    if _is_browser_local_repo_path(repo_path_raw):
+    async def _run_browser_local() -> RepoGrepResponse:
         result = await _run_browser_local_git_tool(
             tool_name="repo_grep",
             project_id=req.project_id,
@@ -1387,8 +1387,25 @@ async def repo_grep(req: RepoGrepRequest, ctx: Any = None) -> RepoGrepResponse:
                 break
         return RepoGrepResponse(matches=matches)
 
+    if _is_browser_local_repo_path(repo_path_raw):
+        return await _run_browser_local()
+
     if not (root and root.exists()):
         remote = await _remote_repo_connector(req.project_id)
+        if not remote and _ctx_field(ctx, "user_id"):
+            logger.info(
+                "repo_grep.browser_local_fallback project=%s branch=%s reason=no_local_repo_no_remote_connector",
+                req.project_id,
+                req.branch or meta.default_branch or "main",
+            )
+            try:
+                return await _run_browser_local()
+            except Exception as err:
+                logger.warning(
+                    "repo_grep.browser_local_fallback_failed project=%s err=%s",
+                    req.project_id,
+                    err,
+                )
         if not remote:
             return RepoGrepResponse(matches=[])
         files = await _remote_list_tree(remote, req.branch)
@@ -1405,9 +1422,9 @@ async def repo_grep(req: RepoGrepRequest, ctx: Any = None) -> RepoGrepResponse:
                 m = pat.search(line)
                 if not m:
                     continue
-                ctx = req.context_lines
-                before = lines[max(0, idx - 1 - ctx) : idx - 1]
-                after = lines[idx : min(len(lines), idx + ctx)]
+                context_lines = req.context_lines
+                before = lines[max(0, idx - 1 - context_lines) : idx - 1]
+                after = lines[idx : min(len(lines), idx + context_lines)]
                 matches.append(
                     GrepMatch(
                         path=rel,
@@ -1455,9 +1472,9 @@ async def repo_grep(req: RepoGrepRequest, ctx: Any = None) -> RepoGrepResponse:
             m = pat.search(line)
             if not m:
                 continue
-            ctx = req.context_lines
-            before = lines[max(0, idx - 1 - ctx) : idx - 1]
-            after = lines[idx : min(len(lines), idx + ctx)]
+            context_lines = req.context_lines
+            before = lines[max(0, idx - 1 - context_lines) : idx - 1]
+            after = lines[idx : min(len(lines), idx + context_lines)]
             matches.append(
                 GrepMatch(
                     path=rel,
@@ -1479,7 +1496,7 @@ async def open_file(req: OpenFileRequest, ctx: Any = None) -> OpenFileResponse:
     meta = await get_project_metadata(req.project_id)
 
     repo_path_raw = str(meta.repo_path or "").strip()
-    if _is_browser_local_repo_path(repo_path_raw):
+    async def _run_browser_local() -> OpenFileResponse:
         result = await _run_browser_local_git_tool(
             tool_name="open_file",
             project_id=req.project_id,
@@ -1515,6 +1532,9 @@ async def open_file(req: OpenFileRequest, ctx: Any = None) -> OpenFileResponse:
             content=content,
         )
 
+    if _is_browser_local_repo_path(repo_path_raw):
+        return await _run_browser_local()
+
     root = Path(repo_path_raw) if repo_path_raw else None
     if root and root.exists():
         repo_path = str(root)
@@ -1548,6 +1568,22 @@ async def open_file(req: OpenFileRequest, ctx: Any = None) -> OpenFileResponse:
         text, _ = _limit_text(text, req.max_chars)
         s, e, sliced = _line_slice(text, req.start_line, req.end_line)
         return OpenFileResponse(path=req.path, ref=req.ref or req.branch, start_line=s, end_line=e, content=sliced)
+
+    if _ctx_field(ctx, "user_id"):
+        logger.info(
+            "open_file.browser_local_fallback project=%s path=%s reason=no_local_repo_no_remote_connector",
+            req.project_id,
+            req.path,
+        )
+        try:
+            return await _run_browser_local()
+        except Exception as err:
+            logger.warning(
+                "open_file.browser_local_fallback_failed project=%s path=%s err=%s",
+                req.project_id,
+                req.path,
+                err,
+            )
 
     raise FileNotFoundError(f"File not found and no remote repository connector available: {req.path}")
 
@@ -1688,15 +1724,67 @@ async def chroma_open_chunks(req: ChromaOpenChunksRequest) -> ChromaOpenChunksRe
     return ChromaOpenChunksResponse(result=out)
 
 
-async def repo_tree(req: RepoTreeRequest) -> RepoTreeResponse:
+async def repo_tree(req: RepoTreeRequest, ctx: Any = None) -> RepoTreeResponse:
     req.max_depth = max(1, min(req.max_depth, 12))
     req.max_entries = max(1, min(req.max_entries, 3000))
 
     meta = await get_project_metadata(req.project_id)
     branch = (req.branch or meta.default_branch or "main").strip() or "main"
     base_rel = req.path.strip("/")
+    repo_path_raw = str(meta.repo_path or "").strip()
 
-    root = Path(meta.repo_path) if meta.repo_path else None
+    async def _run_browser_local() -> RepoTreeResponse:
+        result = await _run_browser_local_git_tool(
+            tool_name="repo_tree",
+            project_id=req.project_id,
+            ctx=ctx,
+            args={
+                "branch": branch,
+                "path": base_rel,
+                "max_depth": req.max_depth,
+                "include_files": req.include_files,
+                "include_dirs": req.include_dirs,
+                "max_entries": req.max_entries,
+                "glob": req.glob,
+            },
+            timeout_sec=45,
+        )
+        raw_entries = result.get("entries")
+        nodes: list[RepoTreeNode] = []
+        if isinstance(raw_entries, list):
+            for item in raw_entries:
+                if not isinstance(item, dict):
+                    continue
+                node_type = str(item.get("type") or "").strip().lower()
+                if node_type not in {"file", "dir"}:
+                    continue
+                try:
+                    depth = int(item.get("depth") or 1)
+                except Exception:
+                    depth = 1
+                size_raw = item.get("size")
+                try:
+                    size = int(size_raw) if size_raw is not None else None
+                except Exception:
+                    size = None
+                nodes.append(
+                    RepoTreeNode(
+                        path=str(item.get("path") or ""),
+                        type="file" if node_type == "file" else "dir",
+                        depth=max(1, depth),
+                        size=size,
+                    )
+                )
+                if len(nodes) >= req.max_entries:
+                    break
+        root_out = str(result.get("root") or base_rel or ".")
+        branch_out = str(result.get("branch") or branch)
+        return RepoTreeResponse(root=root_out, branch=branch_out, entries=nodes)
+
+    if _is_browser_local_repo_path(repo_path_raw):
+        return await _run_browser_local()
+
+    root = Path(repo_path_raw) if repo_path_raw else None
     entries: list[RepoTreeNode] = []
 
     if root and root.exists():
@@ -1781,6 +1869,21 @@ async def repo_tree(req: RepoTreeRequest) -> RepoTreeResponse:
                     depth = rel_from_base.count("/") + 1
                     if depth <= req.max_depth:
                         entries.append(RepoTreeNode(path=d, type="dir", depth=depth, size=None))
+        elif _ctx_field(ctx, "user_id"):
+            logger.info(
+                "repo_tree.browser_local_fallback project=%s branch=%s reason=no_local_repo_no_remote_connector",
+                req.project_id,
+                branch,
+            )
+            try:
+                return await _run_browser_local()
+            except Exception as err:
+                logger.warning(
+                    "repo_tree.browser_local_fallback_failed project=%s branch=%s err=%s",
+                    req.project_id,
+                    branch,
+                    err,
+                )
 
     entries = sorted(entries, key=lambda e: (e.path.count("/"), e.path, e.type))[: req.max_entries]
     return RepoTreeResponse(root=base_rel or ".", branch=branch, entries=entries)

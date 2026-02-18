@@ -170,19 +170,48 @@ export async function executeLocalToolJob(job: LocalToolJobPayload): Promise<unk
         },
     }
 
-    let runFn: ((args: Record<string, unknown>, context: Record<string, unknown>, helpers: any) => unknown) | null = null
-    try {
+    function rewriteRunSymbolCollisions(src: string): string {
+        return src
+            .replace(/\basync\s+function\s+run\s*\(/g, "async function __tool_run_fn__(")
+            .replace(/\bfunction\s+run\s*\(/g, "function __tool_run_fn__(")
+            .replace(/\bconst\s+run\s*=/g, "const __tool_run_var__ =")
+            .replace(/\blet\s+run\s*=/g, "let __tool_run_var__ =")
+            .replace(/\bvar\s+run\s*=/g, "var __tool_run_var__ =")
+    }
+
+    function compileRunFn(source: string): ((args: Record<string, unknown>, context: Record<string, unknown>, helpers: any) => unknown) {
         const factory = new Function(
             `"use strict";
-${code}
-if (typeof run !== "function") {
+const __toolModule = { exports: {} };
+let exports = __toolModule.exports;
+const module = __toolModule;
+${source}
+const __runCandidates = [];
+if (typeof run === "function") __runCandidates.push(run);
+if (typeof __tool_run_fn__ === "function") __runCandidates.push(__tool_run_fn__);
+if (typeof __tool_run_var__ === "function") __runCandidates.push(__tool_run_var__);
+if (typeof module.exports === "function") __runCandidates.push(module.exports);
+if (module.exports && typeof module.exports.run === "function") __runCandidates.push(module.exports.run);
+if (typeof exports === "function") __runCandidates.push(exports);
+if (exports && typeof exports.run === "function") __runCandidates.push(exports.run);
+if (!__runCandidates.length) {
   throw new Error("Local custom tool must define function run(args, context, helpers)");
 }
-return run;`
+return __runCandidates[__runCandidates.length - 1];`
         )
-        runFn = factory() as (args: Record<string, unknown>, context: Record<string, unknown>, helpers: any) => unknown
-    } catch (err) {
-        throw new Error(`Failed to load local custom tool code: ${errText(err)}`)
+        return factory() as (args: Record<string, unknown>, context: Record<string, unknown>, helpers: any) => unknown
+    }
+
+    let runFn: ((args: Record<string, unknown>, context: Record<string, unknown>, helpers: any) => unknown) | null = null
+    try {
+        runFn = compileRunFn(code)
+    } catch (firstErr) {
+        try {
+            runFn = compileRunFn(rewriteRunSymbolCollisions(code))
+        } catch (secondErr) {
+            const detail = `${errText(firstErr)} | ${errText(secondErr)}`
+            throw new Error(`Failed to load local custom tool code: ${detail}`)
+        }
     }
     if (!runFn) throw new Error("Local custom tool runtime failed to initialize")
 
