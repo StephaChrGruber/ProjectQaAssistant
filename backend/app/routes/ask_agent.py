@@ -1,5 +1,6 @@
 import logging
 import re
+import hashlib
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -44,6 +45,45 @@ _DEFAULT_STRONG_INTENT_MARKERS = (
     "document",
     "explain deeply",
 )
+_CONTINUE_INTENT_MARKERS = (
+    "continue",
+    "go on",
+    "proceed",
+    "carry on",
+    "next",
+    "use assumptions",
+)
+_CONFLICT_SIGNAL_MARKERS = (
+    "actually",
+    "correction",
+    "updated",
+    "update",
+    "changed",
+    "instead",
+    "not anymore",
+    "different",
+    "clarification",
+)
+_DESTRUCTIVE_INTENT_MARKERS = (
+    "commit",
+    "push",
+    "pull",
+    "checkout",
+    "switch branch",
+    "create branch",
+    "delete",
+    "remove",
+    "overwrite",
+    "write",
+    "update docs",
+    "create issue",
+)
+_DEFAULT_CLARIFICATION_POLICY = {
+    "enabled": True,
+    "budget_per_goal": 3,
+    "continue_forces_progress": True,
+    "allow_repeat_on_conflict": True,
+}
 _SOURCE_CONFIDENCE_BY_TOOL = {
     "open_file": 0.96,
     "git_show_file_at_ref": 0.95,
@@ -140,6 +180,30 @@ def _extract_memory_policy(project: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _extract_clarification_policy(project: dict[str, Any]) -> dict[str, Any]:
+    extra = _project_extra(project)
+    raw = extra.get("clarification")
+    if not isinstance(raw, dict):
+        raw = {}
+    enabled = bool(raw.get("enabled", _DEFAULT_CLARIFICATION_POLICY["enabled"]))
+    budget_per_goal = max(
+        1,
+        min(int(raw.get("budget_per_goal") or _DEFAULT_CLARIFICATION_POLICY["budget_per_goal"]), 10),
+    )
+    continue_forces_progress = bool(
+        raw.get("continue_forces_progress", _DEFAULT_CLARIFICATION_POLICY["continue_forces_progress"])
+    )
+    allow_repeat_on_conflict = bool(
+        raw.get("allow_repeat_on_conflict", _DEFAULT_CLARIFICATION_POLICY["allow_repeat_on_conflict"])
+    )
+    return {
+        "enabled": enabled,
+        "budget_per_goal": budget_per_goal,
+        "continue_forces_progress": continue_forces_progress,
+        "allow_repeat_on_conflict": allow_repeat_on_conflict,
+    }
+
+
 def _route_intent(question: str, routing_cfg: dict[str, Any]) -> str:
     q = _as_text(question).lower()
     if not q:
@@ -210,6 +274,7 @@ async def _project_llm_defaults(
         "security_policy": _extract_security_policy(project),
         "routing": _extract_llm_routing(project),
         "memory_policy": _extract_memory_policy(project),
+        "clarification_policy": _extract_clarification_policy(project),
         "project": project,
     }
 
@@ -455,6 +520,300 @@ def _as_text(v: Any) -> str:
     return str(v or "").strip()
 
 
+def _iso_utc(dt: datetime | None = None) -> str:
+    value = dt or datetime.utcnow()
+    return value.isoformat() + "Z"
+
+
+def _normalize_question_key(question: str) -> str:
+    text = _as_text(question).lower()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"[^a-z0-9 _:/?.,()-]", "", text)
+    return text[:220]
+
+
+def _looks_like_continue_request(text: str) -> bool:
+    q = _as_text(text).lower()
+    if not q:
+        return False
+    if q in {"ok", "continue", "go on", "proceed", "next"}:
+        return True
+    return any(marker in q for marker in _CONTINUE_INTENT_MARKERS)
+
+
+def _has_conflict_signal(text: str) -> bool:
+    q = _as_text(text).lower()
+    if not q:
+        return False
+    return any(marker in q for marker in _CONFLICT_SIGNAL_MARKERS)
+
+
+def _looks_destructive_intent(text: str) -> bool:
+    q = _as_text(text).lower()
+    if not q:
+        return False
+    return any(marker in q for marker in _DESTRUCTIVE_INTENT_MARKERS)
+
+
+def _goal_id_from_text(text: str) -> str:
+    norm = _normalize_question_key(text) or _as_text(text).lower()
+    if not norm:
+        norm = "goal"
+    digest = hashlib.sha1(norm.encode("utf-8")).hexdigest()[:12]
+    return f"goal_{digest}"
+
+
+def _derive_goal_id(
+    *,
+    user_text: str,
+    active_goal_id: str | None = None,
+    pending_goal_id: str | None = None,
+    continue_intent: bool = False,
+) -> str:
+    pending = _as_text(pending_goal_id)
+    if pending:
+        return pending
+    active = _as_text(active_goal_id)
+    if continue_intent and active:
+        return active
+    q = _as_text(user_text)
+    if not q and active:
+        return active
+    if active and len(q) <= 40 and not any(token in q.lower() for token in ("create", "delete", "change", "switch", "new")):
+        return active
+    return _goal_id_from_text(q)
+
+
+def _normalize_clarification_state(raw: Any) -> dict[str, Any]:
+    state = raw if isinstance(raw, dict) else {}
+    out: dict[str, Any] = {
+        "active_goal_id": _as_text(state.get("active_goal_id")),
+        "goals": [],
+        "updated_at": _as_text(state.get("updated_at")) or _iso_utc(),
+    }
+
+    goals_raw = state.get("goals")
+    seen: set[str] = set()
+    if isinstance(goals_raw, list):
+        for item in goals_raw:
+            if not isinstance(item, dict):
+                continue
+            goal_id = _as_text(item.get("goal_id"))
+            if not goal_id or goal_id in seen:
+                continue
+            seen.add(goal_id)
+
+            open_rows: list[dict[str, Any]] = []
+            for row in item.get("open_questions") or []:
+                if not isinstance(row, dict):
+                    continue
+                row_id = _as_text(row.get("id"))
+                if not row_id:
+                    continue
+                open_rows.append(
+                    {
+                        "id": row_id,
+                        "question": _as_text(row.get("question")),
+                        "question_key": _as_text(row.get("question_key")) or _normalize_question_key(_as_text(row.get("question"))),
+                        "created_at": _as_text(row.get("created_at")) or _iso_utc(),
+                    }
+                )
+                if len(open_rows) >= 24:
+                    break
+
+            answered_rows: list[dict[str, Any]] = []
+            for row in item.get("answered_questions") or []:
+                if not isinstance(row, dict):
+                    continue
+                answered_rows.append(
+                    {
+                        "id": _as_text(row.get("id")),
+                        "question": _as_text(row.get("question")),
+                        "question_key": _as_text(row.get("question_key")) or _normalize_question_key(_as_text(row.get("question"))),
+                        "answer": _as_text(row.get("answer")),
+                        "answered_at": _as_text(row.get("answered_at")) or _iso_utc(),
+                    }
+                )
+                if len(answered_rows) >= 64:
+                    break
+
+            try:
+                asked_count = int(item.get("asked_count") or 0)
+            except Exception:
+                asked_count = 0
+            try:
+                answered_count = int(item.get("answered_count") or 0)
+            except Exception:
+                answered_count = 0
+
+            out["goals"].append(
+                {
+                    "goal_id": goal_id,
+                    "goal_text": _as_text(item.get("goal_text")),
+                    "created_at": _as_text(item.get("created_at")) or _iso_utc(),
+                    "updated_at": _as_text(item.get("updated_at")) or _iso_utc(),
+                    "asked_count": max(0, asked_count),
+                    "answered_count": max(0, answered_count),
+                    "open_questions": open_rows,
+                    "answered_questions": answered_rows,
+                    "blocked_reason": _as_text(item.get("blocked_reason")) or None,
+                }
+            )
+            if len(out["goals"]) >= 24:
+                break
+    return out
+
+
+def _goal_ref(state: dict[str, Any], goal_id: str, *, goal_text: str = "") -> dict[str, Any]:
+    goals = state.get("goals")
+    if not isinstance(goals, list):
+        goals = []
+        state["goals"] = goals
+    for item in goals:
+        if isinstance(item, dict) and _as_text(item.get("goal_id")) == goal_id:
+            item["updated_at"] = _iso_utc()
+            if goal_text and not _as_text(item.get("goal_text")):
+                item["goal_text"] = goal_text[:240]
+            return item
+    row = {
+        "goal_id": goal_id,
+        "goal_text": _as_text(goal_text)[:240],
+        "created_at": _iso_utc(),
+        "updated_at": _iso_utc(),
+        "asked_count": 0,
+        "answered_count": 0,
+        "open_questions": [],
+        "answered_questions": [],
+        "blocked_reason": None,
+    }
+    goals.insert(0, row)
+    del goals[24:]
+    return row
+
+
+def _latest_answer_for_question(goal: dict[str, Any], question_key: str) -> str | None:
+    key = _as_text(question_key)
+    if not key:
+        return None
+    rows = goal.get("answered_questions")
+    if not isinstance(rows, list):
+        return None
+    for row in reversed(rows):
+        if not isinstance(row, dict):
+            continue
+        if _as_text(row.get("question_key")) != key:
+            continue
+        answer = _as_text(row.get("answer"))
+        if answer:
+            return answer
+    return None
+
+
+def _record_answered_pending_question(
+    state: dict[str, Any],
+    *,
+    goal_id: str,
+    pending_question: dict[str, Any],
+    answer: str,
+) -> None:
+    goal = _goal_ref(state, goal_id, goal_text=_as_text(pending_question.get("question")))
+    pending_id = _as_text(pending_question.get("id"))
+    question = _as_text(pending_question.get("question"))
+    question_key = _as_text(pending_question.get("question_key")) or _normalize_question_key(question)
+
+    open_rows = goal.get("open_questions")
+    if not isinstance(open_rows, list):
+        open_rows = []
+        goal["open_questions"] = open_rows
+    goal["open_questions"] = [
+        row
+        for row in open_rows
+        if isinstance(row, dict)
+        and _as_text(row.get("id")) != pending_id
+        and _as_text(row.get("question_key")) != question_key
+    ]
+
+    answered_rows = goal.get("answered_questions")
+    if not isinstance(answered_rows, list):
+        answered_rows = []
+        goal["answered_questions"] = answered_rows
+    answered_rows.append(
+        {
+            "id": pending_id,
+            "question": question,
+            "question_key": question_key,
+            "answer": _as_text(answer),
+            "answered_at": _iso_utc(),
+        }
+    )
+    del answered_rows[:-64]
+    goal["answered_count"] = max(0, int(goal.get("answered_count") or 0) + 1)
+    goal["blocked_reason"] = None
+    goal["updated_at"] = _iso_utc()
+    state["active_goal_id"] = goal_id
+    state["updated_at"] = _iso_utc()
+
+
+def _record_open_question(
+    state: dict[str, Any],
+    *,
+    goal_id: str,
+    pending_question: dict[str, Any],
+    budget_per_goal: int,
+) -> tuple[bool, str]:
+    goal = _goal_ref(state, goal_id, goal_text=_as_text(pending_question.get("question")))
+    question = _as_text(pending_question.get("question"))
+    question_key = _as_text(pending_question.get("question_key")) or _normalize_question_key(question)
+    pending_id = _as_text(pending_question.get("id"))
+
+    if _latest_answer_for_question(goal, question_key):
+        goal["blocked_reason"] = "repeat_question_already_answered"
+        goal["updated_at"] = _iso_utc()
+        state["updated_at"] = _iso_utc()
+        return False, "repeat_question_already_answered"
+
+    open_rows = goal.get("open_questions")
+    if not isinstance(open_rows, list):
+        open_rows = []
+        goal["open_questions"] = open_rows
+    for row in open_rows:
+        if not isinstance(row, dict):
+            continue
+        if _as_text(row.get("question_key")) == question_key:
+            row["id"] = pending_id
+            row["question"] = question
+            row["created_at"] = _as_text(row.get("created_at")) or _iso_utc()
+            goal["updated_at"] = _iso_utc()
+            goal["blocked_reason"] = None
+            state["updated_at"] = _iso_utc()
+            return True, "already_open"
+
+    asked_count = max(0, int(goal.get("asked_count") or 0))
+    if asked_count >= max(1, budget_per_goal):
+        goal["blocked_reason"] = "clarification_budget_exhausted"
+        goal["updated_at"] = _iso_utc()
+        state["updated_at"] = _iso_utc()
+        return False, "clarification_budget_exhausted"
+
+    open_rows.append(
+        {
+            "id": pending_id,
+            "question": question,
+            "question_key": question_key,
+            "created_at": _iso_utc(),
+        }
+    )
+    del open_rows[:-24]
+    goal["asked_count"] = asked_count + 1
+    goal["blocked_reason"] = None
+    goal["updated_at"] = _iso_utc()
+    state["active_goal_id"] = goal_id
+    state["updated_at"] = _iso_utc()
+    return True, "recorded"
+
+
 def _normalize_pending_user_question(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
@@ -489,6 +848,15 @@ def _normalize_pending_user_question(raw: Any) -> dict[str, Any] | None:
         "answer_mode": answer_mode,
         "options": options,
     }
+    goal_id = _as_text(raw.get("goal_id"))
+    if goal_id:
+        out["goal_id"] = goal_id
+    question_key = _as_text(raw.get("question_key")) or _normalize_question_key(question)
+    if question_key:
+        out["question_key"] = question_key
+    repeat_of = _as_text(raw.get("repeat_of"))
+    if repeat_of:
+        out["repeat_of"] = repeat_of
     created = raw.get("created_at")
     if isinstance(created, datetime):
         out["created_at"] = created.isoformat() + "Z"
@@ -1171,11 +1539,20 @@ async def ask_agent(req: AskReq):
 
     chat_doc = await db["chats"].find_one(
         {"chat_id": chat_id},
-        {"tool_policy": 1, "llm_profile_id": 1, "pending_user_question": 1, "memory_summary": 1, "task_state": 1},
+        {
+            "tool_policy": 1,
+            "llm_profile_id": 1,
+            "pending_user_question": 1,
+            "memory_summary": 1,
+            "task_state": 1,
+            "clarification_state": 1,
+        },
     )
     active_pending_question = _normalize_pending_user_question((chat_doc or {}).get("pending_user_question"))
+    clarification_state = _normalize_clarification_state((chat_doc or {}).get("clarification_state"))
 
-    user_text = _as_text(req.question)
+    raw_user_text = _as_text(req.question)
+    user_text = raw_user_text
     user_meta: dict[str, Any] | None = None
     if active_pending_question:
         resolved_answer = _resolve_pending_user_answer(req, active_pending_question)
@@ -1186,10 +1563,42 @@ async def ask_agent(req: AskReq):
                 "question": active_pending_question.get("question"),
                 "answer_mode": active_pending_question.get("answer_mode"),
                 "options": active_pending_question.get("options") or [],
+                "goal_id": active_pending_question.get("goal_id"),
+                "question_key": active_pending_question.get("question_key"),
             }
         }
     if not user_text:
         raise HTTPException(status_code=400, detail="question is required")
+
+    continue_intent = bool(not active_pending_question and _looks_like_continue_request(raw_user_text))
+    conflict_signal = _has_conflict_signal(raw_user_text)
+    pending_goal_id = _as_text((active_pending_question or {}).get("goal_id"))
+    derived_goal_id = _derive_goal_id(
+        user_text=_as_text((active_pending_question or {}).get("question")) or user_text,
+        active_goal_id=_as_text(clarification_state.get("active_goal_id")),
+        pending_goal_id=pending_goal_id,
+        continue_intent=continue_intent,
+    )
+    goal = _goal_ref(clarification_state, derived_goal_id, goal_text=user_text)
+    clarification_state["active_goal_id"] = derived_goal_id
+    clarification_state["updated_at"] = _iso_utc(now)
+
+    if active_pending_question:
+        _record_answered_pending_question(
+            clarification_state,
+            goal_id=derived_goal_id,
+            pending_question=active_pending_question,
+            answer=user_text,
+        )
+    clarification_meta = {
+        "goal_id": derived_goal_id,
+        "continue_mode": continue_intent,
+        "conflict_signal": conflict_signal,
+    }
+    if user_meta:
+        user_meta["clarification"] = clarification_meta
+    else:
+        user_meta = {"clarification": clarification_meta}
 
     # append user message
     user_msg = {"role": "user", "content": user_text, "ts": now}
@@ -1201,6 +1610,7 @@ async def ask_agent(req: AskReq):
             "updated_at": now,
             "last_message_at": now,
             "last_message_preview": user_text[:160],
+            "clarification_state": clarification_state,
         },
         "$setOnInsert": {"title": user_text[:60] or "New chat"},
     }
@@ -1249,6 +1659,58 @@ async def ask_agent(req: AskReq):
         effective_tool_policy["approved_tools"] = approved_tools
     grounding_policy = defaults.get("grounding_policy") or {"require_sources": True, "min_sources": 1}
     memory_policy = defaults.get("memory_policy") or {}
+    clarification_policy = defaults.get("clarification_policy") or dict(_DEFAULT_CLARIFICATION_POLICY)
+    budget_per_goal = max(1, int(clarification_policy.get("budget_per_goal") or 3))
+    goal = _goal_ref(clarification_state, derived_goal_id, goal_text=user_text)
+    goal_asked_count = max(0, int(goal.get("asked_count") or 0))
+    remaining_budget = max(0, budget_per_goal - goal_asked_count)
+    destructive_intent = _looks_destructive_intent(raw_user_text or user_text)
+    disable_request_user_input_reason = ""
+    if bool(clarification_policy.get("enabled", True)):
+        if (
+            continue_intent
+            and bool(clarification_policy.get("continue_forces_progress", True))
+            and not destructive_intent
+        ):
+            disable_request_user_input_reason = "continue_forces_progress"
+        elif remaining_budget <= 0:
+            disable_request_user_input_reason = "clarification_budget_exhausted"
+
+    answered_questions: list[dict[str, str]] = []
+    for row in (goal.get("answered_questions") or []):
+        if not isinstance(row, dict):
+            continue
+        q_key = _as_text(row.get("question_key"))
+        q_answer = _as_text(row.get("answer"))
+        if not q_key or not q_answer:
+            continue
+        answered_questions.append(
+            {
+                "question_key": q_key,
+                "answer": q_answer,
+                "question": _as_text(row.get("question")),
+            }
+        )
+        if len(answered_questions) >= 64:
+            break
+
+    interaction_policy = {
+        "goal_id": derived_goal_id,
+        "clarification_enabled": bool(clarification_policy.get("enabled", True)),
+        "clarification_budget_per_goal": budget_per_goal,
+        "clarification_asked_count": goal_asked_count,
+        "clarification_budget_remaining": remaining_budget,
+        "continue_mode": continue_intent,
+        "continue_forces_progress": bool(clarification_policy.get("continue_forces_progress", True)),
+        "destructive_intent": destructive_intent,
+        "disable_request_user_input": bool(disable_request_user_input_reason),
+        "disable_reason": disable_request_user_input_reason,
+        "allow_repeat_on_conflict": bool(clarification_policy.get("allow_repeat_on_conflict", True)),
+        "conflict_signal": conflict_signal,
+        "answered_questions": answered_questions,
+    }
+    if disable_request_user_input_reason:
+        effective_tool_policy["disable_request_user_input"] = True
 
     conversation_messages_for_agent: list[dict[str, str]] = []
     hierarchical_context_for_agent = ""
@@ -1311,7 +1773,7 @@ async def ask_agent(req: AskReq):
         hierarchical_snapshot = {}
 
     logger.info(
-        "ask_agent.start project=%s branch=%s user=%s chat_id=%s role=%s profile_id=%s provider=%s model=%s pending=%s policy={read_only_only:%s allowed:%s blocked:%s approved:%s}",
+        "ask_agent.start project=%s branch=%s user=%s chat_id=%s role=%s profile_id=%s provider=%s model=%s pending=%s policy={read_only_only:%s allowed:%s blocked:%s approved:%s} clar={goal:%s asked:%s remaining:%s continue:%s destructive:%s disable:%s reason:%s}",
         req.project_id,
         req.branch,
         req.user,
@@ -1325,6 +1787,13 @@ async def ask_agent(req: AskReq):
         len(_as_tool_name_list(effective_tool_policy.get("allowed_tools"))),
         len(_as_tool_name_list(effective_tool_policy.get("blocked_tools"))),
         len(_as_tool_name_list(effective_tool_policy.get("approved_tools"))),
+        derived_goal_id,
+        goal_asked_count,
+        remaining_budget,
+        continue_intent,
+        destructive_intent,
+        bool(disable_request_user_input_reason),
+        disable_request_user_input_reason,
     )
     logger.info(
         "ask_agent.memory_context project=%s chat_id=%s recent_messages=%s retrieved=%s conflicts=%s context_chars=%s",
@@ -1386,6 +1855,7 @@ async def ask_agent(req: AskReq):
             tool_policy=effective_tool_policy,
             prior_messages=conversation_messages_for_agent,
             system_context=hierarchical_context_for_agent,
+            interaction_policy=interaction_policy,
             max_tool_calls=int(defaults.get("max_tool_calls") or 12),
             include_tool_events=True,
             runtime=runtime,
@@ -1400,6 +1870,45 @@ async def ask_agent(req: AskReq):
         answer = str((agent_out or {}).get("answer") or "")
         tool_events = (agent_out or {}).get("tool_events") or []
         pending_user_question = _normalize_pending_user_question((agent_out or {}).get("pending_user_question"))
+        if pending_user_question:
+            pending_user_question["goal_id"] = pending_user_question.get("goal_id") or derived_goal_id
+            pending_user_question["question_key"] = _as_text(pending_user_question.get("question_key")) or _normalize_question_key(
+                _as_text(pending_user_question.get("question"))
+            )
+            repeat_answer = _latest_answer_for_question(goal, _as_text(pending_user_question.get("question_key")))
+            repeat_allowed = bool(clarification_policy.get("allow_repeat_on_conflict", True)) and conflict_signal
+            if repeat_answer and not repeat_allowed:
+                logger.info(
+                    "ask_agent.clarification_repeat_suppressed project=%s chat_id=%s goal=%s question_key=%s",
+                    req.project_id,
+                    chat_id,
+                    derived_goal_id,
+                    _as_text(pending_user_question.get("question_key")),
+                )
+                pending_user_question = None
+                if not _as_text(answer):
+                    answer = "Proceeding with the existing answer already provided for that clarification."
+            else:
+                accepted, state_reason = _record_open_question(
+                    clarification_state,
+                    goal_id=derived_goal_id,
+                    pending_question=pending_user_question,
+                    budget_per_goal=budget_per_goal,
+                )
+                if not accepted:
+                    logger.info(
+                        "ask_agent.clarification_rejected project=%s chat_id=%s goal=%s reason=%s",
+                        req.project_id,
+                        chat_id,
+                        derived_goal_id,
+                        state_reason,
+                    )
+                    pending_user_question = None
+                    if state_reason == "clarification_budget_exhausted":
+                        answer = (
+                            (answer or "").strip()
+                            + "\n\nClarification budget for this goal is exhausted. Continuing with available context."
+                        ).strip()
         awaiting_user_input = pending_user_question is not None
         logger.info(
             "ask_agent.agent_done project=%s chat_id=%s tools=%s errors=%s awaiting_user_input=%s",
@@ -1455,6 +1964,31 @@ async def ask_agent(req: AskReq):
                 answer = str((agent_out or {}).get("answer") or "")
                 tool_events = (agent_out or {}).get("tool_events") or []
                 pending_user_question = _normalize_pending_user_question((agent_out or {}).get("pending_user_question"))
+                if pending_user_question:
+                    pending_user_question["goal_id"] = pending_user_question.get("goal_id") or derived_goal_id
+                    pending_user_question["question_key"] = _as_text(
+                        pending_user_question.get("question_key")
+                    ) or _normalize_question_key(_as_text(pending_user_question.get("question")))
+                    repeat_answer = _latest_answer_for_question(goal, _as_text(pending_user_question.get("question_key")))
+                    repeat_allowed = bool(clarification_policy.get("allow_repeat_on_conflict", True)) and conflict_signal
+                    if repeat_answer and not repeat_allowed:
+                        pending_user_question = None
+                        if not _as_text(answer):
+                            answer = "Proceeding with the existing answer already provided for that clarification."
+                    else:
+                        accepted, state_reason = _record_open_question(
+                            clarification_state,
+                            goal_id=derived_goal_id,
+                            pending_question=pending_user_question,
+                            budget_per_goal=budget_per_goal,
+                        )
+                        if not accepted:
+                            pending_user_question = None
+                            if state_reason == "clarification_budget_exhausted":
+                                answer = (
+                                    (answer or "").strip()
+                                    + "\n\nClarification budget for this goal is exhausted. Continuing with available context."
+                                ).strip()
                 awaiting_user_input = pending_user_question is not None
                 logger.info(
                     "ask_agent.failover_done project=%s chat_id=%s tools=%s errors=%s awaiting_user_input=%s",
@@ -1582,11 +2116,23 @@ async def ask_agent(req: AskReq):
         tool_error_details.append(f"{tool_name}:{code}:{msg[:120]}")
         if len(tool_error_details) >= 8:
             break
+    clarification_state["active_goal_id"] = derived_goal_id
+    clarification_state["updated_at"] = _iso_utc(done)
+    goal_state_current = _goal_ref(clarification_state, derived_goal_id)
     assistant_meta = {
         "tool_summary": tool_summary,
         "sources": answer_sources,
         "grounded": grounded_ok,
         "pending_user_question": pending_user_question,
+        "clarification": {
+            "goal_id": derived_goal_id,
+            "policy": interaction_policy,
+            "state": {
+                "asked_count": int((goal_state_current.get("asked_count") or 0)),
+                "answered_count": int((goal_state_current.get("answered_count") or 0)),
+                "open_questions": len(goal_state_current.get("open_questions") or []),
+            },
+        },
         "memory": {
             "hierarchical_snapshot": hierarchical_snapshot,
         },
@@ -1614,6 +2160,7 @@ async def ask_agent(req: AskReq):
                 "last_message_at": done,
                 "last_message_preview": answer[:160],
                 "pending_user_question": pending_user_question,
+                "clarification_state": clarification_state,
                 "hierarchical_memory": {
                     "snapshot": hierarchical_snapshot,
                     "updated_at": done.isoformat() + "Z",
@@ -1701,4 +2248,5 @@ async def ask_agent(req: AskReq):
         "task_state": task_state,
         "hierarchical_memory": {"snapshot": hierarchical_snapshot},
         "pending_user_question": pending_user_question,
+        "clarification_state": clarification_state,
     }

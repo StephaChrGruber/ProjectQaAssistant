@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
@@ -25,6 +26,40 @@ _DISCOVERY_TOOLS = {"list_tools", "search_tools", "get_tool_details"}
 
 def _as_text(v: Any) -> str:
     return str(v or "").strip()
+
+
+def _normalize_question_key(question: str) -> str:
+    text = _as_text(question).lower()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"[^a-z0-9 _:/?.,()-]", "", text)
+    return text[:220]
+
+
+def _interaction_hint(policy: dict[str, Any] | None) -> str:
+    p = policy or {}
+    if not isinstance(p, dict) or not p:
+        return ""
+    lines: list[str] = ["Clarification policy for this turn:"]
+    goal_id = _as_text(p.get("goal_id"))
+    if goal_id:
+        lines.append(f"- goal_id = {goal_id}")
+    try:
+        remaining = int(p.get("clarification_budget_remaining"))
+    except Exception:
+        remaining = -1
+    if remaining >= 0:
+        lines.append(f"- clarification_budget_remaining = {remaining}")
+    if bool(p.get("continue_mode")):
+        lines.append("- continue_mode = true (proceed with assumptions unless destructive action is needed)")
+    if bool(p.get("disable_request_user_input")):
+        lines.append(f"- request_user_input is disabled for this turn ({_as_text(p.get('disable_reason')) or 'policy'})")
+    if bool(p.get("conflict_signal")):
+        lines.append("- conflict_signal = true (repeat clarification may be allowed)")
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines) + "\n\n"
 
 
 def _base(llm_base_url: str | None = None) -> str:
@@ -53,8 +88,16 @@ def _policy_hint(policy: dict[str, Any] | None) -> str:
     return "\n".join(lines) + "\n\n"
 
 
-def _system_prompt(project_id: str, branch: str, user_id: str, runtime: ToolRuntime, policy: dict[str, Any] | None) -> str:
+def _system_prompt(
+    project_id: str,
+    branch: str,
+    user_id: str,
+    runtime: ToolRuntime,
+    policy: dict[str, Any] | None,
+    interaction_policy: dict[str, Any] | None = None,
+) -> str:
     policy_text = _policy_hint(policy)
+    interaction_text = _interaction_hint(interaction_policy)
     return (
         "You are an onboarding + developer assistant for a codebase.\n"
         f"Context:\n"
@@ -62,6 +105,7 @@ def _system_prompt(project_id: str, branch: str, user_id: str, runtime: ToolRunt
         f"- branch = {branch}\n"
         f"- user = {user_id}\n\n"
         f"{policy_text}"
+        f"{interaction_text}"
         "When you need tools, reply with EXACTLY one JSON object (no markdown, no extra text):\n"
         "{\n"
         '  "tool": "<tool_name>",\n'
@@ -306,6 +350,7 @@ class Agent2:
         llm_model: str | None = None,
         chat_id: str | None = None,
         tool_policy: dict[str, Any] | None = None,
+        interaction_policy: dict[str, Any] | None = None,
         prior_messages: list[dict[str, str]] | None = None,
         system_context: str | None = None,
         runtime: ToolRuntime | None = None,
@@ -321,12 +366,20 @@ class Agent2:
         self.llm_model = llm_model
         self.chat_id = chat_id
         self.tool_policy = tool_policy or {}
+        self.interaction_policy = interaction_policy or {}
         self.prior_messages = prior_messages or []
         self.system_context = _as_text(system_context)
         self.runtime = runtime or _RUNTIME
 
     async def run(self, user_text: str) -> dict[str, Any]:
-        system_prompt = _system_prompt(self.project_id, self.branch, self.user_id, self.runtime, self.tool_policy)
+        system_prompt = _system_prompt(
+            self.project_id,
+            self.branch,
+            self.user_id,
+            self.runtime,
+            self.tool_policy,
+            self.interaction_policy,
+        )
         messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
 
         if isinstance(self.prior_messages, list):
@@ -356,14 +409,42 @@ class Agent2:
         tool_events: list[dict[str, Any]] = []
         no_evidence_cycles = 0
         required_action_tools = _required_action_tools(user_text)
+        answered_map: dict[str, str] = {}
+        for row in (self.interaction_policy.get("answered_questions") or []):
+            if not isinstance(row, dict):
+                continue
+            q_key = _normalize_question_key(_as_text(row.get("question_key")) or _as_text(row.get("question")))
+            q_answer = _as_text(row.get("answer"))
+            if q_key and q_answer:
+                answered_map[q_key] = q_answer
+
+        try:
+            clarification_budget_remaining = int(self.interaction_policy.get("clarification_budget_remaining"))
+        except Exception:
+            clarification_budget_remaining = -1
+        clarification_disable = bool(self.interaction_policy.get("disable_request_user_input"))
+        clarification_disable_reason = _as_text(self.interaction_policy.get("disable_reason"))
+        continue_mode = bool(self.interaction_policy.get("continue_mode"))
+        destructive_intent = bool(self.interaction_policy.get("destructive_intent"))
+        allow_repeat_on_conflict = bool(self.interaction_policy.get("allow_repeat_on_conflict", True))
+        conflict_signal = bool(self.interaction_policy.get("conflict_signal"))
+        clarification_calls_this_run = 0
+        clarification_block_cycles = 0
         logger.info(
-            "agent2.run.start project=%s branch=%s user=%s chat_id=%s required_action_tools=%s prompt_messages=%s",
+            "agent2.run.start project=%s branch=%s user=%s chat_id=%s required_action_tools=%s prompt_messages=%s clar={goal:%s remaining:%s disable:%s reason:%s continue:%s destructive:%s answered:%s}",
             self.project_id,
             self.branch,
             self.user_id,
             self.chat_id or "",
             sorted(required_action_tools),
             len(messages),
+            _as_text(self.interaction_policy.get("goal_id")),
+            clarification_budget_remaining,
+            clarification_disable,
+            clarification_disable_reason,
+            continue_mode,
+            destructive_intent,
+            len(answered_map),
         )
 
         while True:
@@ -479,8 +560,73 @@ class Agent2:
             )
 
             logger.info("tool.execute.request tool=%s args=%s", tool_name, model_args)
-            envelope = await self.runtime.execute(tool_name, model_args, ctx)
-            envelope_data = envelope.model_dump()
+            envelope_data: dict[str, Any]
+            if tool_name == "request_user_input":
+                request_question = _as_text(model_args.get("question"))
+                question_key = _normalize_question_key(request_question)
+                repeat_answer = answered_map.get(question_key) if question_key else None
+                repeat_allowed = allow_repeat_on_conflict and conflict_signal
+                disable_reason = ""
+                if clarification_disable:
+                    disable_reason = clarification_disable_reason or "clarification_disabled_by_policy"
+                elif clarification_budget_remaining >= 0 and clarification_calls_this_run >= clarification_budget_remaining:
+                    disable_reason = "clarification_budget_exhausted_for_turn"
+
+                if repeat_answer and not repeat_allowed:
+                    clarification_block_cycles += 1
+                    synthetic_result = {
+                        "id": f"auto-{question_key[:12] or 'repeat'}",
+                        "chat_id": self.chat_id or "",
+                        "question": request_question,
+                        "answer_mode": "open_text",
+                        "options": [],
+                        "awaiting": False,
+                        "auto_resolved": True,
+                        "question_key": question_key,
+                        "answer": repeat_answer,
+                        "reason": "already_answered",
+                    }
+                    envelope_data = {
+                        "tool": tool_name,
+                        "ok": True,
+                        "duration_ms": 0,
+                        "attempts": 1,
+                        "cached": False,
+                        "input_bytes": len(json.dumps(model_args, ensure_ascii=False).encode("utf-8")),
+                        "result_bytes": len(json.dumps(synthetic_result, ensure_ascii=False).encode("utf-8")),
+                        "result": synthetic_result,
+                    }
+                elif disable_reason:
+                    clarification_block_cycles += 1
+                    synthetic_result = {
+                        "id": "",
+                        "chat_id": self.chat_id or "",
+                        "question": request_question,
+                        "answer_mode": _as_text(model_args.get("answer_mode")) or "open_text",
+                        "options": model_args.get("options") if isinstance(model_args.get("options"), list) else [],
+                        "awaiting": False,
+                        "blocked": True,
+                        "reason": disable_reason,
+                    }
+                    envelope_data = {
+                        "tool": tool_name,
+                        "ok": True,
+                        "duration_ms": 0,
+                        "attempts": 1,
+                        "cached": False,
+                        "input_bytes": len(json.dumps(model_args, ensure_ascii=False).encode("utf-8")),
+                        "result_bytes": len(json.dumps(synthetic_result, ensure_ascii=False).encode("utf-8")),
+                        "result": synthetic_result,
+                    }
+                else:
+                    envelope = await self.runtime.execute(tool_name, model_args, ctx)
+                    envelope_data = envelope.model_dump()
+                    if bool(envelope_data.get("ok")):
+                        clarification_calls_this_run += 1
+            else:
+                envelope = await self.runtime.execute(tool_name, model_args, ctx)
+                envelope_data = envelope.model_dump()
+
             tool_events.append(envelope_data)
             logger.info(
                 "agent2.tool_event tool=%s ok=%s duration_ms=%s attempts=%s",
@@ -493,11 +639,70 @@ class Agent2:
             if tool_name == "request_user_input" and bool(envelope_data.get("ok")):
                 result = envelope_data.get("result")
                 pending = result if isinstance(result, dict) else {}
+                if bool(pending.get("auto_resolved")):
+                    reuse_answer = _as_text(pending.get("answer"))
+                    messages.append({"role": "assistant", "content": assistant_text})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"TOOL_RESULT {tool_name}:\n"
+                                f"{json.dumps(envelope_data, ensure_ascii=False, indent=2)}\n"
+                            ),
+                        }
+                    )
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Do not ask the same clarification again. "
+                                f"Use the already provided answer for that question: {reuse_answer}\n"
+                                "Continue and produce the best grounded answer now."
+                            ),
+                        }
+                    )
+                    continue
+                if bool(pending.get("blocked")):
+                    if clarification_block_cycles > 3:
+                        return {
+                            "answer": (
+                                "I cannot ask additional clarification questions for this goal right now. "
+                                "I should proceed using existing context and assumptions."
+                            ),
+                            "tool_events": tool_events,
+                        }
+                    messages.append({"role": "assistant", "content": assistant_text})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"TOOL_RESULT {tool_name}:\n"
+                                f"{json.dumps(envelope_data, ensure_ascii=False, indent=2)}\n"
+                            ),
+                        }
+                    )
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Clarification questions are disabled for this turn. "
+                                "Proceed with available evidence and clearly state assumptions. "
+                                "Do NOT call request_user_input again unless a destructive action truly requires confirmation."
+                            ),
+                        }
+                    )
+                    continue
                 question = str(pending.get("question") or "").strip()
                 answer_mode = str(pending.get("answer_mode") or "open_text").strip().lower()
                 options = pending.get("options")
                 if not isinstance(options, list):
                     options = []
+                question_key = _normalize_question_key(question)
+                if question_key:
+                    pending["question_key"] = question_key
+                goal_id = _as_text(self.interaction_policy.get("goal_id"))
+                if goal_id:
+                    pending["goal_id"] = goal_id
                 prompt_text = (
                     f"I need more input before I can continue:\n\n{question}"
                     if question
@@ -548,6 +753,7 @@ async def answer_with_agent(
     llm_model: str | None = None,
     chat_id: str | None = None,
     tool_policy: dict[str, Any] | None = None,
+    interaction_policy: dict[str, Any] | None = None,
     prior_messages: list[dict[str, str]] | None = None,
     system_context: str | None = None,
     max_tool_calls: int = 12,
@@ -566,6 +772,7 @@ async def answer_with_agent(
         llm_model=llm_model,
         chat_id=chat_id,
         tool_policy=tool_policy,
+        interaction_policy=interaction_policy,
         prior_messages=prior_messages,
         system_context=system_context,
         runtime=runtime,
