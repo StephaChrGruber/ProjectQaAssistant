@@ -23,6 +23,10 @@ _RUNTIME: ToolRuntime = build_default_tool_runtime()
 _DISCOVERY_TOOLS = {"list_tools", "search_tools", "get_tool_details"}
 
 
+def _as_text(v: Any) -> str:
+    return str(v or "").strip()
+
+
 def _base(llm_base_url: str | None = None) -> str:
     base = (llm_base_url or settings.LLM_BASE_URL or "http://ollama:11434").rstrip("/")
     if base.endswith("/v1"):
@@ -302,6 +306,8 @@ class Agent2:
         llm_model: str | None = None,
         chat_id: str | None = None,
         tool_policy: dict[str, Any] | None = None,
+        prior_messages: list[dict[str, str]] | None = None,
+        system_context: str | None = None,
         runtime: ToolRuntime | None = None,
     ):
         self.project_id = project_id
@@ -315,26 +321,49 @@ class Agent2:
         self.llm_model = llm_model
         self.chat_id = chat_id
         self.tool_policy = tool_policy or {}
+        self.prior_messages = prior_messages or []
+        self.system_context = _as_text(system_context)
         self.runtime = runtime or _RUNTIME
 
     async def run(self, user_text: str) -> dict[str, Any]:
         system_prompt = _system_prompt(self.project_id, self.branch, self.user_id, self.runtime, self.tool_policy)
-        messages: List[Dict[str, str]] = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_text},
-        ]
+        messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+
+        if isinstance(self.prior_messages, list):
+            for row in self.prior_messages:
+                if not isinstance(row, dict):
+                    continue
+                role = _as_text(row.get("role")).lower()
+                content = _as_text(row.get("content"))
+                if role not in {"user", "assistant"} or not content:
+                    continue
+                messages.append({"role": role, "content": content})
+
+        if self.system_context:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "Hierarchical memory context (chat/branch/project/user). "
+                        "Use this for continuity; prioritize newest, highest-confidence evidence.\n\n"
+                        f"{self.system_context}"
+                    ),
+                }
+            )
+        messages.append({"role": "user", "content": user_text})
 
         tool_calls = 0
         tool_events: list[dict[str, Any]] = []
         no_evidence_cycles = 0
         required_action_tools = _required_action_tools(user_text)
         logger.info(
-            "agent2.run.start project=%s branch=%s user=%s chat_id=%s required_action_tools=%s",
+            "agent2.run.start project=%s branch=%s user=%s chat_id=%s required_action_tools=%s prompt_messages=%s",
             self.project_id,
             self.branch,
             self.user_id,
             self.chat_id or "",
             sorted(required_action_tools),
+            len(messages),
         )
 
         while True:
@@ -519,6 +548,8 @@ async def answer_with_agent(
     llm_model: str | None = None,
     chat_id: str | None = None,
     tool_policy: dict[str, Any] | None = None,
+    prior_messages: list[dict[str, str]] | None = None,
+    system_context: str | None = None,
     max_tool_calls: int = 12,
     include_tool_events: bool = False,
     runtime: ToolRuntime | None = None,
@@ -535,6 +566,8 @@ async def answer_with_agent(
         llm_model=llm_model,
         chat_id=chat_id,
         tool_policy=tool_policy,
+        prior_messages=prior_messages,
+        system_context=system_context,
         runtime=runtime,
     )
     out = await agent.run(question)

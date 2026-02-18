@@ -143,13 +143,18 @@ async def get_chat(chat_id: str):
 
 @router.get("/{chat_id}/memory")
 async def get_chat_memory(chat_id: str):
-    doc = await get_db()[COLL].find_one({"chat_id": chat_id}, {"_id": 0, "chat_id": 1, "memory_summary": 1})
+    doc = await get_db()[COLL].find_one(
+        {"chat_id": chat_id},
+        {"_id": 0, "chat_id": 1, "memory_summary": 1, "task_state": 1, "hierarchical_memory": 1},
+    )
     if not doc:
         raise HTTPException(status_code=404, detail="Chat not found")
     summary = doc.get("memory_summary")
     if not isinstance(summary, dict):
-        summary = {"decisions": [], "open_questions": [], "next_steps": []}
-    return {"chat_id": chat_id, "memory_summary": summary}
+        summary = {"decisions": [], "open_questions": [], "next_steps": [], "goals": [], "constraints": [], "blockers": [], "assumptions": []}
+    task_state = doc.get("task_state") if isinstance(doc.get("task_state"), dict) else {}
+    hierarchical = doc.get("hierarchical_memory") if isinstance(doc.get("hierarchical_memory"), dict) else {}
+    return {"chat_id": chat_id, "memory_summary": summary, "task_state": task_state, "hierarchical_memory": hierarchical}
 
 @router.post("/ensure", response_model=ChatResponse)
 async def ensure_chat(payload: ChatDoc):

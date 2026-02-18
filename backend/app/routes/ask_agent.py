@@ -11,6 +11,12 @@ from ..rag.agent2 import LLMUpstreamError, answer_with_agent
 from ..rag.tool_runtime import ToolContext
 from ..services.llm_profiles import resolve_project_llm_config
 from ..services.custom_tools import build_runtime_for_project
+from ..services.hierarchical_memory import (
+    build_hierarchical_context,
+    derive_memory_summary,
+    derive_task_state,
+    persist_hierarchical_memory,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -121,6 +127,19 @@ def _extract_llm_routing(project: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _extract_memory_policy(project: dict[str, Any]) -> dict[str, Any]:
+    extra = _project_extra(project)
+    mem = extra.get("memory")
+    if not isinstance(mem, dict):
+        mem = {}
+    return {
+        "max_recent_messages": max(8, min(int(mem.get("max_recent_messages") or 42), 120)),
+        "max_recent_chars": max(6000, min(int(mem.get("max_recent_chars") or 24000), 100000)),
+        "max_retrieved_items": max(6, min(int(mem.get("max_retrieved_items") or 28), 80)),
+        "max_context_chars": max(4000, min(int(mem.get("max_context_chars") or 18000), 120000)),
+    }
+
+
 def _route_intent(question: str, routing_cfg: dict[str, Any]) -> str:
     q = _as_text(question).lower()
     if not q:
@@ -190,6 +209,7 @@ async def _project_llm_defaults(
         "grounding_policy": _extract_grounding_policy(project),
         "security_policy": _extract_security_policy(project),
         "routing": _extract_llm_routing(project),
+        "memory_policy": _extract_memory_policy(project),
         "project": project,
     }
 
@@ -1095,65 +1115,23 @@ def _enforce_grounded_answer(
     )
 
 
-def _extract_memory_lines(
-    text: str,
-    *,
-    decisions: list[str],
-    open_questions: list[str],
-    next_steps: list[str],
-) -> None:
-    for raw in (text or "").splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        low = line.lower()
-        clean = re.sub(r"^[-*0-9.\)\s]+", "", line).strip()
-        if not clean:
-            continue
-        if ("decision" in low or low.startswith("we will") or low.startswith("we should")) and clean not in decisions:
-            decisions.append(clean)
-        if ("?" in clean or "open question" in low) and clean not in open_questions:
-            open_questions.append(clean)
-        if (low.startswith("next step") or low.startswith("todo") or low.startswith("action")) and clean not in next_steps:
-            next_steps.append(clean)
-
-
 def _derive_chat_memory(messages: list[dict[str, Any]]) -> dict[str, Any]:
-    decisions: list[str] = []
-    open_questions: list[str] = []
-    next_steps: list[str] = []
-    for msg in messages[-60:]:
-        if not isinstance(msg, dict):
-            continue
-        role = _as_text(msg.get("role")).lower()
-        if role not in {"assistant", "user"}:
-            continue
-        content = _as_text(msg.get("content"))
-        if not content:
-            continue
-        _extract_memory_lines(
-            content,
-            decisions=decisions,
-            open_questions=open_questions,
-            next_steps=next_steps,
-        )
-
-    return {
-        "decisions": decisions[:6],
-        "open_questions": open_questions[:6],
-        "next_steps": next_steps[:6],
-        "updated_at": datetime.utcnow().isoformat() + "Z",
-    }
+    return derive_memory_summary(messages)
 
 
 async def _update_chat_memory_summary(chat_id: str) -> dict[str, Any] | None:
     db = get_db()
-    doc = await db["chats"].find_one({"chat_id": chat_id}, {"messages": {"$slice": -80}})
+    doc = await db["chats"].find_one({"chat_id": chat_id}, {"messages": {"$slice": -220}, "task_state": 1})
     if not isinstance(doc, dict):
         return None
-    summary = _derive_chat_memory((doc.get("messages") or []))
-    await db["chats"].update_one({"chat_id": chat_id}, {"$set": {"memory_summary": summary}})
-    return summary
+    messages = (doc.get("messages") or [])
+    summary = _derive_chat_memory(messages)
+    task_state = derive_task_state(messages, doc.get("task_state") if isinstance(doc.get("task_state"), dict) else None)
+    await db["chats"].update_one(
+        {"chat_id": chat_id},
+        {"$set": {"memory_summary": summary, "task_state": task_state}},
+    )
+    return {"memory_summary": summary, "task_state": task_state}
 
 
 @router.post("/ask_agent")
@@ -1193,7 +1171,7 @@ async def ask_agent(req: AskReq):
 
     chat_doc = await db["chats"].find_one(
         {"chat_id": chat_id},
-        {"tool_policy": 1, "llm_profile_id": 1, "pending_user_question": 1},
+        {"tool_policy": 1, "llm_profile_id": 1, "pending_user_question": 1, "memory_summary": 1, "task_state": 1},
     )
     active_pending_question = _normalize_pending_user_question((chat_doc or {}).get("pending_user_question"))
 
@@ -1270,6 +1248,67 @@ async def ask_agent(req: AskReq):
     if approved_tools:
         effective_tool_policy["approved_tools"] = approved_tools
     grounding_policy = defaults.get("grounding_policy") or {"require_sources": True, "min_sources": 1}
+    memory_policy = defaults.get("memory_policy") or {}
+
+    conversation_messages_for_agent: list[dict[str, str]] = []
+    hierarchical_context_for_agent = ""
+    hierarchical_snapshot: dict[str, Any] = {}
+    memory_summary_seed = (chat_doc or {}).get("memory_summary") if isinstance(chat_doc, dict) else None
+    task_state_seed = (chat_doc or {}).get("task_state") if isinstance(chat_doc, dict) else None
+    try:
+        chat_state_doc = await db["chats"].find_one(
+            {"chat_id": chat_id},
+            {"messages": {"$slice": -320}, "memory_summary": 1, "task_state": 1},
+        )
+        chat_messages_for_context = (chat_state_doc or {}).get("messages") or []
+        memory_summary_base = (
+            (chat_state_doc or {}).get("memory_summary")
+            if isinstance((chat_state_doc or {}).get("memory_summary"), dict)
+            else memory_summary_seed
+        )
+        task_state_base = (
+            (chat_state_doc or {}).get("task_state")
+            if isinstance((chat_state_doc or {}).get("task_state"), dict)
+            else task_state_seed
+        )
+        memory_bundle = await build_hierarchical_context(
+            project_id=req.project_id,
+            branch=req.branch,
+            user_id=req.user,
+            chat_id=chat_id,
+            question=user_text,
+            messages=chat_messages_for_context,
+            memory_summary=memory_summary_base if isinstance(memory_summary_base, dict) else derive_memory_summary(chat_messages_for_context),
+            task_state=task_state_base if isinstance(task_state_base, dict) else derive_task_state(chat_messages_for_context, None),
+            max_recent_messages=int(memory_policy.get("max_recent_messages") or 42),
+            max_recent_chars=int(memory_policy.get("max_recent_chars") or 24000),
+            max_retrieved_items=int(memory_policy.get("max_retrieved_items") or 28),
+            max_context_chars=int(memory_policy.get("max_context_chars") or 18000),
+        )
+        conversation_messages_for_agent = [
+            row for row in (memory_bundle.get("conversation_messages") or []) if isinstance(row, dict)
+        ]
+        hierarchical_context_for_agent = _as_text(memory_bundle.get("context_text"))
+        hierarchical_snapshot = memory_bundle.get("snapshot") if isinstance(memory_bundle.get("snapshot"), dict) else {}
+        memory_summary_seed = (
+            memory_bundle.get("memory_summary")
+            if isinstance(memory_bundle.get("memory_summary"), dict)
+            else memory_summary_seed
+        )
+        task_state_seed = (
+            memory_bundle.get("task_state")
+            if isinstance(memory_bundle.get("task_state"), dict)
+            else task_state_seed
+        )
+    except Exception:
+        logger.exception(
+            "ask_agent.memory_context_failed project=%s branch=%s user=%s chat_id=%s",
+            req.project_id,
+            req.branch,
+            req.user,
+            chat_id,
+        )
+        hierarchical_snapshot = {}
 
     logger.info(
         "ask_agent.start project=%s branch=%s user=%s chat_id=%s role=%s profile_id=%s provider=%s model=%s pending=%s policy={read_only_only:%s allowed:%s blocked:%s approved:%s}",
@@ -1286,6 +1325,15 @@ async def ask_agent(req: AskReq):
         len(_as_tool_name_list(effective_tool_policy.get("allowed_tools"))),
         len(_as_tool_name_list(effective_tool_policy.get("blocked_tools"))),
         len(_as_tool_name_list(effective_tool_policy.get("approved_tools"))),
+    )
+    logger.info(
+        "ask_agent.memory_context project=%s chat_id=%s recent_messages=%s retrieved=%s conflicts=%s context_chars=%s",
+        req.project_id,
+        chat_id,
+        int(hierarchical_snapshot.get("recent_messages") or 0),
+        int(hierarchical_snapshot.get("retrieved_items") or 0),
+        int(hierarchical_snapshot.get("retrieval_conflicts") or 0),
+        len(hierarchical_context_for_agent),
     )
 
     effective_question = user_text
@@ -1336,6 +1384,8 @@ async def ask_agent(req: AskReq):
             llm_model=active_llm["model"],
             chat_id=chat_id,
             tool_policy=effective_tool_policy,
+            prior_messages=conversation_messages_for_agent,
+            system_context=hierarchical_context_for_agent,
             max_tool_calls=int(defaults.get("max_tool_calls") or 12),
             include_tool_events=True,
             runtime=runtime,
@@ -1537,6 +1587,9 @@ async def ask_agent(req: AskReq):
         "sources": answer_sources,
         "grounded": grounded_ok,
         "pending_user_question": pending_user_question,
+        "memory": {
+            "hierarchical_snapshot": hierarchical_snapshot,
+        },
         "llm": {
             "provider": active_llm.get("provider"),
             "model": active_llm.get("model"),
@@ -1561,10 +1614,40 @@ async def ask_agent(req: AskReq):
                 "last_message_at": done,
                 "last_message_preview": answer[:160],
                 "pending_user_question": pending_user_question,
+                "hierarchical_memory": {
+                    "snapshot": hierarchical_snapshot,
+                    "updated_at": done.isoformat() + "Z",
+                },
             },
         },
     )
-    memory_summary = await _update_chat_memory_summary(chat_id)
+    memory_state = await _update_chat_memory_summary(chat_id)
+    memory_summary = (memory_state or {}).get("memory_summary") if isinstance(memory_state, dict) else None
+    task_state = (memory_state or {}).get("task_state") if isinstance(memory_state, dict) else None
+    if not isinstance(memory_summary, dict):
+        memory_summary = memory_summary_seed if isinstance(memory_summary_seed, dict) else {}
+    if not isinstance(task_state, dict):
+        task_state = task_state_seed if isinstance(task_state_seed, dict) else {}
+    try:
+        await persist_hierarchical_memory(
+            project_id=req.project_id,
+            branch=req.branch,
+            user_id=req.user,
+            chat_id=chat_id,
+            memory_summary=memory_summary if isinstance(memory_summary, dict) else {},
+            task_state=task_state if isinstance(task_state, dict) else {},
+            answer_sources=answer_sources if isinstance(answer_sources, list) else [],
+            tool_events=tool_events if isinstance(tool_events, list) else [],
+            user_message_text=user_text,
+            assistant_message_text=answer,
+        )
+    except Exception:
+        logger.exception(
+            "ask_agent.persist_hierarchical_memory_failed project=%s branch=%s chat_id=%s",
+            req.project_id,
+            req.branch,
+            chat_id,
+        )
     logger.info(
         "ask_agent.finish project=%s branch=%s user=%s chat_id=%s grounded=%s sources=%s tools=%s tool_errors=%s pending_user_input=%s tool_error_details=%s",
         req.project_id,
@@ -1615,5 +1698,7 @@ async def ask_agent(req: AskReq):
         "sources": answer_sources,
         "grounded": grounded_ok,
         "memory_summary": memory_summary,
+        "task_state": task_state,
+        "hierarchical_memory": {"snapshot": hierarchical_snapshot},
         "pending_user_question": pending_user_question,
     }
