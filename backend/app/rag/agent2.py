@@ -171,6 +171,18 @@ def _has_successful_tool(events: list[dict[str, Any]], names: set[str]) -> bool:
     return False
 
 
+def _has_attempted_tool(events: list[dict[str, Any]], names: set[str]) -> bool:
+    if not names:
+        return False
+    for ev in events or []:
+        if not isinstance(ev, dict):
+            continue
+        tool = str(ev.get("tool") or "").strip()
+        if tool in names:
+            return True
+    return False
+
+
 def _has_successful_evidence_tool(events: list[dict[str, Any]]) -> bool:
     for ev in events or []:
         if not isinstance(ev, dict) or not bool(ev.get("ok")):
@@ -342,8 +354,9 @@ class Agent2:
                 has_any_ok_tool = any(bool((ev or {}).get("ok")) for ev in tool_events)
                 has_evidence_tool = _has_successful_evidence_tool(tool_events)
                 has_required_action_tool = _has_successful_tool(tool_events, required_action_tools)
+                has_attempted_required_action_tool = _has_attempted_tool(tool_events, required_action_tools)
 
-                if required_action_tools and not has_required_action_tool:
+                if required_action_tools and not has_required_action_tool and not has_attempted_required_action_tool:
                     no_evidence_cycles += 1
                     logger.warning(
                         "agent2.guard.missing_required_action_tool project=%s chat_id=%s required=%s tools_seen=%s cycle=%s",
@@ -374,6 +387,15 @@ class Agent2:
                         }
                     )
                     continue
+                if required_action_tools and not has_required_action_tool and has_attempted_required_action_tool:
+                    logger.info(
+                        "agent2.guard.required_action_attempted_but_failed project=%s chat_id=%s required=%s tools_seen=%s",
+                        self.project_id,
+                        self.chat_id or "",
+                        sorted(required_action_tools),
+                        [str((ev or {}).get("tool") or "") for ev in tool_events],
+                    )
+                    return {"answer": assistant_text, "tool_events": tool_events}
 
                 if not has_evidence_tool:
                     if has_any_ok_tool and _question_is_tool_catalog_request(user_text):

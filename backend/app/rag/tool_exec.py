@@ -2022,11 +2022,48 @@ async def git_commit(req: GitCommitRequest) -> GitCommitResponse:
     return out
 
 
-async def git_fetch(req: GitFetchRequest) -> GitFetchResponse:
+async def git_fetch(req: GitFetchRequest, ctx: Any = None) -> GitFetchResponse:
     logger.info("git_fetch.start project=%s remote=%s prune=%s", req.project_id, req.remote, bool(req.prune))
     meta = await get_project_metadata(req.project_id)
-    repo_path = _require_local_repo_path(meta, "git_fetch")
     remote = (req.remote or "origin").strip() or "origin"
+    repo_path_raw = str(meta.repo_path or "").strip()
+    if _is_browser_local_repo_path(repo_path_raw):
+        remote_connector = await _remote_repo_connector(req.project_id)
+        if not remote_connector:
+            raise RuntimeError(
+                "git_fetch is not available for browser-local repositories without a configured remote git connector."
+            )
+        default_branch = (meta.default_branch or "main").strip() or "main"
+        active_branch = str((remote_connector.get("config") or {}).get("branch") or default_branch).strip() or default_branch
+        raw_items = await _remote_branch_items(remote_connector, 1000)
+        merged = _merge_branch_items(
+            raw_items,
+            default_branch=default_branch,
+            active_branch=active_branch,
+            max_branches=1000,
+        )
+        await _store_browser_local_branch_state(
+            project_id=req.project_id,
+            active_branch=active_branch,
+            branches=[b.name for b in merged],
+            set_default_branch=False,
+        )
+        connector_kind = str(remote_connector.get("type") or "remote")
+        out = GitFetchResponse(
+            remote=remote,
+            output=(
+                f"Fetched branch refs from {connector_kind} connector (browser-local mode). "
+                f"Discovered {len(merged)} branch(es)."
+            ),
+        )
+        logger.info(
+            "git_fetch.done project=%s mode=browser_local connector=%s branches=%s",
+            req.project_id,
+            connector_kind,
+            len(merged),
+        )
+        return out
+    repo_path = _require_local_repo_path(meta, "git_fetch")
     args = ["fetch", remote]
     if req.prune:
         args.append("--prune")
@@ -2041,6 +2078,12 @@ async def git_fetch(req: GitFetchRequest) -> GitFetchResponse:
 async def git_pull(req: GitPullRequest) -> GitPullResponse:
     logger.info("git_pull.start project=%s remote=%s branch=%s rebase=%s", req.project_id, req.remote, req.branch or "", bool(req.rebase))
     meta = await get_project_metadata(req.project_id)
+    repo_path_raw = str(meta.repo_path or "").strip()
+    if _is_browser_local_repo_path(repo_path_raw):
+        raise RuntimeError(
+            "git_pull is not available in browser-local repository mode via web runtime. "
+            "Run pull in your local git client, or switch this project to a backend-local repository path."
+        )
     repo_path = _require_local_repo_path(meta, "git_pull")
     remote = (req.remote or "origin").strip() or "origin"
     branch = (req.branch or _current_branch(repo_path) or "main").strip() or "main"
@@ -2065,6 +2108,12 @@ async def git_push(req: GitPushRequest) -> GitPushResponse:
         bool(req.force_with_lease),
     )
     meta = await get_project_metadata(req.project_id)
+    repo_path_raw = str(meta.repo_path or "").strip()
+    if _is_browser_local_repo_path(repo_path_raw):
+        raise RuntimeError(
+            "git_push is not available in browser-local repository mode via web runtime. "
+            "Run push in your local git client, or switch this project to a backend-local repository path."
+        )
     repo_path = _require_local_repo_path(meta, "git_push")
     remote = (req.remote or "origin").strip() or "origin"
     branch = (req.branch or _current_branch(repo_path) or "main").strip() or "main"
