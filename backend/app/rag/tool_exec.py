@@ -1320,6 +1320,9 @@ async def read_chat_messages(req: ReadChatMessagesRequest) -> ReadChatMessagesRe
 
     chat = await db["chats"].find_one(q, {"chat_id": 1, "messages": 1})
     if not chat:
+        # Backward compatibility for legacy chat rows with inconsistent project_id/branch/user metadata.
+        chat = await db["chats"].find_one({"chat_id": req.chat_id}, {"chat_id": 1, "messages": 1})
+    if not chat:
         return ReadChatMessagesResponse(chat_id=req.chat_id, found=False)
 
     include_roles = {str(r).strip().lower() for r in req.include_roles if str(r).strip()}
@@ -1390,9 +1393,26 @@ async def request_user_input(req: RequestUserInputRequest) -> RequestUserInputRe
     }
     res = await db["chats"].update_one(
         {"chat_id": req.chat_id, "project_id": req.project_id},
-        {"$set": {"pending_user_question": payload, "updated_at": now}},
+        {
+            "$set": {
+                "pending_user_question": payload,
+                "updated_at": now,
+            }
+        },
         upsert=False,
     )
+    if res.matched_count == 0:
+        # Backward compatibility for older chats where project_id may be missing/outdated.
+        res = await db["chats"].update_one(
+            {"chat_id": req.chat_id},
+            {
+                "$set": {
+                    "pending_user_question": payload,
+                    "updated_at": now,
+                }
+            },
+            upsert=False,
+        )
     if res.matched_count == 0:
         raise RuntimeError("Chat not found for request_user_input")
 

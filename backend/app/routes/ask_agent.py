@@ -1097,18 +1097,22 @@ async def ask_agent(req: AskReq):
     # ensure chat
     await db["chats"].update_one(
         {"chat_id": chat_id},
-        {"$setOnInsert": {
-            "chat_id": chat_id,
-            "project_id": req.project_id,
-            "branch": req.branch,
-            "user": req.user,
-            "title": "New chat",
-            "messages": [],
-            "tool_policy": {},
-            "llm_profile_id": None,
-            "created_at": now,
-            "updated_at": now,
-        }},
+        {
+            "$set": {
+                "project_id": req.project_id,
+                "branch": req.branch,
+                "user": req.user,
+                "updated_at": now,
+            },
+            "$setOnInsert": {
+                "chat_id": chat_id,
+                "title": "New chat",
+                "messages": [],
+                "tool_policy": {},
+                "llm_profile_id": None,
+                "created_at": now,
+            },
+        },
         upsert=True,
     )
 
