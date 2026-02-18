@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import fnmatch
 import logging
@@ -7,7 +8,7 @@ import os
 import re
 import shlex
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -17,6 +18,7 @@ import httpx
 from bson import ObjectId
 
 from ..db import get_db
+from ..models.base_mongo_models import LocalToolJob
 from ..models.tools import (
     ChromaCountRequest,
     ChromaCountResponse,
@@ -91,6 +93,59 @@ logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "docs"
 IGNORE_PARTS = {".git", "node_modules", ".next", "dist", "build", ".venv", "venv", "__pycache__"}
+BROWSER_LOCAL_REPO_PREFIX = "browser-local://"
+LOCAL_TOOL_JOB_POLL_INTERVAL_SEC = 0.35
+_BROWSER_LOCAL_GIT_TOOL_CODE: dict[str, str] = {
+    "git_list_branches": """
+async function run(args, context, helpers) {
+  const maxBranches = Math.max(1, Math.min(Number(args.max_branches || 200), 1000))
+  const out = await helpers.localRepo.git.listBranches({ maxBranches })
+  const branches = Array.isArray(out?.branches) ? out.branches.map((name) => ({ name: String(name || "").trim() })).filter((x) => x.name) : []
+  return {
+    active_branch: String(out?.activeBranch || "main"),
+    default_branch: String(out?.activeBranch || "main"),
+    remote_mode: false,
+    branches,
+  }
+}
+""".strip(),
+    "git_checkout_branch": """
+async function run(args, context, helpers) {
+  const out = await helpers.localRepo.git.checkoutBranch({
+    branch: String(args.branch || ""),
+    createIfMissing: Boolean(args.create_if_missing),
+    startPoint: args.start_point ? String(args.start_point) : null,
+  })
+  const branch = String(out?.branch || args.branch || "").trim()
+  return {
+    branch,
+    previous_branch: out?.previousBranch || null,
+    created: Boolean(out?.created),
+    remote_mode: false,
+    message: `Checked out local browser branch '${branch}'.`,
+  }
+}
+""".strip(),
+    "git_create_branch": """
+async function run(args, context, helpers) {
+  const out = await helpers.localRepo.git.createBranch({
+    branch: String(args.branch || ""),
+    sourceRef: args.source_ref ? String(args.source_ref) : null,
+    checkout: args.checkout !== false,
+  })
+  const branch = String(out?.branch || args.branch || "").trim()
+  const source = String(out?.sourceRef || args.source_ref || "").trim()
+  return {
+    branch,
+    source_ref: source,
+    created: true,
+    checked_out: Boolean(out?.checkedOut),
+    remote_mode: false,
+    message: `Created local browser branch '${branch}'${source ? ` from '${source}'` : ""}.`,
+  }
+}
+""".strip(),
+}
 
 
 def _oid_str(x: Any) -> str:
@@ -203,6 +258,180 @@ async def _find_enabled_connector(project_id: str, connector_type: str) -> dict[
 
 def _utc_iso_now() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
+
+
+def _is_browser_local_repo_path(repo_path: str | None) -> bool:
+    return str(repo_path or "").strip().lower().startswith(BROWSER_LOCAL_REPO_PREFIX)
+
+
+def _ctx_field(ctx: Any, field: str) -> str:
+    return str(getattr(ctx, field, "") or "").strip()
+
+
+async def _create_browser_local_tool_job(
+    *,
+    tool_name: str,
+    project_id: str,
+    branch: str,
+    user_id: str,
+    chat_id: str | None,
+    args: dict[str, Any],
+    timeout_sec: int = 45,
+) -> str:
+    code = _BROWSER_LOCAL_GIT_TOOL_CODE.get(tool_name)
+    if not code:
+        raise RuntimeError(f"No browser-local code registered for tool: {tool_name}")
+    now = datetime.utcnow()
+    expires = now + timedelta(seconds=max(30, timeout_sec + 20))
+    job = LocalToolJob(
+        toolId=f"builtin:{tool_name}",
+        toolName=tool_name,
+        projectId=project_id,
+        branch=branch,
+        userId=user_id,
+        chatId=chat_id,
+        runtime="local_typescript",
+        version=None,
+        code=code,
+        args=args if isinstance(args, dict) else {},
+        context={
+            "project_id": project_id,
+            "branch": branch,
+            "chat_id": chat_id,
+            "user_id": user_id,
+            "tool_name": tool_name,
+            "runtime": "local_typescript",
+            "source": "builtin_browser_local",
+        },
+        status="queued",
+        createdAt=now,
+        updatedAt=now,
+        expiresAt=expires,
+    )
+    await job.insert()
+    logger.info(
+        "browser_local_git.job_queued tool=%s project=%s branch=%s chat=%s job=%s",
+        tool_name,
+        project_id,
+        branch,
+        chat_id or "",
+        str(job.id),
+    )
+    return str(job.id)
+
+
+async def _wait_browser_local_tool_job(job_id: str, timeout_sec: int) -> Any:
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + max(1, timeout_sec)
+    while True:
+        current = await LocalToolJob.get(job_id)
+        if not current:
+            raise RuntimeError("Browser-local tool job not found")
+        status = str(current.status or "")
+        if status == "completed":
+            return current.result
+        if status in {"failed", "timeout", "cancelled"}:
+            raise RuntimeError(str(current.error or f"Browser-local tool job failed ({status})"))
+        if loop.time() >= deadline:
+            current.status = "timeout"
+            current.error = "Browser-local tool job timed out waiting for browser execution."
+            current.updatedAt = datetime.utcnow()
+            current.completedAt = datetime.utcnow()
+            await current.save()
+            raise RuntimeError("Browser-local tool job timed out waiting for browser execution")
+        await asyncio.sleep(LOCAL_TOOL_JOB_POLL_INTERVAL_SEC)
+
+
+async def _run_browser_local_git_tool(
+    *,
+    tool_name: str,
+    project_id: str,
+    ctx: Any,
+    args: dict[str, Any],
+    timeout_sec: int = 45,
+) -> dict[str, Any]:
+    user_id = _ctx_field(ctx, "user_id")
+    if not user_id:
+        raise RuntimeError("Browser-local git tool execution requires an authenticated user context")
+    chat_id = _ctx_field(ctx, "chat_id") or None
+    branch = _ctx_field(ctx, "branch") or "main"
+    job_id = await _create_browser_local_tool_job(
+        tool_name=tool_name,
+        project_id=project_id,
+        branch=branch,
+        user_id=user_id,
+        chat_id=chat_id,
+        args=args,
+        timeout_sec=timeout_sec,
+    )
+    out = await _wait_browser_local_tool_job(job_id, timeout_sec=timeout_sec)
+    if not isinstance(out, dict):
+        raise RuntimeError(f"Browser-local tool returned invalid result for {tool_name}")
+    logger.info(
+        "browser_local_git.job_done tool=%s project=%s branch=%s chat=%s job=%s",
+        tool_name,
+        project_id,
+        branch,
+        chat_id or "",
+        job_id,
+    )
+    return out
+
+
+def _normalize_branch_list(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in items:
+        branch = str(raw or "").strip()
+        if not branch or branch in seen:
+            continue
+        seen.add(branch)
+        out.append(branch)
+    return out
+
+
+async def _store_browser_local_branch_state(
+    *,
+    project_id: str,
+    active_branch: str | None = None,
+    branches: list[str] | None = None,
+    set_default_branch: bool = False,
+) -> None:
+    try:
+        project = await _project_doc(project_id)
+    except Exception:
+        return
+    extra = project.get("extra")
+    if not isinstance(extra, dict):
+        extra = {}
+    browser_local = extra.get("browser_local")
+    if not isinstance(browser_local, dict):
+        browser_local = {}
+
+    known: list[str] = []
+    if isinstance(browser_local.get("branches"), list):
+        known.extend([str(x or "").strip() for x in browser_local.get("branches") or []])
+    if branches:
+        known.extend([str(x or "").strip() for x in branches])
+    if active_branch:
+        known.insert(0, str(active_branch))
+    known = _normalize_branch_list(known)
+
+    update_extra = dict(extra)
+    update_browser_local = dict(browser_local)
+    update_browser_local["branches"] = known
+    if active_branch:
+        update_browser_local["active_branch"] = str(active_branch)
+    update_extra["browser_local"] = update_browser_local
+
+    update_doc: dict[str, Any] = {"extra": update_extra}
+    if set_default_branch and active_branch:
+        update_doc["default_branch"] = str(active_branch)
+
+    await get_db()["projects"].update_one(
+        {"_id": project.get("_id")},
+        {"$set": update_doc},
+    )
 
 
 def _extract_jira_project_key(config: dict[str, Any]) -> str | None:
@@ -1354,12 +1583,62 @@ async def repo_tree(req: RepoTreeRequest) -> RepoTreeResponse:
     return RepoTreeResponse(root=base_rel or ".", branch=branch, entries=entries)
 
 
-async def git_list_branches(req: GitListBranchesRequest) -> GitListBranchesResponse:
+async def git_list_branches(req: GitListBranchesRequest, ctx: Any = None) -> GitListBranchesResponse:
     logger.info("git_list_branches.start project=%s max_branches=%s", req.project_id, req.max_branches)
     req.max_branches = max(1, min(req.max_branches, 1000))
     meta = await get_project_metadata(req.project_id)
     default_branch = (meta.default_branch or "main").strip() or "main"
-    root = Path(meta.repo_path) if meta.repo_path else None
+    repo_path = str(meta.repo_path or "").strip()
+
+    if _is_browser_local_repo_path(repo_path):
+        result = await _run_browser_local_git_tool(
+            tool_name="git_list_branches",
+            project_id=req.project_id,
+            ctx=ctx,
+            args={"max_branches": req.max_branches},
+            timeout_sec=45,
+        )
+        active_branch = str(result.get("active_branch") or default_branch).strip() or default_branch
+        raw = result.get("branches")
+        parsed: list[GitBranchItem] = []
+        if isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, dict):
+                    name = str(item.get("name") or "").strip()
+                    commit = str(item.get("commit") or "").strip() or None
+                else:
+                    name = str(item or "").strip()
+                    commit = None
+                if not name:
+                    continue
+                parsed.append(GitBranchItem(name=name, commit=commit))
+        branches = _merge_branch_items(
+            parsed,
+            default_branch=default_branch,
+            active_branch=active_branch,
+            max_branches=req.max_branches,
+        )
+        await _store_browser_local_branch_state(
+            project_id=req.project_id,
+            active_branch=active_branch,
+            branches=[b.name for b in branches],
+            set_default_branch=False,
+        )
+        out = GitListBranchesResponse(
+            active_branch=active_branch,
+            default_branch=default_branch,
+            remote_mode=False,
+            branches=branches,
+        )
+        logger.info(
+            "git_list_branches.done project=%s mode=browser_local active=%s count=%s",
+            req.project_id,
+            out.active_branch,
+            len(out.branches),
+        )
+        return out
+
+    root = Path(repo_path) if repo_path else None
 
     if root and root.exists():
         repo_path = str(root)
@@ -1411,7 +1690,7 @@ async def git_list_branches(req: GitListBranchesRequest) -> GitListBranchesRespo
     return out
 
 
-async def git_checkout_branch(req: GitCheckoutBranchRequest) -> GitCheckoutBranchResponse:
+async def git_checkout_branch(req: GitCheckoutBranchRequest, ctx: Any = None) -> GitCheckoutBranchResponse:
     logger.info(
         "git_checkout_branch.start project=%s branch=%s create_if_missing=%s start_point=%s",
         req.project_id,
@@ -1423,7 +1702,42 @@ async def git_checkout_branch(req: GitCheckoutBranchRequest) -> GitCheckoutBranc
     start_point = _sanitize_branch_name(req.start_point) if (req.start_point or "").strip() else None
 
     meta = await get_project_metadata(req.project_id)
-    root = Path(meta.repo_path) if meta.repo_path else None
+    repo_path = str(meta.repo_path or "").strip()
+    if _is_browser_local_repo_path(repo_path):
+        result = await _run_browser_local_git_tool(
+            tool_name="git_checkout_branch",
+            project_id=req.project_id,
+            ctx=ctx,
+            args={
+                "branch": branch,
+                "create_if_missing": bool(req.create_if_missing),
+                "start_point": start_point,
+            },
+            timeout_sec=50,
+        )
+        out = GitCheckoutBranchResponse(
+            branch=str(result.get("branch") or branch).strip() or branch,
+            previous_branch=str(result.get("previous_branch") or "").strip() or None,
+            created=bool(result.get("created")),
+            remote_mode=False,
+            message=str(result.get("message") or f"Checked out local browser branch '{branch}'."),
+        )
+        await _store_browser_local_branch_state(
+            project_id=req.project_id,
+            active_branch=out.branch,
+            branches=[out.branch],
+            set_default_branch=bool(req.set_default_branch),
+        )
+        logger.info(
+            "git_checkout_branch.done project=%s mode=browser_local branch=%s previous=%s created=%s",
+            req.project_id,
+            out.branch,
+            out.previous_branch or "",
+            out.created,
+        )
+        return out
+
+    root = Path(repo_path) if repo_path else None
     if root and root.exists():
         repo_path = str(root)
         previous_branch = _current_branch(repo_path)
@@ -1496,7 +1810,7 @@ async def git_checkout_branch(req: GitCheckoutBranchRequest) -> GitCheckoutBranc
     return out
 
 
-async def git_create_branch(req: GitCreateBranchRequest) -> GitCreateBranchResponse:
+async def git_create_branch(req: GitCreateBranchRequest, ctx: Any = None) -> GitCreateBranchResponse:
     logger.info(
         "git_create_branch.start project=%s branch=%s source_ref=%s checkout=%s",
         req.project_id,
@@ -1508,7 +1822,43 @@ async def git_create_branch(req: GitCreateBranchRequest) -> GitCreateBranchRespo
     source_ref = _sanitize_branch_name(req.source_ref) if (req.source_ref or "").strip() else ""
 
     meta = await get_project_metadata(req.project_id)
-    root = Path(meta.repo_path) if meta.repo_path else None
+    repo_path = str(meta.repo_path or "").strip()
+    if _is_browser_local_repo_path(repo_path):
+        result = await _run_browser_local_git_tool(
+            tool_name="git_create_branch",
+            project_id=req.project_id,
+            ctx=ctx,
+            args={
+                "branch": branch,
+                "source_ref": source_ref,
+                "checkout": bool(req.checkout),
+            },
+            timeout_sec=55,
+        )
+        out = GitCreateBranchResponse(
+            branch=str(result.get("branch") or branch).strip() or branch,
+            source_ref=str(result.get("source_ref") or source_ref or "").strip() or (source_ref or "main"),
+            created=bool(result.get("created", True)),
+            checked_out=bool(result.get("checked_out", req.checkout)),
+            remote_mode=False,
+            message=str(result.get("message") or f"Created local browser branch '{branch}'."),
+        )
+        await _store_browser_local_branch_state(
+            project_id=req.project_id,
+            active_branch=out.branch if out.checked_out else None,
+            branches=[out.branch, out.source_ref],
+            set_default_branch=bool(req.set_default_branch and out.checked_out),
+        )
+        logger.info(
+            "git_create_branch.done project=%s mode=browser_local branch=%s source=%s checked_out=%s",
+            req.project_id,
+            out.branch,
+            out.source_ref,
+            out.checked_out,
+        )
+        return out
+
+    root = Path(repo_path) if repo_path else None
     if root and root.exists():
         repo_path = str(root)
         current = _current_branch(repo_path)

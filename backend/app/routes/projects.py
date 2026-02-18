@@ -299,6 +299,19 @@ async def list_project_branches(project_id: str, x_dev_user: str | None = Header
         logger.info("projects.branches.done project=%s mode=remote_only count=%s", project_id, len(branches))
         return {"branches": branches}
 
+    if repo_path.lower().startswith("browser-local://"):
+        extra = p.get("extra") if isinstance(p.get("extra"), dict) else {}
+        browser_local = extra.get("browser_local") if isinstance(extra.get("browser_local"), dict) else {}
+        active_branch = str(browser_local.get("active_branch") or "").strip()
+        known = browser_local.get("branches") if isinstance(browser_local.get("branches"), list) else []
+        candidates: list[str] = []
+        if active_branch:
+            candidates.append(active_branch)
+        candidates.extend([str(x or "").strip() for x in known])
+        branches = _ordered_branches(default_branch, candidates)
+        logger.info("projects.branches.done project=%s mode=browser_local count=%s", project_id, len(branches))
+        return {"branches": branches}
+
     if not Path(repo_path).exists():
         branches = await _remote_project_branches(project_id, default_branch)
         logger.info("projects.branches.done project=%s mode=repo_missing_remote_fallback count=%s", project_id, len(branches))

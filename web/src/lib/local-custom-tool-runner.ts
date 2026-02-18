@@ -1,6 +1,11 @@
 "use client"
 
-import { getLocalRepoSnapshot } from "@/lib/local-repo-bridge"
+import {
+    getLocalRepoSnapshot,
+    localRepoGitCheckoutBranch,
+    localRepoGitCreateBranch,
+    localRepoGitListBranches,
+} from "@/lib/local-repo-bridge"
 
 export type LocalToolJobPayload = {
     id: string
@@ -139,6 +144,18 @@ function createLocalRepoHelpers(projectId: string) {
             }
             return hits
         },
+        git: {
+            async listBranches(options?: { maxBranches?: number }) {
+                const maxBranches = Math.max(1, Math.min(Number(options?.maxBranches || 200), 1000))
+                return await localRepoGitListBranches(projectId, maxBranches)
+            },
+            async createBranch(input: { branch: string; sourceRef?: string | null; checkout?: boolean }) {
+                return await localRepoGitCreateBranch(projectId, input || { branch: "" })
+            },
+            async checkoutBranch(input: { branch: string; createIfMissing?: boolean; startPoint?: string | null }) {
+                return await localRepoGitCheckoutBranch(projectId, input || { branch: "" })
+            },
+        },
     }
 }
 
@@ -180,4 +197,3 @@ return run;`
         throw new Error(`Local custom tool execution failed: ${errText(err)}`)
     }
 }
-
