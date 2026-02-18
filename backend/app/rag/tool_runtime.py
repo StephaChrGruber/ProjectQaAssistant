@@ -27,6 +27,7 @@ from ..models.tools import (
     GitStatusRequest,
     KeywordSearchRequest,
     OpenFileRequest,
+    RequestUserInputRequest,
     ReadChatMessagesRequest,
     ReadDocsFolderRequest,
     RepoGrepRequest,
@@ -52,6 +53,7 @@ from .tool_exec import (
     git_status,
     keyword_search,
     open_file,
+    request_user_input,
     read_chat_messages,
     read_docs_folder,
     repo_grep,
@@ -674,6 +676,19 @@ def build_default_tool_runtime(
             rate_limit_per_min=120,
             max_retries=1,
             cache_ttl_sec=5,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="request_user_input",
+            description="Creates a follow-up question that requires direct user input (open text or option selection).",
+            model=RequestUserInputRequest,
+            handler=request_user_input,
+            timeout_sec=20,
+            rate_limit_per_min=80,
+            max_retries=1,
+            cache_ttl_sec=0,
+            read_only=True,
         )
     )
     rt.register(

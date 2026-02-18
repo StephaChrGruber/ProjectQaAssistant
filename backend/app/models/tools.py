@@ -303,6 +303,23 @@ class ReadChatMessagesResponse(BaseModel):
     messages: List[ChatMessageItem] = Field(default_factory=list)
 
 
+class RequestUserInputRequest(BaseModel):
+    project_id: str
+    chat_id: str
+    question: str
+    answer_mode: Literal["open_text", "single_choice"] = "open_text"
+    options: List[str] = Field(default_factory=list)
+
+
+class RequestUserInputResponse(BaseModel):
+    id: str
+    chat_id: str
+    question: str
+    answer_mode: Literal["open_text", "single_choice"] = "open_text"
+    options: List[str] = Field(default_factory=list)
+    awaiting: bool = True
+
+
 class CreateJiraIssueRequest(BaseModel):
     project_id: str
     summary: str

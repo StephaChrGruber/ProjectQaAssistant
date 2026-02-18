@@ -68,6 +68,10 @@ def _system_prompt(project_id: str, branch: str, user_id: str, runtime: ToolRunt
         "- Do not invent arguments.\n"
         "- Prefer tools over guessing.\n"
         "- Gather concrete evidence from tools before answering.\n"
+        "- If key information is missing from the user, call request_user_input.\n"
+        "- For free-form user replies use answer_mode='open_text'.\n"
+        "- For clickable choices use answer_mode='single_choice' and provide 2-8 clear options.\n"
+        "- After calling request_user_input, stop and wait for the user's response.\n"
         "- If branch comparison is requested, use compare_branches.\n"
         "- If asked to update docs in repository, call generate_project_docs.\n"
         "- If user asks for a chart/graph/visualization, return a ```chart fenced JSON block using this schema:\n"
@@ -272,6 +276,29 @@ class Agent2:
             envelope = await self.runtime.execute(tool_name, model_args, ctx)
             envelope_data = envelope.model_dump()
             tool_events.append(envelope_data)
+
+            if tool_name == "request_user_input" and bool(envelope_data.get("ok")):
+                result = envelope_data.get("result")
+                pending = result if isinstance(result, dict) else {}
+                question = str(pending.get("question") or "").strip()
+                answer_mode = str(pending.get("answer_mode") or "open_text").strip().lower()
+                options = pending.get("options")
+                if not isinstance(options, list):
+                    options = []
+                prompt_text = (
+                    f"I need more input before I can continue:\n\n{question}"
+                    if question
+                    else "I need more input before I can continue."
+                )
+                if answer_mode == "single_choice" and options:
+                    prompt_text += "\n\nChoose one option below."
+                else:
+                    prompt_text += "\n\nPlease reply with your answer."
+                return {
+                    "answer": prompt_text,
+                    "tool_events": tool_events,
+                    "pending_user_question": pending,
+                }
 
             messages.append({"role": "assistant", "content": assistant_text})
             messages.append(

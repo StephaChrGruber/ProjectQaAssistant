@@ -45,6 +45,8 @@ from ..models.tools import (
     OpenFileRequest,
     OpenFileResponse,
     ProjectMetadataResponse,
+    RequestUserInputRequest,
+    RequestUserInputResponse,
     ReadChatMessagesRequest,
     ReadChatMessagesResponse,
     ReadDocsFile,
@@ -1344,6 +1346,63 @@ async def read_chat_messages(req: ReadChatMessagesRequest) -> ReadChatMessagesRe
         total_messages=total_messages,
         returned_messages=len(selected),
         messages=selected,
+    )
+
+
+async def request_user_input(req: RequestUserInputRequest) -> RequestUserInputResponse:
+    question = (req.question or "").strip()
+    if not question:
+        raise RuntimeError("question is required")
+
+    answer_mode = str(req.answer_mode or "open_text").strip().lower()
+    if answer_mode not in {"open_text", "single_choice"}:
+        answer_mode = "open_text"
+
+    options: list[str] = []
+    seen: set[str] = set()
+    for raw in req.options or []:
+        item = str(raw or "").strip()
+        if not item:
+            continue
+        key = item.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        options.append(item)
+        if len(options) >= 12:
+            break
+
+    if answer_mode == "single_choice":
+        if len(options) < 2:
+            raise RuntimeError("single_choice mode requires at least 2 options")
+    else:
+        options = []
+
+    db = get_db()
+    pending_id = str(ObjectId())
+    now = datetime.utcnow()
+    payload = {
+        "id": pending_id,
+        "question": question,
+        "answer_mode": answer_mode,
+        "options": options,
+        "created_at": now,
+    }
+    res = await db["chats"].update_one(
+        {"chat_id": req.chat_id, "project_id": req.project_id},
+        {"$set": {"pending_user_question": payload, "updated_at": now}},
+        upsert=False,
+    )
+    if res.matched_count == 0:
+        raise RuntimeError("Chat not found for request_user_input")
+
+    return RequestUserInputResponse(
+        id=pending_id,
+        chat_id=req.chat_id,
+        question=question,
+        answer_mode=answer_mode,
+        options=options,
+        awaiting=True,
     )
 
 

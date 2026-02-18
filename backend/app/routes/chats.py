@@ -180,7 +180,7 @@ async def clear_chat(chat_id: str):
     now = datetime.utcnow()
     res = await get_db()[COLL].update_one(
         {"chat_id": chat_id},
-        {"$set": {"messages": [], "updated_at": now}},
+        {"$set": {"messages": [], "pending_user_question": None, "updated_at": now}},
         upsert=False,
     )
     if res.matched_count == 0:

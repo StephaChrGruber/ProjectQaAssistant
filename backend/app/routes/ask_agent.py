@@ -2,7 +2,7 @@ import logging
 import re
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from ..db import get_db
 from datetime import datetime
@@ -66,6 +66,8 @@ class AskReq(BaseModel):
     llm_api_key: str | None = None
     llm_model: str | None = None
     llm_profile_id: str | None = None
+    pending_question_id: str | None = None
+    pending_answer: str | None = None
 
 
 async def _load_project_doc(project_id: str) -> dict[str, Any]:
@@ -365,6 +367,80 @@ def _as_text(v: Any) -> str:
     return str(v or "").strip()
 
 
+def _normalize_pending_user_question(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    pending_id = _as_text(raw.get("id"))
+    question = _as_text(raw.get("question"))
+    if not pending_id or not question:
+        return None
+
+    mode = _as_text(raw.get("answer_mode")).lower()
+    answer_mode = "single_choice" if mode == "single_choice" else "open_text"
+
+    options: list[str] = []
+    seen: set[str] = set()
+    for item in raw.get("options") or []:
+        s = _as_text(item)
+        if not s:
+            continue
+        key = s.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        options.append(s)
+        if len(options) >= 12:
+            break
+    if answer_mode == "single_choice" and len(options) < 2:
+        answer_mode = "open_text"
+        options = []
+
+    out: dict[str, Any] = {
+        "id": pending_id,
+        "question": question,
+        "answer_mode": answer_mode,
+        "options": options,
+    }
+    created = raw.get("created_at")
+    if isinstance(created, datetime):
+        out["created_at"] = created.isoformat() + "Z"
+    else:
+        created_text = _as_text(created)
+        if created_text:
+            out["created_at"] = created_text
+    return out
+
+
+def _resolve_pending_user_answer(req: AskReq, pending: dict[str, Any]) -> str:
+    requested_pending_id = _as_text(req.pending_question_id)
+    active_pending_id = _as_text(pending.get("id"))
+    if requested_pending_id and requested_pending_id != active_pending_id:
+        raise HTTPException(
+            status_code=409,
+            detail="The pending question changed. Reload chat and answer the latest prompt.",
+        )
+
+    raw_answer = _as_text(req.pending_answer or req.question)
+    mode = _as_text(pending.get("answer_mode")).lower()
+    if mode == "single_choice":
+        options = [str(x).strip() for x in (pending.get("options") or []) if str(x).strip()]
+        if not options:
+            raise HTTPException(status_code=500, detail="Pending choice question has no options")
+        if not raw_answer:
+            raise HTTPException(status_code=400, detail="Select one of the provided options")
+        match = next((opt for opt in options if opt.casefold() == raw_answer.casefold()), None)
+        if not match:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid option. Allowed options: {', '.join(options)}",
+            )
+        return match
+
+    if not raw_answer:
+        raise HTTPException(status_code=400, detail="Please provide an answer to continue")
+    return raw_answer
+
+
 def _looks_like_url(v: str) -> bool:
     s = _as_text(v).lower()
     return s.startswith("http://") or s.startswith("https://")
@@ -578,6 +654,8 @@ def _extract_sources_from_tool_event(ev: dict[str, Any], out: list[dict[str, Any
     if not bool(ev.get("ok")):
         return
     tool = _as_text(ev.get("tool"))
+    if tool == "request_user_input":
+        return
     result = ev.get("result")
     if not isinstance(result, dict):
         _walk_tool_result_for_sources(result, out, seen, source_type=tool or "tool")
@@ -838,8 +916,10 @@ def _collect_answer_sources(
             continue
         before = len(out)
         _extract_sources_from_tool_event(ev, out, seen)
+        tool = _as_text(ev.get("tool")) or "tool"
+        if tool == "request_user_input":
+            continue
         if len(out) == before and bool(ev.get("ok")):
-            tool = _as_text(ev.get("tool")) or "tool"
             _append_source(
                 out,
                 seen,
@@ -1012,9 +1092,10 @@ async def _update_chat_memory_summary(chat_id: str) -> dict[str, Any] | None:
 async def ask_agent(req: AskReq):
     chat_id = req.chat_id or f"{req.project_id}::{req.branch}::{req.user}"
     now = datetime.utcnow()
+    db = get_db()
 
     # ensure chat
-    await get_db()["chats"].update_one(
+    await db["chats"].update_one(
         {"chat_id": chat_id},
         {"$setOnInsert": {
             "chat_id": chat_id,
@@ -1033,32 +1114,55 @@ async def ask_agent(req: AskReq):
 
     requested_profile_id = (req.llm_profile_id or "").strip() or None
     if requested_profile_id is not None:
-        await get_db()["chats"].update_one(
+        await db["chats"].update_one(
             {"chat_id": chat_id},
             {"$set": {"llm_profile_id": requested_profile_id, "updated_at": now}},
         )
 
-    # append user message
-    user_msg = {"role": "user", "content": req.question, "ts": now}
-    await get_db()["chats"].update_one(
+    chat_doc = await db["chats"].find_one(
         {"chat_id": chat_id},
-        {
-            "$push": {"messages": user_msg},
-            "$set": {
-                "updated_at": now,
-                "last_message_at": now,
-                "last_message_preview": req.question[:160],
-            },
-            "$setOnInsert": {"title": req.question[:60] or "New chat"},
+        {"tool_policy": 1, "llm_profile_id": 1, "pending_user_question": 1},
+    )
+    active_pending_question = _normalize_pending_user_question((chat_doc or {}).get("pending_user_question"))
+
+    user_text = _as_text(req.question)
+    user_meta: dict[str, Any] | None = None
+    if active_pending_question:
+        resolved_answer = _resolve_pending_user_answer(req, active_pending_question)
+        user_text = resolved_answer
+        user_meta = {
+            "pending_response": {
+                "id": active_pending_question.get("id"),
+                "question": active_pending_question.get("question"),
+                "answer_mode": active_pending_question.get("answer_mode"),
+                "options": active_pending_question.get("options") or [],
+            }
+        }
+    if not user_text:
+        raise HTTPException(status_code=400, detail="question is required")
+
+    # append user message
+    user_msg = {"role": "user", "content": user_text, "ts": now}
+    if user_meta:
+        user_msg["meta"] = user_meta
+    update_doc: dict[str, Any] = {
+        "$push": {"messages": user_msg},
+        "$set": {
+            "updated_at": now,
+            "last_message_at": now,
+            "last_message_preview": user_text[:160],
         },
+        "$setOnInsert": {"title": user_text[:60] or "New chat"},
+    }
+    if active_pending_question:
+        update_doc["$unset"] = {"pending_user_question": ""}
+    await db["chats"].update_one(
+        {"chat_id": chat_id},
+        update_doc,
     )
 
     # run retrieval + llm
     project_doc = await _load_project_doc(req.project_id)
-    chat_doc = await get_db()["chats"].find_one(
-        {"chat_id": chat_id},
-        {"tool_policy": 1, "llm_profile_id": 1},
-    )
     chat_profile_id = None
     if isinstance(chat_doc, dict):
         chat_profile_id = (chat_doc.get("llm_profile_id") or "").strip() or None
@@ -1067,7 +1171,7 @@ async def ask_agent(req: AskReq):
     routed_profile_id = None
     explicit_llm_override = bool(req.llm_base_url or req.llm_api_key or req.llm_model or requested_profile_id)
     if not explicit_llm_override and not chat_profile_id:
-        routed_profile_id = _routed_profile_id(req.question, routing_cfg)
+        routed_profile_id = _routed_profile_id(user_text, routing_cfg)
     selected_profile_id = requested_profile_id or chat_profile_id or routed_profile_id
 
     defaults = await _project_llm_defaults(
@@ -1086,7 +1190,7 @@ async def ask_agent(req: AskReq):
         role=user_role,
         security_policy=defaults.get("security_policy") or {},
     )
-    approval_rows = await get_db()["chat_tool_approvals"].find(
+    approval_rows = await db["chat_tool_approvals"].find(
         {"chatId": chat_id, "expiresAt": {"$gt": datetime.utcnow()}},
         {"toolName": 1, "userId": 1, "expiresAt": 1},
     ).to_list(length=400)
@@ -1095,10 +1199,17 @@ async def ask_agent(req: AskReq):
         effective_tool_policy["approved_tools"] = approved_tools
     grounding_policy = defaults.get("grounding_policy") or {"require_sources": True, "min_sources": 1}
 
-    effective_question = req.question
+    effective_question = user_text
+    if active_pending_question:
+        effective_question = (
+            "The user has answered your follow-up question.\n\n"
+            f"Follow-up question: {active_pending_question.get('question')}\n"
+            f"User answer: {user_text}\n\n"
+            "Continue with the task using this answer."
+        )
     if req.local_repo_context and req.local_repo_context.strip():
         effective_question = (
-            f"{req.question}\n\n"
+            f"{effective_question}\n\n"
             "The frontend executed local repository tools on the developer machine. "
             "Use this evidence directly when relevant:\n\n"
             f"{req.local_repo_context.strip()}"
@@ -1114,7 +1225,7 @@ async def ask_agent(req: AskReq):
     runtime = await build_runtime_for_project(req.project_id)
     routing_mode = None
     if routed_profile_id:
-        routing_mode = _route_intent(req.question, routing_cfg)
+        routing_mode = _route_intent(user_text, routing_cfg)
 
     async def _run_agent_with_current_llm() -> dict[str, Any]:
         return await answer_with_agent(
@@ -1134,18 +1245,24 @@ async def ask_agent(req: AskReq):
 
     failover_used = False
     skip_grounding_enforcement = False
+    pending_user_question: dict[str, Any] | None = None
+    awaiting_user_input = False
     try:
         agent_out = await _run_agent_with_current_llm()
         answer = str((agent_out or {}).get("answer") or "")
         tool_events = (agent_out or {}).get("tool_events") or []
+        pending_user_question = _normalize_pending_user_question((agent_out or {}).get("pending_user_question"))
+        awaiting_user_input = pending_user_question is not None
         answer_sources = _collect_answer_sources(tool_events, local_repo_context=req.local_repo_context)
-        if not answer_sources:
+        if awaiting_user_input:
+            answer_sources = []
+        if not awaiting_user_input and not answer_sources:
             fallback_events, fallback_sources = await _discover_sources_when_missing(
                 project_id=req.project_id,
                 branch=req.branch,
                 user=req.user,
                 chat_id=chat_id,
-                question=req.question,
+                question=user_text,
                 tool_policy=effective_tool_policy,
                 local_repo_context=req.local_repo_context,
             )
@@ -1181,7 +1298,11 @@ async def ask_agent(req: AskReq):
                 agent_out = await _run_agent_with_current_llm()
                 answer = str((agent_out or {}).get("answer") or "")
                 tool_events = (agent_out or {}).get("tool_events") or []
+                pending_user_question = _normalize_pending_user_question((agent_out or {}).get("pending_user_question"))
+                awaiting_user_input = pending_user_question is not None
                 answer_sources = _collect_answer_sources(tool_events, local_repo_context=req.local_repo_context)
+                if awaiting_user_input:
+                    answer_sources = []
                 failover_used = True
             except Exception:
                 logger.exception(
@@ -1213,6 +1334,8 @@ async def ask_agent(req: AskReq):
                     )
                 tool_events = []
                 answer_sources = []
+                pending_user_question = None
+                awaiting_user_input = False
                 skip_grounding_enforcement = True
         else:
             detail_lc = detail.lower()
@@ -1237,6 +1360,8 @@ async def ask_agent(req: AskReq):
                 )
             tool_events = []
             answer_sources = []
+            pending_user_question = None
+            awaiting_user_input = False
             skip_grounding_enforcement = True
     except Exception:
         logger.exception(
@@ -1251,22 +1376,26 @@ async def ask_agent(req: AskReq):
         )
         tool_events = []
         answer_sources = []
+        pending_user_question = None
+        awaiting_user_input = False
         skip_grounding_enforcement = True
 
-    if not answer_sources:
+    if not awaiting_user_input and not answer_sources:
         _, discovered_sources = await _discover_sources_when_missing(
             project_id=req.project_id,
             branch=req.branch,
             user=req.user,
             chat_id=chat_id,
-            question=req.question,
+            question=user_text,
             tool_policy=effective_tool_policy,
             local_repo_context=req.local_repo_context,
         )
         if discovered_sources:
             answer_sources = discovered_sources
 
-    if skip_grounding_enforcement:
+    if awaiting_user_input:
+        grounded_ok = True
+    elif skip_grounding_enforcement:
         grounded_ok = bool(answer_sources)
     else:
         answer, grounded_ok = _enforce_grounded_answer(answer, answer_sources, grounding_policy)
@@ -1282,6 +1411,7 @@ async def ask_agent(req: AskReq):
         "tool_summary": tool_summary,
         "sources": answer_sources,
         "grounded": grounded_ok,
+        "pending_user_question": pending_user_question,
         "llm": {
             "provider": active_llm.get("provider"),
             "model": active_llm.get("model"),
@@ -1290,7 +1420,7 @@ async def ask_agent(req: AskReq):
             "failover_used": failover_used,
         },
     }
-    await get_db()["chats"].update_one(
+    await db["chats"].update_one(
         {"chat_id": chat_id},
         {
             "$push": {
@@ -1305,6 +1435,7 @@ async def ask_agent(req: AskReq):
                 "updated_at": done,
                 "last_message_at": done,
                 "last_message_preview": answer[:160],
+                "pending_user_question": pending_user_question,
             },
         },
     )
@@ -1335,7 +1466,7 @@ async def ask_agent(req: AskReq):
                     }
                 )
             if docs:
-                await get_db()["tool_events"].insert_many(docs, ordered=False)
+                await db["tool_events"].insert_many(docs, ordered=False)
         except Exception:
             logger.exception("Failed to persist tool events for chat_id=%s", chat_id)
 
@@ -1346,4 +1477,5 @@ async def ask_agent(req: AskReq):
         "sources": answer_sources,
         "grounded": grounded_ok,
         "memory_summary": memory_summary,
+        "pending_user_question": pending_user_question,
     }
