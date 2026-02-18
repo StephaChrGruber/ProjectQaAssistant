@@ -239,20 +239,22 @@ class ToolRuntime:
         out = dict(args or {})
         names = self._field_names(model_cls)
 
-        if "project_id" in names and "project_id" not in out:
+        # Always pin tool calls to the active project/user/chat context.
+        # This prevents model hallucinations from routing tools to wrong chats/projects.
+        if "project_id" in names:
             out["project_id"] = ctx.project_id
-        if "projectId" in names and "projectId" not in out:
+        if "projectId" in names:
             out["projectId"] = ctx.project_id
 
         if "branch" in names and "branch" not in out:
             out["branch"] = ctx.branch
 
-        if "chat_id" in names and "chat_id" not in out and ctx.chat_id:
+        if "chat_id" in names and ctx.chat_id:
             out["chat_id"] = ctx.chat_id
 
-        if "user_id" in names and "user_id" not in out:
+        if "user_id" in names:
             out["user_id"] = ctx.user_id
-        if "user" in names and "user" not in out:
+        if "user" in names:
             out["user"] = ctx.user_id
 
         return out
