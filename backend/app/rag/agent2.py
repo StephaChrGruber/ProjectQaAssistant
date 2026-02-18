@@ -48,7 +48,6 @@ def _policy_hint(policy: dict[str, Any] | None) -> str:
 
 
 def _system_prompt(project_id: str, branch: str, user_id: str, runtime: ToolRuntime, policy: dict[str, Any] | None) -> str:
-    tool_schema = runtime.schema_text()
     policy_text = _policy_hint(policy)
     return (
         "You are an onboarding + developer assistant for a codebase.\n"
@@ -63,11 +62,15 @@ def _system_prompt(project_id: str, branch: str, user_id: str, runtime: ToolRunt
         '  "args": { ... }\n'
         "}\n\n"
         "IMPORTANT:\n"
-        "- Use only tools listed below.\n"
-        "- Only include tool args that exist in that tool schema.\n"
+        "- Use only tools listed below or returned by list_tools.\n"
+        "- Only include tool args that exist in tool details from get_tool_details.\n"
         "- Do not invent arguments.\n"
         "- Prefer tools over guessing.\n"
-        "- Gather concrete evidence from tools before answering.\n"
+        "- Final answers must be based only on TOOL_RESULT evidence gathered in this chat.\n"
+        "- If evidence is missing, ask the user for more input using request_user_input.\n"
+        "- Do not browse/search the web or use external actions unless the user explicitly asks and confirms.\n"
+        "- If external information/action is needed but not confirmed, ask first via request_user_input.\n"
+        "- Start tool discovery with list_tools/search_tools/get_tool_details.\n"
         "- If key information is missing from the user, call request_user_input.\n"
         "- For free-form user replies use answer_mode='open_text'.\n"
         "- For clickable choices use answer_mode='single_choice' and provide 2-8 clear options.\n"
@@ -79,9 +82,12 @@ def _system_prompt(project_id: str, branch: str, user_id: str, runtime: ToolRunt
         "- Always cite file paths + line numbers when explaining code.\n"
         "- After TOOL_RESULT, continue reasoning.\n"
         "- If enough info is available, answer in normal text (NOT JSON).\n\n"
-        "AVAILABLE TOOLS\n"
+        "BOOTSTRAP TOOLS\n"
         "────────────────────────────────\n"
-        f"{tool_schema}"
+        "- list_tools(args): include_unavailable?:bool, include_parameters?:bool, limit?:int\n"
+        "- search_tools(args): query:str, include_unavailable?:bool, include_parameters?:bool, limit?:int\n"
+        "- get_tool_details(args): tool_name:str, include_unavailable?:bool\n"
+        "- request_user_input(args): question:str, answer_mode:'open_text'|'single_choice', options?:string[]\n"
     )
 
 
@@ -235,6 +241,7 @@ class Agent2:
 
         tool_calls = 0
         tool_events: list[dict[str, Any]] = []
+        no_evidence_cycles = 0
 
         while True:
             assistant_text = _llm_chat_nostream(
@@ -250,9 +257,32 @@ class Agent2:
 
             tool_call = _try_parse_tool_call(assistant_text, self.runtime)
             if not tool_call:
+                has_ok_tool = any(bool((ev or {}).get("ok")) for ev in tool_events)
+                if not has_ok_tool:
+                    no_evidence_cycles += 1
+                    if no_evidence_cycles > 2:
+                        return {
+                            "answer": (
+                                "I need to gather evidence from tools before I can answer. "
+                                "Please clarify what source/context to use, and I will continue."
+                            ),
+                            "tool_events": tool_events,
+                        }
+                    messages.append({"role": "assistant", "content": assistant_text})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "You must gather evidence via tools before finalizing an answer. "
+                                "Start with list_tools/search_tools/get_tool_details, then call relevant tools."
+                            ),
+                        }
+                    )
+                    continue
                 return {"answer": assistant_text, "tool_events": tool_events}
 
             tool_calls += 1
+            no_evidence_cycles = 0
             if tool_calls > self.max_tool_calls:
                 return {
                     "answer": (

@@ -303,6 +303,40 @@ class ReadChatMessagesResponse(BaseModel):
     messages: List[ChatMessageItem] = Field(default_factory=list)
 
 
+class ListToolsRequest(BaseModel):
+    include_unavailable: bool = False
+    include_parameters: bool = False
+    limit: int = 200
+
+
+class ListToolsResponse(BaseModel):
+    count: int
+    tools: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class SearchToolsRequest(BaseModel):
+    query: str
+    include_unavailable: bool = False
+    include_parameters: bool = False
+    limit: int = 20
+
+
+class SearchToolsResponse(BaseModel):
+    query: str
+    count: int
+    tools: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class GetToolDetailsRequest(BaseModel):
+    tool_name: str
+    include_unavailable: bool = True
+
+
+class GetToolDetailsResponse(BaseModel):
+    found: bool
+    tool: Optional[Dict[str, Any]] = None
+
+
 class RequestUserInputRequest(BaseModel):
     project_id: str
     chat_id: str

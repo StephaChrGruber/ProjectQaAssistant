@@ -20,12 +20,16 @@ from ..models.tools import (
     CreateChatTaskRequest,
     CreateJiraIssueRequest,
     GenerateProjectDocsRequest,
+    GetToolDetailsRequest,
+    GetToolDetailsResponse,
     GetProjectMetadataRequest,
     GitDiffRequest,
     GitLogRequest,
     GitShowFileAtRefRequest,
     GitStatusRequest,
     KeywordSearchRequest,
+    ListToolsRequest,
+    ListToolsResponse,
     OpenFileRequest,
     RequestUserInputRequest,
     ReadChatMessagesRequest,
@@ -33,6 +37,8 @@ from ..models.tools import (
     RepoGrepRequest,
     RepoTreeRequest,
     RunTestsRequest,
+    SearchToolsRequest,
+    SearchToolsResponse,
     SymbolSearchRequest,
     ToolEnvelope,
     ToolError,
@@ -156,6 +162,10 @@ class ToolRuntime:
         return fallback
 
     def _is_tool_allowed(self, name: str, spec: ToolSpec, policy: dict[str, Any]) -> tuple[bool, str]:
+        always_allowed = {"list_tools", "search_tools", "get_tool_details", "request_user_input"}
+        if name in always_allowed:
+            return True, ""
+
         allowed = self._as_tool_name_set(policy.get("allowed_tools") or policy.get("allow_tools"))
         blocked = self._as_tool_name_set(policy.get("blocked_tools") or policy.get("deny_tools"))
         approved = self._as_tool_name_set(policy.get("approved_tools"))
@@ -589,12 +599,102 @@ def _show_file_handler(req: GitShowFileAtRefRequest):
     return open_file(open_req)
 
 
+def _catalog_with_policy(
+    runtime: ToolRuntime,
+    ctx: ToolContext,
+    *,
+    include_unavailable: bool,
+    include_parameters: bool,
+    query: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    query_lc = str(query or "").strip().lower()
+    policy = runtime._policy_dict(ctx)
+    rows = runtime.catalog()
+    out: list[dict[str, Any]] = []
+
+    for row in rows:
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue
+        spec = runtime._tools.get(name)
+        if not spec:
+            continue
+
+        allowed, reason = runtime._is_tool_allowed(name, spec, policy)
+        if not include_unavailable and not allowed:
+            continue
+
+        if query_lc:
+            hay_parts: list[str] = [
+                name,
+                str(row.get("description") or ""),
+                str(row.get("origin") or ""),
+                str(row.get("runtime") or ""),
+                str(row.get("version") or ""),
+            ]
+            params = row.get("parameters")
+            if isinstance(params, list):
+                for p in params:
+                    if not isinstance(p, dict):
+                        continue
+                    hay_parts.append(str(p.get("name") or ""))
+                    hay_parts.append(str(p.get("type") or ""))
+            hay = " ".join(hay_parts).lower()
+            if query_lc not in hay:
+                continue
+
+        item = dict(row)
+        item["available"] = bool(allowed)
+        if not allowed:
+            item["blocked_reason"] = reason
+        if not include_parameters:
+            item.pop("parameters", None)
+        out.append(item)
+
+    out.sort(key=lambda x: str(x.get("name") or ""))
+    return out[: max(1, min(int(limit or 200), 1000))]
+
+
 def build_default_tool_runtime(
     *,
     enabled_names: set[str] | None = None,
     spec_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> ToolRuntime:
     rt = ToolRuntime()
+
+    async def _list_tools_handler(req: ListToolsRequest, ctx: ToolContext) -> ListToolsResponse:
+        rows = _catalog_with_policy(
+            rt,
+            ctx,
+            include_unavailable=bool(req.include_unavailable),
+            include_parameters=bool(req.include_parameters),
+            limit=max(1, min(int(req.limit or 200), 500)),
+        )
+        return ListToolsResponse(count=len(rows), tools=rows)
+
+    async def _search_tools_handler(req: SearchToolsRequest, ctx: ToolContext) -> SearchToolsResponse:
+        rows = _catalog_with_policy(
+            rt,
+            ctx,
+            include_unavailable=bool(req.include_unavailable),
+            include_parameters=bool(req.include_parameters),
+            query=str(req.query or ""),
+            limit=max(1, min(int(req.limit or 20), 200)),
+        )
+        return SearchToolsResponse(query=str(req.query or ""), count=len(rows), tools=rows)
+
+    async def _get_tool_details_handler(req: GetToolDetailsRequest, ctx: ToolContext) -> GetToolDetailsResponse:
+        rows = _catalog_with_policy(
+            rt,
+            ctx,
+            include_unavailable=bool(req.include_unavailable),
+            include_parameters=True,
+            limit=1000,
+        )
+        needle = str(req.tool_name or "").strip().lower()
+        item = next((row for row in rows if str(row.get("name") or "").strip().lower() == needle), None)
+        return GetToolDetailsResponse(found=bool(item), tool=item)
 
     rt.register(
         ToolSpec(
@@ -606,6 +706,42 @@ def build_default_tool_runtime(
             rate_limit_per_min=120,
             max_retries=1,
             cache_ttl_sec=30,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="list_tools",
+            description="Lists available tools for the current chat context.",
+            model=ListToolsRequest,
+            handler=_list_tools_handler,
+            timeout_sec=10,
+            rate_limit_per_min=120,
+            max_retries=1,
+            cache_ttl_sec=5,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="search_tools",
+            description="Searches available tools by name/description/parameter names.",
+            model=SearchToolsRequest,
+            handler=_search_tools_handler,
+            timeout_sec=10,
+            rate_limit_per_min=120,
+            max_retries=1,
+            cache_ttl_sec=5,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="get_tool_details",
+            description="Returns full details for a specific tool, including accepted parameters.",
+            model=GetToolDetailsRequest,
+            handler=_get_tool_details_handler,
+            timeout_sec=10,
+            rate_limit_per_min=120,
+            max_retries=1,
+            cache_ttl_sec=5,
         )
     )
     rt.register(
