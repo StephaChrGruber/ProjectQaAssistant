@@ -1,7 +1,10 @@
 "use client"
 
+import dynamic from "next/dynamic"
 import Link from "next/link"
-import { type KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import type { editor as MonacoEditorNS } from "monaco-editor"
+import type { OnMount } from "@monaco-editor/react"
 import {
     Alert,
     Box,
@@ -33,6 +36,8 @@ import ContentCopyRounded from "@mui/icons-material/ContentCopyRounded"
 import RefreshRounded from "@mui/icons-material/RefreshRounded"
 import { backendJson } from "@/lib/backend"
 import { executeLocalToolJob, type LocalToolJobPayload } from "@/lib/local-custom-tool-runner"
+
+const MonacoEditor = dynamic(() => import("@monaco-editor/react"), { ssr: false })
 
 type ProjectRow = {
     id: string
@@ -303,153 +308,87 @@ def run(args, context):
     },
 ]
 
-type TokenKind = "plain" | "keyword" | "string" | "number" | "comment" | "operator" | "builtin"
-type Token = { kind: TokenKind; text: string }
-type LangRule = { kind: TokenKind; re: RegExp }
-
 function normalizeEditorLanguage(runtime: ToolForm["runtime"] | "json"): "python" | "typescript" | "json" {
     if (runtime === "backend_python") return "python"
     if (runtime === "local_typescript") return "typescript"
     return "json"
 }
 
-function editorKeywordRegex(words: string[]): RegExp {
-    return new RegExp(`\\b(?:${words.join("|")})\\b`, "y")
+const TOOL_EDITOR_HELPERS_D_TS = `
+type Primitive = string | number | boolean | null
+type JsonValue = Primitive | JsonValue[] | { [key: string]: JsonValue }
+
+interface ToolContext {
+  project_id?: string
+  branch?: string
+  user_id?: string
+  chat_id?: string
+  [key: string]: JsonValue | undefined
 }
 
-function editorRulesForLanguage(language: "python" | "typescript" | "json"): LangRule[] {
-    const common = {
-        strings: [
-            { kind: "string" as const, re: /"(?:\\.|[^"\\])*"/y },
-            { kind: "string" as const, re: /'(?:\\.|[^'\\])*'/y },
-            { kind: "string" as const, re: /`(?:\\.|[^`\\])*`/y },
-        ],
-        numbers: [{ kind: "number" as const, re: /\b\d+(?:\.\d+)?\b/y }],
-        operators: [{ kind: "operator" as const, re: /[{}()[\].,;:+\-*/%=<>!&|^~?]+/y }],
-    }
+interface GrepOptions {
+  regex?: boolean
+  caseSensitive?: boolean
+  maxResults?: number
+  contextLines?: number
+  glob?: string
+}
 
-    if (language === "python") {
-        return [
-            { kind: "comment", re: /#[^\n]*/y },
-            ...common.strings,
-            {
-                kind: "keyword",
-                re: editorKeywordRegex([
-                    "def",
-                    "class",
-                    "if",
-                    "elif",
-                    "else",
-                    "for",
-                    "while",
-                    "try",
-                    "except",
-                    "finally",
-                    "return",
-                    "import",
-                    "from",
-                    "as",
-                    "with",
-                    "lambda",
-                    "pass",
-                    "break",
-                    "continue",
-                    "yield",
-                    "raise",
-                    "in",
-                    "is",
-                    "not",
-                    "and",
-                    "or",
-                ]),
-            },
-            { kind: "builtin", re: editorKeywordRegex(["True", "False", "None"]) },
-            ...common.numbers,
-            ...common.operators,
-        ]
-    }
+interface GrepHit {
+  path: string
+  line: number
+  column: number
+  snippet: string
+  before: string[]
+  after: string[]
+}
 
-    if (language === "json") {
-        return [
-            { kind: "string", re: /"(?:\\.|[^"\\])*"(?=\s*:)/y },
-            { kind: "string", re: /"(?:\\.|[^"\\])*"/y },
-            { kind: "builtin", re: editorKeywordRegex(["true", "false", "null"]) },
-            ...common.numbers,
-            ...common.operators,
-        ]
-    }
+interface LocalRepoHelpers {
+  hasSnapshot(): boolean
+  info(): { rootName: string; indexedAt: string; files: number }
+  listFiles(limit?: number): string[]
+  readFile(path: string, maxChars?: number): string
+  grep(pattern: string, options?: GrepOptions): GrepHit[]
+}
 
+interface ToolHelpers {
+  localRepo: LocalRepoHelpers
+  nowIso(): string
+}
+`
+
+function pythonEditorSuggestions(monaco: any) {
+    const k = monaco.languages.CompletionItemKind
+    const r = monaco.languages.CompletionItemInsertTextRule
     return [
-        { kind: "comment", re: /\/\/[^\n]*/y },
-        { kind: "comment", re: /\/\*[\s\S]*?\*\//y },
-        ...common.strings,
         {
-            kind: "keyword",
-            re: editorKeywordRegex([
-                "function",
-                "const",
-                "let",
-                "var",
-                "class",
-                "interface",
-                "type",
-                "if",
-                "else",
-                "switch",
-                "case",
-                "for",
-                "while",
-                "do",
-                "return",
-                "import",
-                "from",
-                "export",
-                "async",
-                "await",
-                "try",
-                "catch",
-                "finally",
-                "new",
-            ]),
+            label: "run(args, context)",
+            kind: k.Snippet,
+            documentation: "Main tool entrypoint",
+            insertText: "def run(args, context):\n    return {\"ok\": True}\n",
+            insertTextRules: r.InsertAsSnippet,
         },
-        { kind: "builtin", re: editorKeywordRegex(["true", "false", "null", "undefined"]) },
-        ...common.numbers,
-        ...common.operators,
+        {
+            label: "context.project_id",
+            kind: k.Variable,
+            insertText: "context.get(\"project_id\")",
+        },
+        {
+            label: "context.branch",
+            kind: k.Variable,
+            insertText: "context.get(\"branch\")",
+        },
+        {
+            label: "context.user_id",
+            kind: k.Variable,
+            insertText: "context.get(\"user_id\")",
+        },
+        {
+            label: "context.chat_id",
+            kind: k.Variable,
+            insertText: "context.get(\"chat_id\")",
+        },
     ]
-}
-
-function tokenizeEditorCode(code: string, language: "python" | "typescript" | "json"): Token[] {
-    const rules = editorRulesForLanguage(language)
-    const out: Token[] = []
-    let i = 0
-    while (i < code.length) {
-        let matched = false
-        for (const rule of rules) {
-            rule.re.lastIndex = i
-            const m = rule.re.exec(code)
-            if (m && m.index === i && m[0].length > 0) {
-                out.push({ kind: rule.kind, text: m[0] })
-                i += m[0].length
-                matched = true
-                break
-            }
-        }
-        if (!matched) {
-            out.push({ kind: "plain", text: code[i] })
-            i += 1
-        }
-    }
-    return out
-}
-
-function editorTokenColor(kind: TokenKind): string {
-    if (kind === "keyword") return "#5C6BC0"
-    if (kind === "string") return "#2E7D32"
-    if (kind === "number") return "#EF6C00"
-    if (kind === "comment") return "#607D8B"
-    if (kind === "operator") return "#C2185B"
-    if (kind === "builtin") return "#6A1B9A"
-    return "inherit"
 }
 
 function normalizeCodeText(raw: string): string {
@@ -499,7 +438,6 @@ function EditorCodePreview({
     language: "python" | "typescript" | "json"
     minHeight?: number
 }) {
-    const tokens = useMemo(() => tokenizeEditorCode(code || "", language), [code, language])
     return (
         <Paper
             variant="outlined"
@@ -507,30 +445,24 @@ function EditorCodePreview({
                 minHeight,
                 maxHeight: 520,
                 overflow: "auto",
-                p: 1.2,
-                bgcolor: "#fbfcff",
                 borderStyle: "dashed",
             }}
         >
-            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.8 }}>
-                Syntax preview
-            </Typography>
-            <Box
-                component="pre"
-                sx={{
-                    m: 0,
-                    whiteSpace: "pre-wrap",
-                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-                    fontSize: 12.5,
-                    lineHeight: 1.55,
+            <MonacoEditor
+                height={`${Math.max(220, minHeight)}px`}
+                language={language}
+                value={code}
+                theme="vs"
+                options={{
+                    readOnly: true,
+                    minimap: { enabled: false },
+                    scrollBeyondLastLine: false,
+                    automaticLayout: true,
+                    wordWrap: "on",
+                    lineNumbersMinChars: 3,
+                    fontSize: 13,
                 }}
-            >
-                {tokens.map((tok, idx) => (
-                    <Box key={`${idx}-${tok.kind}`} component="span" sx={{ color: editorTokenColor(tok.kind) }}>
-                        {tok.text}
-                    </Box>
-                ))}
-            </Box>
+            />
         </Paper>
     )
 }
@@ -592,6 +524,8 @@ export default function AdminCustomToolsPage() {
     const [versionCodeRows, setVersionCodeRows] = useState<ToolVersionRow[]>([])
     const [versionCodeLoading, setVersionCodeLoading] = useState(false)
     const [selectedVersionCode, setSelectedVersionCode] = useState<number>(0)
+    const codeEditorRef = useRef<MonacoEditorNS.IStandaloneCodeEditor | null>(null)
+    const monacoConfiguredRef = useRef(false)
 
     const runtimeTemplates = useMemo(
         () => TOOL_TEMPLATES.filter((t) => t.runtime === form.runtime),
@@ -602,6 +536,31 @@ export default function AdminCustomToolsPage() {
         () => versionCodeRows.find((v) => v.version === selectedVersionCode) || null,
         [versionCodeRows, selectedVersionCode]
     )
+
+    const handleCodeEditorMount = useCallback<OnMount>((editor, monaco) => {
+        codeEditorRef.current = editor
+        if (monacoConfiguredRef.current) return
+        monacoConfiguredRef.current = true
+
+        monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
+            target: monaco.languages.typescript.ScriptTarget.ES2020,
+            module: monaco.languages.typescript.ModuleKind.ESNext,
+            allowNonTsExtensions: true,
+            allowJs: true,
+            checkJs: true,
+            noEmit: true,
+            strict: false,
+        })
+        monaco.languages.typescript.typescriptDefaults.addExtraLib(
+            TOOL_EDITOR_HELPERS_D_TS,
+            "ts:filename/tool-runtime-helpers.d.ts"
+        )
+        monaco.languages.registerCompletionItemProvider("python", {
+            provideCompletionItems: () => ({
+                suggestions: pythonEditorSuggestions(monaco),
+            }),
+        })
+    }, [])
 
     useEffect(() => {
         let stopped = false
@@ -776,8 +735,22 @@ export default function AdminCustomToolsPage() {
         setNotice(`Applied template: ${template.name}`)
     }
 
-    function formatCode() {
+    async function formatCode() {
         try {
+            if (!form.codeText.trim()) {
+                setNotice("Code editor is empty.")
+                return
+            }
+            if (form.runtime === "local_typescript" && codeEditorRef.current) {
+                const action = codeEditorRef.current.getAction("editor.action.formatDocument")
+                if (action) {
+                    await action.run()
+                }
+                const value = codeEditorRef.current.getValue()
+                setForm((f) => ({ ...f, codeText: value }))
+                setNotice("Code formatted.")
+                return
+            }
             const formatted = formatCodeForRuntime(form.runtime, form.codeText)
             setForm((f) => ({ ...f, codeText: formatted }))
             setNotice(formatted ? "Code formatted." : "Code editor is empty.")
@@ -811,19 +784,6 @@ export default function AdminCustomToolsPage() {
         }
         setForm((f) => ({ ...f, codeText: code }))
         setNotice(`Loaded version v${selectedVersionCode} into editor.`)
-    }
-
-    function onCodeEditorKeyDown(e: KeyboardEvent<HTMLDivElement>) {
-        if (e.key !== "Tab") return
-        e.preventDefault()
-        const target = e.target as HTMLTextAreaElement
-        const start = target.selectionStart ?? 0
-        const end = target.selectionEnd ?? 0
-        const next = `${form.codeText.slice(0, start)}    ${form.codeText.slice(end)}`
-        setForm((f) => ({ ...f, codeText: next }))
-        window.requestAnimationFrame(() => {
-            target.selectionStart = target.selectionEnd = start + 4
-        })
     }
 
     async function createTool() {
@@ -1311,18 +1271,33 @@ export default function AdminCustomToolsPage() {
                                     )}
                                 </Paper>
                                 <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", xl: "1fr 1fr" }, gap: 1 }}>
-                                    <TextField
-                                        label={form.runtime === "local_typescript" ? "TypeScript code (define function run(args, context, helpers))" : "Python code (define run(args, context))"}
-                                        size="small"
-                                        value={form.codeText}
-                                        onChange={(e) => setForm((f) => ({ ...f, codeText: e.target.value }))}
-                                        onKeyDown={onCodeEditorKeyDown}
-                                        fullWidth
-                                        multiline
-                                        minRows={16}
-                                        sx={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}
-                                    />
-                                    <EditorCodePreview code={form.codeText} language={codeLanguage} minHeight={360} />
+                                    <Paper variant="outlined" sx={{ minHeight: 380, overflow: "hidden" }}>
+                                        <MonacoEditor
+                                            height="400px"
+                                            language={codeLanguage}
+                                            value={form.codeText}
+                                            onMount={handleCodeEditorMount}
+                                            onChange={(value) => setForm((f) => ({ ...f, codeText: String(value || "") }))}
+                                            theme="vs"
+                                            options={{
+                                                minimap: { enabled: false },
+                                                automaticLayout: true,
+                                                scrollBeyondLastLine: false,
+                                                fontSize: 13,
+                                                lineHeight: 20,
+                                                tabSize: 4,
+                                                insertSpaces: true,
+                                                wordWrap: "on",
+                                                quickSuggestions: {
+                                                    other: true,
+                                                    comments: false,
+                                                    strings: true,
+                                                },
+                                                suggestOnTriggerCharacters: true,
+                                                parameterHints: { enabled: true },
+                                            }}
+                                        />
+                                    </Paper>
                                 </Box>
                                 <Stack direction="row" spacing={1}>
                                     <Button
