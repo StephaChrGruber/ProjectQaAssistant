@@ -2030,9 +2030,52 @@ async def git_fetch(req: GitFetchRequest, ctx: Any = None) -> GitFetchResponse:
     if _is_browser_local_repo_path(repo_path_raw):
         remote_connector = await _remote_repo_connector(req.project_id)
         if not remote_connector:
-            raise RuntimeError(
-                "git_fetch is not available for browser-local repositories without a configured remote git connector."
+            # Browser-local mode without configured remote connector:
+            # keep tool non-fatal and refresh local branch refs from browser git metadata.
+            local_result = await _run_browser_local_git_tool(
+                tool_name="git_list_branches",
+                project_id=req.project_id,
+                ctx=ctx,
+                args={"max_branches": 1000},
+                timeout_sec=45,
             )
+            active_branch = str(local_result.get("active_branch") or meta.default_branch or "main").strip() or "main"
+            raw = local_result.get("branches")
+            parsed: list[GitBranchItem] = []
+            if isinstance(raw, list):
+                for item in raw:
+                    if isinstance(item, dict):
+                        name = str(item.get("name") or "").strip()
+                    else:
+                        name = str(item or "").strip()
+                    if not name:
+                        continue
+                    parsed.append(GitBranchItem(name=name))
+            merged = _merge_branch_items(
+                parsed,
+                default_branch=(meta.default_branch or "main").strip() or "main",
+                active_branch=active_branch,
+                max_branches=1000,
+            )
+            await _store_browser_local_branch_state(
+                project_id=req.project_id,
+                active_branch=active_branch,
+                branches=[b.name for b in merged],
+                set_default_branch=False,
+            )
+            out = GitFetchResponse(
+                remote=remote,
+                output=(
+                    "Browser-local repository has no configured remote connector. "
+                    "Remote fetch was skipped; local branch refs were refreshed from the local git metadata."
+                ),
+            )
+            logger.info(
+                "git_fetch.done project=%s mode=browser_local_local_refs_only branches=%s",
+                req.project_id,
+                len(merged),
+            )
+            return out
         default_branch = (meta.default_branch or "main").strip() or "main"
         active_branch = str((remote_connector.get("config") or {}).get("branch") or default_branch).strip() or default_branch
         raw_items = await _remote_branch_items(remote_connector, 1000)
