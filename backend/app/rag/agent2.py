@@ -20,6 +20,8 @@ class LLMUpstreamError(RuntimeError):
 
 _RUNTIME: ToolRuntime = build_default_tool_runtime()
 
+_DISCOVERY_TOOLS = {"list_tools", "search_tools", "get_tool_details"}
+
 
 def _base(llm_base_url: str | None = None) -> str:
     base = (llm_base_url or settings.LLM_BASE_URL or "http://ollama:11434").rstrip("/")
@@ -71,6 +73,8 @@ def _system_prompt(project_id: str, branch: str, user_id: str, runtime: ToolRunt
         "- Do not browse/search the web or use external actions unless the user explicitly asks and confirms.\n"
         "- If external information/action is needed but not confirmed, ask first via request_user_input.\n"
         "- Start tool discovery with list_tools/search_tools/get_tool_details.\n"
+        "- If the user asks you to perform a change/action (e.g. create/switch branch, commit, push/pull, write/update), you MUST execute the corresponding tool before final answer.\n"
+        "- Never stop at planning language like 'I will now do X' without an actual tool call.\n"
         "- If key information is missing from the user, call request_user_input.\n"
         "- For free-form user replies use answer_mode='open_text'.\n"
         "- For clickable choices use answer_mode='single_choice' and provide 2-8 clear options.\n"
@@ -111,6 +115,75 @@ def _try_parse_tool_call(text: str, runtime: ToolRuntime) -> Optional[Dict[str, 
     if not isinstance(args, dict):
         return None
     return {"tool": tool, "args": args}
+
+
+def _question_is_tool_catalog_request(text: str) -> bool:
+    q = (text or "").strip().lower()
+    if not q:
+        return False
+    markers = (
+        "list tools",
+        "what tools",
+        "which tools",
+        "available tools",
+        "tool catalog",
+        "search tools",
+    )
+    return any(m in q for m in markers)
+
+
+def _required_action_tools(question: str) -> set[str]:
+    q = (question or "").strip().lower()
+    if not q:
+        return set()
+    required: set[str] = set()
+
+    if "create branch" in q or "new branch" in q:
+        required.update({"git_create_branch", "git_checkout_branch"})
+    if "checkout branch" in q or "switch branch" in q or "change branch" in q:
+        required.add("git_checkout_branch")
+    if "list branch" in q or "show branches" in q or "which branches" in q:
+        required.add("git_list_branches")
+    if "stage " in q or "git add" in q:
+        required.add("git_stage_files")
+    if "unstage" in q or "git reset" in q:
+        required.add("git_unstage_files")
+    if "commit" in q:
+        required.add("git_commit")
+    if "fetch" in q:
+        required.add("git_fetch")
+    if "pull" in q:
+        required.add("git_pull")
+    if "push" in q:
+        required.add("git_push")
+    return required
+
+
+def _has_successful_tool(events: list[dict[str, Any]], names: set[str]) -> bool:
+    if not names:
+        return False
+    for ev in events or []:
+        if not isinstance(ev, dict) or not bool(ev.get("ok")):
+            continue
+        tool = str(ev.get("tool") or "").strip()
+        if tool in names:
+            return True
+    return False
+
+
+def _has_successful_evidence_tool(events: list[dict[str, Any]]) -> bool:
+    for ev in events or []:
+        if not isinstance(ev, dict) or not bool(ev.get("ok")):
+            continue
+        tool = str(ev.get("tool") or "").strip()
+        if not tool:
+            continue
+        if tool in _DISCOVERY_TOOLS:
+            continue
+        if tool == "request_user_input":
+            continue
+        return True
+    return False
 
 
 def _llm_chat_nostream(
@@ -242,6 +315,15 @@ class Agent2:
         tool_calls = 0
         tool_events: list[dict[str, Any]] = []
         no_evidence_cycles = 0
+        required_action_tools = _required_action_tools(user_text)
+        logger.info(
+            "agent2.run.start project=%s branch=%s user=%s chat_id=%s required_action_tools=%s",
+            self.project_id,
+            self.branch,
+            self.user_id,
+            self.chat_id or "",
+            sorted(required_action_tools),
+        )
 
         while True:
             assistant_text = _llm_chat_nostream(
@@ -257,8 +339,50 @@ class Agent2:
 
             tool_call = _try_parse_tool_call(assistant_text, self.runtime)
             if not tool_call:
-                has_ok_tool = any(bool((ev or {}).get("ok")) for ev in tool_events)
-                if not has_ok_tool:
+                has_any_ok_tool = any(bool((ev or {}).get("ok")) for ev in tool_events)
+                has_evidence_tool = _has_successful_evidence_tool(tool_events)
+                has_required_action_tool = _has_successful_tool(tool_events, required_action_tools)
+
+                if required_action_tools and not has_required_action_tool:
+                    no_evidence_cycles += 1
+                    logger.warning(
+                        "agent2.guard.missing_required_action_tool project=%s chat_id=%s required=%s tools_seen=%s cycle=%s",
+                        self.project_id,
+                        self.chat_id or "",
+                        sorted(required_action_tools),
+                        [str((ev or {}).get("tool") or "") for ev in tool_events],
+                        no_evidence_cycles,
+                    )
+                    if no_evidence_cycles > 3:
+                        return {
+                            "answer": (
+                                "I could not complete the requested action because no required action tool was executed. "
+                                "Please retry and I will run the tool directly."
+                            ),
+                            "tool_events": tool_events,
+                        }
+                    messages.append({"role": "assistant", "content": assistant_text})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "You must execute an action tool before answering. "
+                                f"Required tool(s): {', '.join(sorted(required_action_tools))}. "
+                                "If clarification is needed, call request_user_input. "
+                                "Do not respond with planning text."
+                            ),
+                        }
+                    )
+                    continue
+
+                if not has_evidence_tool:
+                    if has_any_ok_tool and _question_is_tool_catalog_request(user_text):
+                        logger.info(
+                            "agent2.guard.allow_discovery_only_answer project=%s chat_id=%s",
+                            self.project_id,
+                            self.chat_id or "",
+                        )
+                        return {"answer": assistant_text, "tool_events": tool_events}
                     no_evidence_cycles += 1
                     if no_evidence_cycles > 2:
                         return {
@@ -274,7 +398,8 @@ class Agent2:
                             "role": "user",
                             "content": (
                                 "You must gather evidence via tools before finalizing an answer. "
-                                "Start with list_tools/search_tools/get_tool_details, then call relevant tools."
+                                "Discovery tools alone are not enough unless user explicitly asked for tool catalog. "
+                                "Call relevant execution/read tools now."
                             ),
                         }
                     )
@@ -306,6 +431,13 @@ class Agent2:
             envelope = await self.runtime.execute(tool_name, model_args, ctx)
             envelope_data = envelope.model_dump()
             tool_events.append(envelope_data)
+            logger.info(
+                "agent2.tool_event tool=%s ok=%s duration_ms=%s attempts=%s",
+                tool_name,
+                bool(envelope_data.get("ok")),
+                int(envelope_data.get("duration_ms") or 0),
+                int(envelope_data.get("attempts") or 1),
+            )
 
             if tool_name == "request_user_input" and bool(envelope_data.get("ok")):
                 result = envelope_data.get("result")
