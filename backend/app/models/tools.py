@@ -15,9 +15,10 @@ class GenerateProjectDocsRequest(BaseModel):
 
 
 class RepoGrepRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
     project_id: str
     branch: Optional[str] = None
-    pattern: str
+    pattern: str = Field(alias="query")
     glob: Optional[str] = None
     case_sensitive: bool = False
     regex: bool = True

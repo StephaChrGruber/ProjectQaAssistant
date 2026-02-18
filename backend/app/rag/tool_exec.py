@@ -145,6 +145,125 @@ async function run(args, context, helpers) {
   }
 }
 """.strip(),
+    "repo_grep": """
+async function run(args, context, helpers) {
+  const pattern = String(args.pattern || "").trim()
+  if (!pattern) {
+    throw new Error("repo_grep requires args.pattern")
+  }
+  const matches = helpers.localRepo.grep(pattern, {
+    regex: args.regex !== false,
+    caseSensitive: Boolean(args.case_sensitive),
+    maxResults: Number(args.max_results || 50),
+    contextLines: Number(args.context_lines || 2),
+    glob: args.glob ? String(args.glob) : undefined,
+  })
+  return { matches: Array.isArray(matches) ? matches : [] }
+}
+""".strip(),
+    "open_file": """
+async function run(args, context, helpers) {
+  const path = String(args.path || "").trim().replace(/^\\.\\//, "").replace(/^\\//, "")
+  if (!path) {
+    throw new Error("open_file requires args.path")
+  }
+  const maxChars = Math.max(1000, Math.min(Number(args.max_chars || 200000), 400000))
+  const text = String(helpers.localRepo.readFile(path, maxChars) || "")
+  const lines = text.split(/\\r?\\n/)
+  const total = Math.max(1, lines.length)
+  let start = Number(args.start_line || 1)
+  let end = Number(args.end_line || total)
+  if (!Number.isFinite(start) || start < 1) start = 1
+  if (!Number.isFinite(end) || end < start) end = total
+  start = Math.min(start, total)
+  end = Math.min(Math.max(end, start), total)
+  const content = lines.slice(start - 1, end).join("\\n")
+  return {
+    path,
+    ref: args.ref ? String(args.ref) : (args.branch ? String(args.branch) : null),
+    start_line: start,
+    end_line: end,
+    content,
+  }
+}
+""".strip(),
+    "repo_tree": """
+async function run(args, context, helpers) {
+  const maxDepth = Math.max(1, Math.min(Number(args.max_depth || 4), 12))
+  const maxEntries = Math.max(1, Math.min(Number(args.max_entries || 800), 3000))
+  const includeFiles = args.include_files !== false
+  const includeDirs = args.include_dirs !== false
+  const base = String(args.path || "").trim().replace(/^\\/+|\\/+$/g, "")
+  const glob = String(args.glob || "").trim()
+
+  function matchesGlob(path, pattern) {
+    if (!pattern) return true
+    const escaped = pattern.replace(/[.+^${}()|[\\]\\\\]/g, "\\\\$&").replace(/\\*/g, ".*").replace(/\\?/g, ".")
+    try {
+      return new RegExp(`^${escaped}$`).test(path)
+    } catch {
+      return true
+    }
+  }
+
+  const files = helpers.localRepo.listFiles(5000)
+  const entries = []
+  const dirSet = new Set()
+
+  for (const rawPath of files) {
+    const rel = String(rawPath || "").replaceAll("\\\\", "/").replace(/^\\.\\//, "").replace(/^\\//, "")
+    if (!rel) continue
+    if (base && !(rel === base || rel.startsWith(base + "/"))) continue
+    if (glob && !matchesGlob(rel, glob)) continue
+
+    const relFromBase = base && rel.startsWith(base + "/") ? rel.slice(base.length + 1) : (rel === base ? "" : rel)
+    const depth = relFromBase ? relFromBase.split("/").length : 1
+    if (depth > maxDepth) continue
+
+    if (includeFiles) {
+      entries.push({ path: rel, type: "file", depth, size: null })
+    }
+
+    const parts = rel.split("/")
+    while (parts.length > 1) {
+      parts.pop()
+      const d = parts.join("/")
+      if (!d) break
+      if (base && !(d === base || d.startsWith(base + "/"))) continue
+      const dRel = base && d.startsWith(base + "/") ? d.slice(base.length + 1) : (d === base ? "" : d)
+      const dDepth = dRel ? dRel.split("/").length : 1
+      if (dDepth <= maxDepth) {
+        dirSet.add(d)
+      }
+    }
+  }
+
+  if (includeDirs) {
+    for (const d of Array.from(dirSet.values())) {
+      const dRel = base && d.startsWith(base + "/") ? d.slice(base.length + 1) : (d === base ? "" : d)
+      const dDepth = dRel ? dRel.split("/").length : 1
+      if (dDepth <= maxDepth) {
+        entries.push({ path: d, type: "dir", depth: dDepth, size: null })
+      }
+    }
+  }
+
+  entries.sort((a, b) => {
+    const da = String(a.path || "").split("/").length
+    const db = String(b.path || "").split("/").length
+    if (da !== db) return da - db
+    if (a.path !== b.path) return a.path < b.path ? -1 : 1
+    if (a.type === b.type) return 0
+    return a.type === "dir" ? -1 : 1
+  })
+
+  return {
+    root: base || ".",
+    branch: String(args.branch || "main"),
+    entries: entries.slice(0, maxEntries),
+  }
+}
+""".strip(),
 }
 
 
@@ -1213,13 +1332,60 @@ async def generate_project_docs(project_id: str, branch: Optional[str] = None) -
         raise RuntimeError(str(err)) from err
 
 
-async def repo_grep(req: RepoGrepRequest) -> RepoGrepResponse:
+async def repo_grep(req: RepoGrepRequest, ctx: Any = None) -> RepoGrepResponse:
     req.max_results = max(1, min(req.max_results, 500))
     req.context_lines = max(0, min(req.context_lines, 12))
     pat = _compile_search_pattern(req)
 
     meta = await get_project_metadata(req.project_id)
-    root = Path(meta.repo_path) if meta.repo_path else None
+    repo_path_raw = str(meta.repo_path or "").strip()
+    root = Path(repo_path_raw) if repo_path_raw else None
+
+    if _is_browser_local_repo_path(repo_path_raw):
+        result = await _run_browser_local_git_tool(
+            tool_name="repo_grep",
+            project_id=req.project_id,
+            ctx=ctx,
+            args={
+                "pattern": req.pattern,
+                "glob": req.glob,
+                "case_sensitive": req.case_sensitive,
+                "regex": req.regex,
+                "max_results": req.max_results,
+                "context_lines": req.context_lines,
+                "branch": req.branch or meta.default_branch or "main",
+            },
+            timeout_sec=60,
+        )
+        raw = result.get("matches")
+        if not isinstance(raw, list):
+            return RepoGrepResponse(matches=[])
+
+        def _to_int(value: Any, fallback: int) -> int:
+            try:
+                return int(value)
+            except Exception:
+                return fallback
+
+        matches: list[GrepMatch] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            before_raw = item.get("before")
+            after_raw = item.get("after")
+            matches.append(
+                GrepMatch(
+                    path=str(item.get("path") or ""),
+                    line=max(1, _to_int(item.get("line"), 1)),
+                    column=max(1, _to_int(item.get("column"), 1)),
+                    snippet=str(item.get("snippet") or "")[:500],
+                    before=[str(x) for x in (before_raw if isinstance(before_raw, list) else [])],
+                    after=[str(x) for x in (after_raw if isinstance(after_raw, list) else [])],
+                )
+            )
+            if len(matches) >= req.max_results:
+                break
+        return RepoGrepResponse(matches=matches)
 
     if not (root and root.exists()):
         remote = await _remote_repo_connector(req.project_id)
@@ -1308,11 +1474,48 @@ async def repo_grep(req: RepoGrepRequest) -> RepoGrepResponse:
     return RepoGrepResponse(matches=matches)
 
 
-async def open_file(req: OpenFileRequest) -> OpenFileResponse:
+async def open_file(req: OpenFileRequest, ctx: Any = None) -> OpenFileResponse:
     req.max_chars = max(1000, min(req.max_chars, 400_000))
     meta = await get_project_metadata(req.project_id)
 
-    root = Path(meta.repo_path) if meta.repo_path else None
+    repo_path_raw = str(meta.repo_path or "").strip()
+    if _is_browser_local_repo_path(repo_path_raw):
+        result = await _run_browser_local_git_tool(
+            tool_name="open_file",
+            project_id=req.project_id,
+            ctx=ctx,
+            args={
+                "path": req.path,
+                "branch": req.branch or meta.default_branch or "main",
+                "ref": req.ref,
+                "start_line": req.start_line,
+                "end_line": req.end_line,
+                "max_chars": req.max_chars,
+            },
+            timeout_sec=45,
+        )
+        content = str(result.get("content") or "")
+        ref_raw = result.get("ref")
+        ref = None if ref_raw is None else str(ref_raw)
+        try:
+            start = int(result.get("start_line") or 1)
+        except Exception:
+            start = 1
+        try:
+            end = int(result.get("end_line") or start)
+        except Exception:
+            end = start
+        start = max(1, start)
+        end = max(start, end)
+        return OpenFileResponse(
+            path=str(result.get("path") or req.path),
+            ref=ref,
+            start_line=start,
+            end_line=end,
+            content=content,
+        )
+
+    root = Path(repo_path_raw) if repo_path_raw else None
     if root and root.exists():
         repo_path = str(root)
         current = _current_branch(repo_path)
