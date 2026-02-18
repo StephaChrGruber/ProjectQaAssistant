@@ -174,7 +174,6 @@ export async function executeLocalToolJob(job: LocalToolJobPayload): Promise<unk
     try {
         const factory = new Function(
             `"use strict";
-let run = null;
 ${code}
 if (typeof run !== "function") {
   throw new Error("Local custom tool must define function run(args, context, helpers)");
