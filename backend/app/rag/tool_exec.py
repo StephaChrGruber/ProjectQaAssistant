@@ -1346,6 +1346,7 @@ async def repo_tree(req: RepoTreeRequest) -> RepoTreeResponse:
 
 
 async def git_list_branches(req: GitListBranchesRequest) -> GitListBranchesResponse:
+    logger.info("git_list_branches.start project=%s max_branches=%s", req.project_id, req.max_branches)
     req.max_branches = max(1, min(req.max_branches, 1000))
     meta = await get_project_metadata(req.project_id)
     default_branch = (meta.default_branch or "main").strip() or "main"
@@ -1386,15 +1387,29 @@ async def git_list_branches(req: GitListBranchesRequest) -> GitListBranchesRespo
             branches=branches,
         )
 
-    return GitListBranchesResponse(
+    out = GitListBranchesResponse(
         active_branch=default_branch,
         default_branch=default_branch,
         remote_mode=False,
         branches=[GitBranchItem(name=default_branch, is_default=True)],
     )
+    logger.info(
+        "git_list_branches.done project=%s mode=fallback default_branch=%s count=%s",
+        req.project_id,
+        default_branch,
+        len(out.branches),
+    )
+    return out
 
 
 async def git_checkout_branch(req: GitCheckoutBranchRequest) -> GitCheckoutBranchResponse:
+    logger.info(
+        "git_checkout_branch.start project=%s branch=%s create_if_missing=%s start_point=%s",
+        req.project_id,
+        req.branch,
+        bool(req.create_if_missing),
+        req.start_point or "",
+    )
     branch = _sanitize_branch_name(req.branch)
     start_point = _sanitize_branch_name(req.start_point) if (req.start_point or "").strip() else None
 
@@ -1421,13 +1436,21 @@ async def git_checkout_branch(req: GitCheckoutBranchRequest) -> GitCheckoutBranc
         if req.set_default_branch:
             await _set_project_default_branch(req.project_id, branch)
 
-        return GitCheckoutBranchResponse(
+        out = GitCheckoutBranchResponse(
             branch=branch,
             previous_branch=previous_branch,
             created=created,
             remote_mode=False,
             message=f"Checked out local branch '{branch}'.",
         )
+        logger.info(
+            "git_checkout_branch.done project=%s mode=local branch=%s previous=%s created=%s",
+            req.project_id,
+            out.branch,
+            out.previous_branch or "",
+            out.created,
+        )
+        return out
 
     remote = await _remote_repo_connector(req.project_id)
     if not remote:
@@ -1446,16 +1469,32 @@ async def git_checkout_branch(req: GitCheckoutBranchRequest) -> GitCheckoutBranc
         created = True
 
     await _set_remote_branch_config(req.project_id, remote, branch, set_default_branch=bool(req.set_default_branch))
-    return GitCheckoutBranchResponse(
+    out = GitCheckoutBranchResponse(
         branch=branch,
         previous_branch=previous_branch,
         created=created,
         remote_mode=True,
         message=f"Active connector branch set to '{branch}'.",
     )
+    logger.info(
+        "git_checkout_branch.done project=%s mode=remote connector=%s branch=%s previous=%s created=%s",
+        req.project_id,
+        str(remote.get("type") or ""),
+        out.branch,
+        out.previous_branch or "",
+        out.created,
+    )
+    return out
 
 
 async def git_create_branch(req: GitCreateBranchRequest) -> GitCreateBranchResponse:
+    logger.info(
+        "git_create_branch.start project=%s branch=%s source_ref=%s checkout=%s",
+        req.project_id,
+        req.branch,
+        req.source_ref or "",
+        bool(req.checkout),
+    )
     branch = _sanitize_branch_name(req.branch)
     source_ref = _sanitize_branch_name(req.source_ref) if (req.source_ref or "").strip() else ""
 
@@ -1484,7 +1523,7 @@ async def git_create_branch(req: GitCreateBranchRequest) -> GitCreateBranchRespo
         if req.set_default_branch and checked_out:
             await _set_project_default_branch(req.project_id, branch)
 
-        return GitCreateBranchResponse(
+        out = GitCreateBranchResponse(
             branch=branch,
             source_ref=source,
             created=True,
@@ -1492,6 +1531,14 @@ async def git_create_branch(req: GitCreateBranchRequest) -> GitCreateBranchRespo
             remote_mode=False,
             message=f"Created local branch '{branch}' from '{source}'.",
         )
+        logger.info(
+            "git_create_branch.done project=%s mode=local branch=%s source=%s checked_out=%s",
+            req.project_id,
+            out.branch,
+            out.source_ref,
+            out.checked_out,
+        )
+        return out
 
     remote = await _remote_repo_connector(req.project_id)
     if not remote:
@@ -1511,7 +1558,7 @@ async def git_create_branch(req: GitCreateBranchRequest) -> GitCreateBranchRespo
     elif req.set_default_branch:
         await _set_project_default_branch(req.project_id, branch)
 
-    return GitCreateBranchResponse(
+    out = GitCreateBranchResponse(
         branch=branch,
         source_ref=source,
         created=True,
@@ -1519,9 +1566,19 @@ async def git_create_branch(req: GitCreateBranchRequest) -> GitCreateBranchRespo
         remote_mode=True,
         message=f"Created remote branch '{branch}' from '{source}'.",
     )
+    logger.info(
+        "git_create_branch.done project=%s mode=remote connector=%s branch=%s source=%s checked_out=%s",
+        req.project_id,
+        str(remote.get("type") or ""),
+        out.branch,
+        out.source_ref,
+        out.checked_out,
+    )
+    return out
 
 
 async def git_stage_files(req: GitStageFilesRequest) -> GitStageFilesResponse:
+    logger.info("git_stage_files.start project=%s all=%s paths=%s", req.project_id, bool(req.all), len(req.paths or []))
     meta = await get_project_metadata(req.project_id)
     repo_path = _require_local_repo_path(meta, "git_stage_files")
 
@@ -1530,7 +1587,9 @@ async def git_stage_files(req: GitStageFilesRequest) -> GitStageFilesResponse:
         if proc.returncode != 0:
             raise RuntimeError(_proc_output(proc, 5000) or "Failed to stage all files")
         status = await git_status(GitStatusRequest(project_id=req.project_id))
-        return GitStageFilesResponse(staged_paths=status.staged, status="Staged all changes.")
+        out = GitStageFilesResponse(staged_paths=status.staged, status="Staged all changes.")
+        logger.info("git_stage_files.done project=%s staged=%s", req.project_id, len(out.staged_paths))
+        return out
 
     paths = _sanitize_rel_paths(req.paths or [])
     if not paths:
@@ -1539,10 +1598,13 @@ async def git_stage_files(req: GitStageFilesRequest) -> GitStageFilesResponse:
     if proc.returncode != 0:
         raise RuntimeError(_proc_output(proc, 5000) or "Failed to stage files")
     status = await git_status(GitStatusRequest(project_id=req.project_id))
-    return GitStageFilesResponse(staged_paths=status.staged, status=f"Staged {len(paths)} path(s).")
+    out = GitStageFilesResponse(staged_paths=status.staged, status=f"Staged {len(paths)} path(s).")
+    logger.info("git_stage_files.done project=%s staged=%s", req.project_id, len(out.staged_paths))
+    return out
 
 
 async def git_unstage_files(req: GitUnstageFilesRequest) -> GitUnstageFilesResponse:
+    logger.info("git_unstage_files.start project=%s all=%s paths=%s", req.project_id, bool(req.all), len(req.paths or []))
     meta = await get_project_metadata(req.project_id)
     repo_path = _require_local_repo_path(meta, "git_unstage_files")
 
@@ -1551,7 +1613,9 @@ async def git_unstage_files(req: GitUnstageFilesRequest) -> GitUnstageFilesRespo
         if proc.returncode != 0:
             raise RuntimeError(_proc_output(proc, 5000) or "Failed to unstage all files")
         status = await git_status(GitStatusRequest(project_id=req.project_id))
-        return GitUnstageFilesResponse(unstaged_paths=status.modified + status.untracked, status="Unstaged all files.")
+        out = GitUnstageFilesResponse(unstaged_paths=status.modified + status.untracked, status="Unstaged all files.")
+        logger.info("git_unstage_files.done project=%s unstaged=%s", req.project_id, len(out.unstaged_paths))
+        return out
 
     paths = _sanitize_rel_paths(req.paths or [])
     if not paths:
@@ -1560,13 +1624,16 @@ async def git_unstage_files(req: GitUnstageFilesRequest) -> GitUnstageFilesRespo
     if proc.returncode != 0:
         raise RuntimeError(_proc_output(proc, 5000) or "Failed to unstage files")
     status = await git_status(GitStatusRequest(project_id=req.project_id))
-    return GitUnstageFilesResponse(
+    out = GitUnstageFilesResponse(
         unstaged_paths=status.modified + status.untracked,
         status=f"Unstaged {len(paths)} path(s).",
     )
+    logger.info("git_unstage_files.done project=%s unstaged=%s", req.project_id, len(out.unstaged_paths))
+    return out
 
 
 async def git_commit(req: GitCommitRequest) -> GitCommitResponse:
+    logger.info("git_commit.start project=%s all=%s amend=%s", req.project_id, bool(req.all), bool(req.amend))
     message = (req.message or "").strip()
     if not message:
         raise RuntimeError("message is required")
@@ -1586,10 +1653,13 @@ async def git_commit(req: GitCommitRequest) -> GitCommitResponse:
     commit = _git_stdout(repo_path, ["rev-parse", "HEAD"], timeout=15, not_found_ok=True).strip() or "HEAD"
     branch = _current_branch(repo_path)
     summary = _proc_output(proc, 6000) or f"Committed to {branch}"
-    return GitCommitResponse(branch=branch, commit=commit, summary=summary)
+    out = GitCommitResponse(branch=branch, commit=commit, summary=summary)
+    logger.info("git_commit.done project=%s branch=%s commit=%s", req.project_id, out.branch, out.commit)
+    return out
 
 
 async def git_fetch(req: GitFetchRequest) -> GitFetchResponse:
+    logger.info("git_fetch.start project=%s remote=%s prune=%s", req.project_id, req.remote, bool(req.prune))
     meta = await get_project_metadata(req.project_id)
     repo_path = _require_local_repo_path(meta, "git_fetch")
     remote = (req.remote or "origin").strip() or "origin"
@@ -1599,10 +1669,13 @@ async def git_fetch(req: GitFetchRequest) -> GitFetchResponse:
     proc = _run_git(repo_path, args, timeout=60)
     if proc.returncode != 0:
         raise RuntimeError(_proc_output(proc, 7000) or "git fetch failed")
-    return GitFetchResponse(remote=remote, output=_proc_output(proc, 7000) or f"Fetched from {remote}.")
+    out = GitFetchResponse(remote=remote, output=_proc_output(proc, 7000) or f"Fetched from {remote}.")
+    logger.info("git_fetch.done project=%s remote=%s", req.project_id, out.remote)
+    return out
 
 
 async def git_pull(req: GitPullRequest) -> GitPullResponse:
+    logger.info("git_pull.start project=%s remote=%s branch=%s rebase=%s", req.project_id, req.remote, req.branch or "", bool(req.rebase))
     meta = await get_project_metadata(req.project_id)
     repo_path = _require_local_repo_path(meta, "git_pull")
     remote = (req.remote or "origin").strip() or "origin"
@@ -1613,10 +1686,20 @@ async def git_pull(req: GitPullRequest) -> GitPullResponse:
     proc = _run_git(repo_path, args, timeout=90)
     if proc.returncode != 0:
         raise RuntimeError(_proc_output(proc, 9000) or "git pull failed")
-    return GitPullResponse(remote=remote, branch=branch, output=_proc_output(proc, 9000) or f"Pulled {remote}/{branch}.")
+    out = GitPullResponse(remote=remote, branch=branch, output=_proc_output(proc, 9000) or f"Pulled {remote}/{branch}.")
+    logger.info("git_pull.done project=%s remote=%s branch=%s", req.project_id, out.remote, out.branch)
+    return out
 
 
 async def git_push(req: GitPushRequest) -> GitPushResponse:
+    logger.info(
+        "git_push.start project=%s remote=%s branch=%s set_upstream=%s force_with_lease=%s",
+        req.project_id,
+        req.remote,
+        req.branch or "",
+        bool(req.set_upstream),
+        bool(req.force_with_lease),
+    )
     meta = await get_project_metadata(req.project_id)
     repo_path = _require_local_repo_path(meta, "git_push")
     remote = (req.remote or "origin").strip() or "origin"
@@ -1630,7 +1713,9 @@ async def git_push(req: GitPushRequest) -> GitPushResponse:
     proc = _run_git(repo_path, args, timeout=90)
     if proc.returncode != 0:
         raise RuntimeError(_proc_output(proc, 9000) or "git push failed")
-    return GitPushResponse(remote=remote, branch=branch, output=_proc_output(proc, 9000) or f"Pushed to {remote}/{branch}.")
+    out = GitPushResponse(remote=remote, branch=branch, output=_proc_output(proc, 9000) or f"Pushed to {remote}/{branch}.")
+    logger.info("git_push.done project=%s remote=%s branch=%s", req.project_id, out.remote, out.branch)
+    return out
 
 
 async def git_status(req: GitStatusRequest) -> GitStatusResponse:

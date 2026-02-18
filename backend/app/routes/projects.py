@@ -1,4 +1,5 @@
 # app/routes/projects.py
+import logging
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 from typing import Any
@@ -20,6 +21,7 @@ from ..services.documentation import (
 )
 
 router = APIRouter(prefix="/projects", tags=["projects"])
+logger = logging.getLogger(__name__)
 
 
 class GenerateDocumentationReq(BaseModel):
@@ -203,6 +205,7 @@ async def _azure_branches(config: dict[str, Any], limit: int = 1000) -> list[str
 
 
 async def _remote_project_branches(project_id: str, default_branch: str) -> list[str]:
+    logger.info("projects.branches.remote_lookup.start project=%s default=%s", project_id, default_branch)
     rows = await get_db()["connectors"].find(
         {"projectId": project_id, "isEnabled": True, "type": {"$in": ["github", "bitbucket", "azure_devops"]}}
     ).to_list(length=20)
@@ -214,13 +217,21 @@ async def _remote_project_branches(project_id: str, default_branch: str) -> list
         config = row.get("config") or {}
         try:
             if t == "github":
-                return _ordered_branches(default_branch, await _github_branches(config))
+                out = _ordered_branches(default_branch, await _github_branches(config))
+                logger.info("projects.branches.remote_lookup.done project=%s connector=github count=%s", project_id, len(out))
+                return out
             if t == "bitbucket":
-                return _ordered_branches(default_branch, await _bitbucket_branches(config))
+                out = _ordered_branches(default_branch, await _bitbucket_branches(config))
+                logger.info("projects.branches.remote_lookup.done project=%s connector=bitbucket count=%s", project_id, len(out))
+                return out
             if t == "azure_devops":
-                return _ordered_branches(default_branch, await _azure_branches(config))
+                out = _ordered_branches(default_branch, await _azure_branches(config))
+                logger.info("projects.branches.remote_lookup.done project=%s connector=azure_devops count=%s", project_id, len(out))
+                return out
         except Exception:
+            logger.exception("projects.branches.remote_lookup.failed project=%s connector=%s", project_id, t)
             continue
+    logger.info("projects.branches.remote_lookup.fallback project=%s default=%s", project_id, default_branch)
     return [default_branch]
 
 
@@ -277,12 +288,20 @@ async def list_project_branches(project_id: str, x_dev_user: str | None = Header
 
     default_branch = (p.get("default_branch") or "main").strip() or "main"
     repo_path = (p.get("repo_path") or "").strip()
+    logger.info(
+        "projects.branches.start project=%s default=%s repo_path_set=%s",
+        project_id,
+        default_branch,
+        bool(repo_path),
+    )
     if not repo_path:
         branches = await _remote_project_branches(project_id, default_branch)
+        logger.info("projects.branches.done project=%s mode=remote_only count=%s", project_id, len(branches))
         return {"branches": branches}
 
     if not Path(repo_path).exists():
         branches = await _remote_project_branches(project_id, default_branch)
+        logger.info("projects.branches.done project=%s mode=repo_missing_remote_fallback count=%s", project_id, len(branches))
         return {"branches": branches}
 
     try:
@@ -305,6 +324,12 @@ async def list_project_branches(project_id: str, x_dev_user: str | None = Header
         return {"branches": [default_branch]}
 
     if proc.returncode != 0:
+        logger.warning(
+            "projects.branches.local_git_failed project=%s repo_path=%s returncode=%s",
+            project_id,
+            repo_path,
+            proc.returncode,
+        )
         return {"branches": [default_branch]}
 
     seen: set[str] = set()
@@ -326,6 +351,7 @@ async def list_project_branches(project_id: str, x_dev_user: str | None = Header
     else:
         branches = [default_branch]
 
+    logger.info("projects.branches.done project=%s mode=local count=%s", project_id, len(branches))
     return {"branches": branches}
 
 

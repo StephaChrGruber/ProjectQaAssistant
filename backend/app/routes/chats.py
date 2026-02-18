@@ -13,6 +13,7 @@ COLL = "chats"
 class ChatToolPolicyReq(BaseModel):
     allowed_tools: list[str] = Field(default_factory=list)
     blocked_tools: list[str] = Field(default_factory=list)
+    strict_allowlist: bool = False
     read_only_only: bool = False
     timeout_overrides: dict[str, int] = Field(default_factory=dict)
     rate_limit_overrides: dict[str, int] = Field(default_factory=dict)
@@ -73,9 +74,13 @@ def _clean_policy(req: ChatToolPolicyReq) -> dict[str, Any]:
             out[key] = max(min_value, min(max_value, num))
         return out
 
+    strict_allowlist = bool(req.strict_allowlist)
+    allowed_tools = clean_list(req.allowed_tools) if strict_allowlist else []
+    blocked_tools = clean_list(req.blocked_tools)
     return {
-        "allowed_tools": clean_list(req.allowed_tools),
-        "blocked_tools": clean_list(req.blocked_tools),
+        "allowed_tools": allowed_tools,
+        "blocked_tools": blocked_tools,
+        "strict_allowlist": strict_allowlist,
         "read_only_only": bool(req.read_only_only),
         "timeout_overrides": clean_int_map(req.timeout_overrides, 1, 3600),
         "rate_limit_overrides": clean_int_map(req.rate_limit_overrides, 1, 6000),
@@ -202,6 +207,14 @@ async def get_chat_tool_policy(chat_id: str):
 @router.put("/{chat_id}/tool-policy")
 async def put_chat_tool_policy(chat_id: str, req: ChatToolPolicyReq):
     policy = _clean_policy(req)
+    logger.info(
+        "chat.tool_policy.update chat_id=%s strict_allowlist=%s read_only_only=%s allowed=%s blocked=%s",
+        chat_id,
+        bool(policy.get("strict_allowlist")),
+        bool(policy.get("read_only_only")),
+        len(policy.get("allowed_tools") or []),
+        len(policy.get("blocked_tools") or []),
+    )
     res = await get_db()[COLL].update_one(
         {"chat_id": chat_id},
         {"$set": {"tool_policy": policy, "updated_at": datetime.utcnow()}},

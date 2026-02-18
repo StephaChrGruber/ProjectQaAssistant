@@ -310,9 +310,21 @@ class ToolRuntime:
     async def execute(self, name: str, args: dict[str, Any], ctx: ToolContext) -> ToolEnvelope:
         spec = self._tools.get(name)
         if not spec:
+            logger.warning("tool.unknown tool=%s", name)
             return self._unknown_tool_error(name)
 
         policy = self._policy_dict(ctx)
+        logger.info(
+            "tool.execute.start tool=%s project=%s chat=%s branch=%s read_only_only=%s allowed=%s blocked=%s arg_keys=%s",
+            name,
+            ctx.project_id,
+            ctx.chat_id or "",
+            ctx.branch,
+            bool(policy.get("read_only_only")),
+            len(self._as_tool_name_set(policy.get("allowed_tools") or policy.get("allow_tools"))),
+            len(self._as_tool_name_set(policy.get("blocked_tools") or policy.get("deny_tools"))),
+            sorted(list((args or {}).keys())),
+        )
         allowed, reason = self._is_tool_allowed(name, spec, policy)
         if not allowed:
             logger.warning("tool.forbidden tool=%s reason=%s", name, reason)

@@ -101,7 +101,8 @@ def _extract_security_policy(project: dict[str, Any]) -> dict[str, Any]:
         security = {}
     return {
         "read_only_for_non_admin": bool(security.get("read_only_for_non_admin", True)),
-        "allow_write_tools_for_members": bool(security.get("allow_write_tools_for_members", False)),
+        "allow_write_tools_for_members": bool(security.get("allow_write_tools_for_members", True)),
+        "allow_git_write_tools_for_non_admin": bool(security.get("allow_git_write_tools_for_non_admin", True)),
     }
 
 
@@ -259,13 +260,24 @@ def _extract_max_tool_calls(project: dict) -> int:
 async def _resolve_user_role(project_id: str, user_hint: str) -> str:
     email = _as_text(user_hint).lower()
     if not email:
-        return "viewer"
+        logger.info("ask_agent.role_resolve project=%s user=<empty> role=member reason=missing_user_hint", project_id)
+        return "member"
 
     db = get_db()
     user = await db["users"].find_one({"email": email}, {"_id": 1, "isGlobalAdmin": 1})
     if not user:
-        return "viewer"
+        logger.info(
+            "ask_agent.role_resolve project=%s user=%s role=member reason=user_not_found",
+            project_id,
+            email,
+        )
+        return "member"
     if bool(user.get("isGlobalAdmin")):
+        logger.info(
+            "ask_agent.role_resolve project=%s user=%s role=admin reason=global_admin",
+            project_id,
+            email,
+        )
         return "admin"
 
     membership = await db["memberships"].find_one(
@@ -274,8 +286,19 @@ async def _resolve_user_role(project_id: str, user_hint: str) -> str:
     )
     role = _as_text((membership or {}).get("role")).lower()
     if role in {"admin", "member", "viewer"}:
+        logger.info(
+            "ask_agent.role_resolve project=%s user=%s role=%s reason=membership",
+            project_id,
+            email,
+            role,
+        )
         return role
-    return "viewer"
+    logger.info(
+        "ask_agent.role_resolve project=%s user=%s role=member reason=no_membership_role",
+        project_id,
+        email,
+    )
+    return "member"
 
 
 def _apply_role_tool_policy(
@@ -286,18 +309,47 @@ def _apply_role_tool_policy(
 ) -> dict[str, Any]:
     policy = dict(tool_policy or {})
     role_norm = _as_text(role).lower() or "viewer"
+    git_write_tools = {
+        "git_checkout_branch",
+        "git_create_branch",
+        "git_stage_files",
+        "git_unstage_files",
+        "git_commit",
+        "git_fetch",
+        "git_pull",
+        "git_push",
+    }
     if role_norm == "admin":
+        logger.info("ask_agent.role_policy role=admin read_only_only=false blocked_tools=0")
         return policy
 
     blocked = set(_as_tool_name_list(policy.get("blocked_tools") or policy.get("deny_tools")))
     blocked.update({"create_jira_issue", "write_documentation_file"})
     if role_norm != "member" or not bool(security_policy.get("allow_write_tools_for_members")):
         blocked.update({"run_tests", "generate_project_docs", "create_chat_task"})
+    if not bool(security_policy.get("allow_git_write_tools_for_non_admin", True)):
+        blocked.update(git_write_tools)
+    if role_norm == "viewer":
+        blocked.update(git_write_tools)
     if blocked:
         policy["blocked_tools"] = sorted(blocked)
 
-    if bool(security_policy.get("read_only_for_non_admin", True)):
+    # Keep viewer chats read-only by default, but allow member chats to run scoped write tools.
+    if role_norm == "viewer" and bool(security_policy.get("read_only_for_non_admin", True)):
         policy["read_only_only"] = True
+    elif "read_only_only" in policy:
+        policy["read_only_only"] = bool(policy.get("read_only_only")) and role_norm == "viewer"
+        if not policy["read_only_only"]:
+            policy.pop("read_only_only", None)
+
+    logger.info(
+        "ask_agent.role_policy role=%s read_only_only=%s blocked_tools=%s allow_member_write=%s allow_git_write_non_admin=%s",
+        role_norm,
+        bool(policy.get("read_only_only")),
+        len(_as_tool_name_list(policy.get("blocked_tools"))),
+        bool(security_policy.get("allow_write_tools_for_members")),
+        bool(security_policy.get("allow_git_write_tools_for_non_admin", True)),
+    )
     return policy
 
 
@@ -308,7 +360,10 @@ def _merge_tool_policies(base_policy: dict, chat_policy: dict) -> dict:
 
     base_allowed = _as_tool_name_list(base.get("allowed_tools") or base.get("allow_tools"))
     chat_allowed = _as_tool_name_list(chat.get("allowed_tools") or chat.get("allow_tools"))
-    if chat_allowed:
+    strict_allowlist = bool(base.get("strict_allowlist")) or bool(chat.get("strict_allowlist"))
+    # Backward-compat: old chats persisted full "allowed_tools" snapshots.
+    # We only enforce allow-lists when strict_allowlist is explicitly enabled.
+    if strict_allowlist and chat_allowed:
         if base_allowed:
             allowed_set = set(base_allowed)
             merged["allowed_tools"] = [t for t in chat_allowed if t in allowed_set]
@@ -316,6 +371,8 @@ def _merge_tool_policies(base_policy: dict, chat_policy: dict) -> dict:
             merged["allowed_tools"] = chat_allowed
     elif base_allowed:
         merged["allowed_tools"] = base_allowed
+    elif chat_allowed and strict_allowlist:
+        merged["allowed_tools"] = chat_allowed
 
     base_blocked = set(_as_tool_name_list(base.get("blocked_tools") or base.get("deny_tools")))
     chat_blocked = set(_as_tool_name_list(chat.get("blocked_tools") or chat.get("deny_tools")))
@@ -324,6 +381,8 @@ def _merge_tool_policies(base_policy: dict, chat_policy: dict) -> dict:
         merged["blocked_tools"] = blocked
 
     merged["read_only_only"] = bool(base.get("read_only_only")) or bool(chat.get("read_only_only"))
+    if strict_allowlist:
+        merged["strict_allowlist"] = True
 
     for key in ("timeout_overrides", "rate_limit_overrides", "retry_overrides", "cache_ttl_overrides"):
         out: dict[str, int] = {}
@@ -335,9 +394,18 @@ def _merge_tool_policies(base_policy: dict, chat_policy: dict) -> dict:
                     out[str(k)] = int(v)
                 except Exception:
                     continue
-        if out:
-            merged[key] = out
+            if out:
+                merged[key] = out
 
+    logger.info(
+        "ask_agent.policy_merge strict_allowlist=%s base_allowed=%s chat_allowed=%s merged_allowed=%s blocked=%s read_only_only=%s",
+        strict_allowlist,
+        len(base_allowed),
+        len(chat_allowed),
+        len(_as_tool_name_list(merged.get("allowed_tools"))),
+        len(_as_tool_name_list(merged.get("blocked_tools"))),
+        bool(merged.get("read_only_only")),
+    )
     return merged
 
 
@@ -1203,6 +1271,23 @@ async def ask_agent(req: AskReq):
         effective_tool_policy["approved_tools"] = approved_tools
     grounding_policy = defaults.get("grounding_policy") or {"require_sources": True, "min_sources": 1}
 
+    logger.info(
+        "ask_agent.start project=%s branch=%s user=%s chat_id=%s role=%s profile_id=%s provider=%s model=%s pending=%s policy={read_only_only:%s allowed:%s blocked:%s approved:%s}",
+        req.project_id,
+        req.branch,
+        req.user,
+        chat_id,
+        user_role,
+        selected_profile_id or defaults.get("llm_profile_id"),
+        defaults.get("provider"),
+        defaults.get("llm_model"),
+        bool(active_pending_question),
+        bool(effective_tool_policy.get("read_only_only")),
+        len(_as_tool_name_list(effective_tool_policy.get("allowed_tools"))),
+        len(_as_tool_name_list(effective_tool_policy.get("blocked_tools"))),
+        len(_as_tool_name_list(effective_tool_policy.get("approved_tools"))),
+    )
+
     effective_question = user_text
     if active_pending_question:
         effective_question = (
@@ -1232,6 +1317,15 @@ async def ask_agent(req: AskReq):
         routing_mode = _route_intent(user_text, routing_cfg)
 
     async def _run_agent_with_current_llm() -> dict[str, Any]:
+        logger.info(
+            "ask_agent.agent_call project=%s chat_id=%s provider=%s model=%s profile_id=%s max_tool_calls=%s",
+            req.project_id,
+            chat_id,
+            active_llm.get("provider"),
+            active_llm.get("model"),
+            active_llm.get("profile_id"),
+            int(defaults.get("max_tool_calls") or 12),
+        )
         return await answer_with_agent(
             project_id=req.project_id,
             branch=req.branch,
@@ -1257,6 +1351,14 @@ async def ask_agent(req: AskReq):
         tool_events = (agent_out or {}).get("tool_events") or []
         pending_user_question = _normalize_pending_user_question((agent_out or {}).get("pending_user_question"))
         awaiting_user_input = pending_user_question is not None
+        logger.info(
+            "ask_agent.agent_done project=%s chat_id=%s tools=%s errors=%s awaiting_user_input=%s",
+            req.project_id,
+            chat_id,
+            len(tool_events),
+            sum(1 for ev in tool_events if not bool((ev or {}).get("ok"))),
+            awaiting_user_input,
+        )
         answer_sources = _collect_answer_sources(tool_events, local_repo_context=req.local_repo_context)
         if awaiting_user_input:
             answer_sources = []
@@ -1304,6 +1406,14 @@ async def ask_agent(req: AskReq):
                 tool_events = (agent_out or {}).get("tool_events") or []
                 pending_user_question = _normalize_pending_user_question((agent_out or {}).get("pending_user_question"))
                 awaiting_user_input = pending_user_question is not None
+                logger.info(
+                    "ask_agent.failover_done project=%s chat_id=%s tools=%s errors=%s awaiting_user_input=%s",
+                    req.project_id,
+                    chat_id,
+                    len(tool_events),
+                    sum(1 for ev in tool_events if not bool((ev or {}).get("ok"))),
+                    awaiting_user_input,
+                )
                 answer_sources = _collect_answer_sources(tool_events, local_repo_context=req.local_repo_context)
                 if awaiting_user_input:
                     answer_sources = []
@@ -1411,6 +1521,17 @@ async def ask_agent(req: AskReq):
         "errors": sum(1 for ev in tool_events if not bool((ev or {}).get("ok"))),
         "cached_hits": sum(1 for ev in tool_events if bool((ev or {}).get("cached"))),
     }
+    tool_error_details: list[str] = []
+    for ev in tool_events:
+        if not isinstance(ev, dict) or bool(ev.get("ok")):
+            continue
+        tool_name = _as_text(ev.get("tool")) or "tool"
+        err = ev.get("error") if isinstance(ev.get("error"), dict) else {}
+        code = _as_text(err.get("code")) or "error"
+        msg = _as_text(err.get("message"))
+        tool_error_details.append(f"{tool_name}:{code}:{msg[:120]}")
+        if len(tool_error_details) >= 8:
+            break
     assistant_meta = {
         "tool_summary": tool_summary,
         "sources": answer_sources,
@@ -1444,6 +1565,19 @@ async def ask_agent(req: AskReq):
         },
     )
     memory_summary = await _update_chat_memory_summary(chat_id)
+    logger.info(
+        "ask_agent.finish project=%s branch=%s user=%s chat_id=%s grounded=%s sources=%s tools=%s tool_errors=%s pending_user_input=%s tool_error_details=%s",
+        req.project_id,
+        req.branch,
+        req.user,
+        chat_id,
+        grounded_ok,
+        len(answer_sources),
+        len(tool_events),
+        sum(1 for ev in tool_events if not bool((ev or {}).get("ok"))),
+        awaiting_user_input,
+        tool_error_details,
+    )
 
     if tool_events:
         try:
