@@ -161,6 +161,130 @@ class GitStatusResponse(BaseModel):
     clean: bool = True
 
 
+class GitBranchItem(BaseModel):
+    name: str
+    is_default: bool = False
+    commit: Optional[str] = None
+
+
+class GitListBranchesRequest(BaseModel):
+    project_id: str
+    max_branches: int = 200
+
+
+class GitListBranchesResponse(BaseModel):
+    active_branch: str
+    default_branch: str
+    remote_mode: bool = False
+    branches: List[GitBranchItem] = Field(default_factory=list)
+
+
+class GitCheckoutBranchRequest(BaseModel):
+    project_id: str
+    branch: str
+    create_if_missing: bool = False
+    start_point: Optional[str] = None
+    set_default_branch: bool = True
+
+
+class GitCheckoutBranchResponse(BaseModel):
+    branch: str
+    previous_branch: Optional[str] = None
+    created: bool = False
+    remote_mode: bool = False
+    message: str = ""
+
+
+class GitCreateBranchRequest(BaseModel):
+    project_id: str
+    branch: str
+    source_ref: Optional[str] = None
+    checkout: bool = True
+    set_default_branch: bool = True
+
+
+class GitCreateBranchResponse(BaseModel):
+    branch: str
+    source_ref: str
+    created: bool = True
+    checked_out: bool = True
+    remote_mode: bool = False
+    message: str = ""
+
+
+class GitStageFilesRequest(BaseModel):
+    project_id: str
+    paths: List[str] = Field(default_factory=list)
+    all: bool = False
+
+
+class GitStageFilesResponse(BaseModel):
+    staged_paths: List[str] = Field(default_factory=list)
+    status: str = ""
+
+
+class GitUnstageFilesRequest(BaseModel):
+    project_id: str
+    paths: List[str] = Field(default_factory=list)
+    all: bool = False
+
+
+class GitUnstageFilesResponse(BaseModel):
+    unstaged_paths: List[str] = Field(default_factory=list)
+    status: str = ""
+
+
+class GitCommitRequest(BaseModel):
+    project_id: str
+    message: str
+    all: bool = False
+    amend: bool = False
+
+
+class GitCommitResponse(BaseModel):
+    branch: str
+    commit: str
+    summary: str
+
+
+class GitFetchRequest(BaseModel):
+    project_id: str
+    remote: str = "origin"
+    prune: bool = False
+
+
+class GitFetchResponse(BaseModel):
+    remote: str
+    output: str
+
+
+class GitPullRequest(BaseModel):
+    project_id: str
+    remote: str = "origin"
+    branch: Optional[str] = None
+    rebase: bool = False
+
+
+class GitPullResponse(BaseModel):
+    remote: str
+    branch: str
+    output: str
+
+
+class GitPushRequest(BaseModel):
+    project_id: str
+    remote: str = "origin"
+    branch: Optional[str] = None
+    set_upstream: bool = False
+    force_with_lease: bool = False
+
+
+class GitPushResponse(BaseModel):
+    remote: str
+    branch: str
+    output: str
+
+
 class GitDiffRequest(BaseModel):
     project_id: str
     branch: Optional[str] = None

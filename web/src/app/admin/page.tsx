@@ -168,7 +168,10 @@ type JiraForm = {
     jql: string
 }
 
-const CREATE_STEPS = ["Project", "LLM", "Sources", "Review"] as const
+type RepoSourceMode = "local" | "github" | "bitbucket" | "azure_devops"
+type CreateConnectorType = "github" | "bitbucket" | "azure_devops" | "local" | "confluence" | "jira"
+
+const CREATE_STEPS = ["Repository", "Project", "Connectors", "LLM", "Review"] as const
 const FALLBACK_OLLAMA_MODELS = ["llama3.2:3b", "llama3.1:8b", "mistral:7b", "qwen2.5:7b"]
 const FALLBACK_OPENAI_MODELS = ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1", "gpt-4o"]
 
@@ -315,6 +318,21 @@ function getConnector(project: AdminProject | undefined, type: ConnectorDoc["typ
 }
 
 const CREATE_DRAFT_LOCAL_REPO_KEY = "draft:create:active"
+const CONNECTOR_LABELS: Record<CreateConnectorType, string> = {
+    github: "GitHub",
+    bitbucket: "Bitbucket",
+    azure_devops: "Azure DevOps",
+    local: "Local Repository",
+    confluence: "Confluence",
+    jira: "Jira",
+}
+
+function repoModeToConnector(mode: RepoSourceMode): CreateConnectorType {
+    if (mode === "github") return "github"
+    if (mode === "bitbucket") return "bitbucket"
+    if (mode === "azure_devops") return "azure_devops"
+    return "local"
+}
 
 function connectorPayloads(
     git: GitForm,
@@ -401,6 +419,8 @@ export default function AdminPage() {
 
     const [wizardStep, setWizardStep] = useState(0)
     const [ingestOnCreate, setIngestOnCreate] = useState(false)
+    const [createRepoMode, setCreateRepoMode] = useState<RepoSourceMode>("local")
+    const [createOptionalConnectors, setCreateOptionalConnectors] = useState<CreateConnectorType[]>([])
     const [llmOptions, setLlmOptions] = useState<LlmOptionsResponse | null>(null)
     const [loadingLlmOptions, setLoadingLlmOptions] = useState(false)
     const [llmOptionsError, setLlmOptionsError] = useState<string | null>(null)
@@ -432,7 +452,43 @@ export default function AdminPage() {
         [projects, selectedProjectId]
     )
 
-    const basicsValid = useMemo(
+    const primaryRepoConnector = useMemo<CreateConnectorType>(() => repoModeToConnector(createRepoMode), [createRepoMode])
+
+    const createRepoBranch = useMemo(() => {
+        if (createRepoMode === "github") return createGitForm.branch.trim() || "main"
+        if (createRepoMode === "bitbucket") return createBitbucketForm.branch.trim() || "main"
+        if (createRepoMode === "azure_devops") return createAzureDevOpsForm.branch.trim() || "main"
+        return createForm.default_branch.trim() || "main"
+    }, [createAzureDevOpsForm.branch, createBitbucketForm.branch, createForm.default_branch, createGitForm.branch, createRepoMode])
+
+    const repoValid = useMemo(() => {
+        if (createRepoMode === "github") {
+            return Boolean(createGitForm.owner.trim() && createGitForm.repo.trim())
+        }
+        if (createRepoMode === "bitbucket") {
+            return Boolean(createBitbucketForm.workspace.trim() && createBitbucketForm.repo.trim())
+        }
+        if (createRepoMode === "azure_devops") {
+            return Boolean(
+                createAzureDevOpsForm.organization.trim() &&
+                    createAzureDevOpsForm.project.trim() &&
+                    createAzureDevOpsForm.repository.trim()
+            )
+        }
+        return Boolean(createForm.repo_path.trim())
+    }, [
+        createAzureDevOpsForm.organization,
+        createAzureDevOpsForm.project,
+        createAzureDevOpsForm.repository,
+        createBitbucketForm.repo,
+        createBitbucketForm.workspace,
+        createForm.repo_path,
+        createGitForm.owner,
+        createGitForm.repo,
+        createRepoMode,
+    ])
+
+    const projectValid = useMemo(
         () => Boolean(createForm.key.trim() && createForm.name.trim()),
         [createForm.key, createForm.name]
     )
@@ -442,9 +498,25 @@ export default function AdminPage() {
         [createForm.llm_model, createForm.llm_profile_id, createForm.llm_provider]
     )
 
+    const createConnectorChoices = useMemo<CreateConnectorType[]>(
+        () => (["github", "bitbucket", "azure_devops", "local", "confluence", "jira"] as CreateConnectorType[]).filter((t) => t !== primaryRepoConnector),
+        [primaryRepoConnector]
+    )
+
+    const selectedCreateConnectorTypes = useMemo<CreateConnectorType[]>(
+        () => [primaryRepoConnector, ...createOptionalConnectors.filter((t) => t !== primaryRepoConnector)],
+        [createOptionalConnectors, primaryRepoConnector]
+    )
+
     const stepStatus = useMemo(
-        () => [true, basicsValid, basicsValid && llmValid, basicsValid && llmValid],
-        [basicsValid, llmValid]
+        () => [
+            repoValid,
+            repoValid && projectValid,
+            repoValid && projectValid,
+            repoValid && projectValid && llmValid,
+            repoValid && projectValid && llmValid,
+        ],
+        [llmValid, projectValid, repoValid]
     )
 
     const providerOptions = useMemo(
@@ -716,6 +788,17 @@ export default function AdminPage() {
         })
     }, [selectedProject, llmOptions])
 
+    useEffect(() => {
+        setCreateOptionalConnectors((prev) => prev.filter((t) => t !== primaryRepoConnector))
+    }, [primaryRepoConnector])
+
+    function toggleCreateOptionalConnector(type: CreateConnectorType) {
+        if (type === primaryRepoConnector) return
+        setCreateOptionalConnectors((prev) =>
+            prev.includes(type) ? prev.filter((item) => item !== type) : [...prev, type]
+        )
+    }
+
     function resetCreateWorkflow() {
         setCreateForm(emptyProjectForm())
         setCreateGitForm(emptyGit())
@@ -724,22 +807,45 @@ export default function AdminPage() {
         setCreateLocalConnectorForm(emptyLocalConnector())
         setCreateConfluenceForm(emptyConfluence())
         setCreateJiraForm(emptyJira())
+        setCreateRepoMode("local")
+        setCreateOptionalConnectors([])
         setWizardStep(0)
         setIngestOnCreate(false)
     }
 
     function canOpenStep(target: number): boolean {
         if (target <= 0) return true
-        if (target === 1) return basicsValid
-        if (target === 2) return basicsValid && llmValid
-        return basicsValid && llmValid
+        if (target === 1) return repoValid
+        if (target === 2) return repoValid && projectValid
+        if (target === 3) return repoValid && projectValid
+        return repoValid && projectValid && llmValid
     }
 
     async function createProjectFromWizard() {
-        if (!basicsValid || !llmValid) {
-            setError("Please complete project basics and LLM setup (profile or provider/model) before creating.")
+        if (!repoValid || !projectValid || !llmValid) {
+            setError("Please complete repository, project basics, and LLM setup before creating.")
             return
         }
+
+        const effectiveBranch = createRepoBranch || "main"
+        const effectiveRepoPath = createRepoMode === "local" ? createForm.repo_path.trim() : ""
+        const selected = new Set<CreateConnectorType>(selectedCreateConnectorTypes)
+        const payloads = connectorPayloads(
+            { ...createGitForm, isEnabled: selected.has("github"), branch: createGitForm.branch.trim() || effectiveBranch },
+            {
+                ...createBitbucketForm,
+                isEnabled: selected.has("bitbucket"),
+                branch: createBitbucketForm.branch.trim() || effectiveBranch,
+            },
+            {
+                ...createAzureDevOpsForm,
+                isEnabled: selected.has("azure_devops"),
+                branch: createAzureDevOpsForm.branch.trim() || effectiveBranch,
+            },
+            { ...createLocalConnectorForm, isEnabled: selected.has("local") },
+            { ...createConfluenceForm, isEnabled: selected.has("confluence") },
+            { ...createJiraForm, isEnabled: selected.has("jira") }
+        )
 
         setBusy(true)
         setError(null)
@@ -752,8 +858,8 @@ export default function AdminPage() {
                     key: createForm.key.trim(),
                     name: createForm.name.trim(),
                     description: createForm.description.trim() || null,
-                    repo_path: createForm.repo_path.trim() || null,
-                    default_branch: createForm.default_branch.trim() || "main",
+                    repo_path: effectiveRepoPath || null,
+                    default_branch: effectiveBranch,
                     llm_provider: createForm.llm_provider || null,
                     llm_base_url: createForm.llm_base_url.trim() || null,
                     llm_model: createForm.llm_model.trim() || null,
@@ -762,18 +868,10 @@ export default function AdminPage() {
                 }),
             })
 
-            if (isBrowserLocalRepoPath(createForm.repo_path)) {
+            if (effectiveRepoPath && isBrowserLocalRepoPath(effectiveRepoPath)) {
                 moveLocalRepoSnapshot(CREATE_DRAFT_LOCAL_REPO_KEY, created.id)
             }
 
-            const payloads = connectorPayloads(
-                createGitForm,
-                createBitbucketForm,
-                createAzureDevOpsForm,
-                createLocalConnectorForm,
-                createConfluenceForm,
-                createJiraForm
-            )
             await Promise.all([
                 putConnector(created.id, "git", payloads.git),
                 putConnector(created.id, "bitbucket", payloads.bitbucket),
@@ -1278,7 +1376,7 @@ export default function AdminPage() {
                                             New Project Wizard
                                         </Typography>
                                         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                                            Click through each step to set up project metadata, model config, and sources.
+                                            Start with repository setup, then project info, optional connectors, and finally LLM configuration.
                                         </Typography>
                                     </Box>
 
@@ -1312,6 +1410,245 @@ export default function AdminPage() {
 
                                     {wizardStep === 0 && (
                                         <Stack spacing={1.5}>
+                                            <FormControl fullWidth size="small">
+                                                <InputLabel id="create-repo-source-label">Repository Source</InputLabel>
+                                                <Select
+                                                    labelId="create-repo-source-label"
+                                                    label="Repository Source"
+                                                    value={createRepoMode}
+                                                    onChange={(e) => setCreateRepoMode(e.target.value as RepoSourceMode)}
+                                                >
+                                                    <MenuItem value="local">Local repository path</MenuItem>
+                                                    <MenuItem value="github">GitHub connector</MenuItem>
+                                                    <MenuItem value="bitbucket">Bitbucket connector</MenuItem>
+                                                    <MenuItem value="azure_devops">Azure DevOps connector</MenuItem>
+                                                </Select>
+                                            </FormControl>
+
+                                            <Alert severity="info">
+                                                Repository comes first. You can add additional connectors in the next step.
+                                            </Alert>
+
+                                            {createRepoMode === "local" && (
+                                                <Stack spacing={1.2}>
+                                                    <TextField
+                                                        label="Local Repo Path"
+                                                        value={createForm.repo_path}
+                                                        onChange={(e) =>
+                                                            setCreateForm((f) => ({ ...f, repo_path: e.target.value }))
+                                                        }
+                                                        placeholder="/workspace/repo or browser-local://<project>"
+                                                        fullWidth
+                                                        size="small"
+                                                        InputProps={{
+                                                            endAdornment: (
+                                                                <InputAdornment position="end">
+                                                                    <IconButton
+                                                                        edge="end"
+                                                                        size="small"
+                                                                        onClick={() => setPathPickerTarget("createRepoPath")}
+                                                                    >
+                                                                        <FolderOpenRounded fontSize="small" />
+                                                                    </IconButton>
+                                                                </InputAdornment>
+                                                            ),
+                                                        }}
+                                                    />
+                                                    <TextField
+                                                        label="Branch"
+                                                        value={createForm.default_branch}
+                                                        onChange={(e) =>
+                                                            setCreateForm((f) => ({ ...f, default_branch: e.target.value }))
+                                                        }
+                                                        placeholder="main"
+                                                        fullWidth
+                                                        size="small"
+                                                    />
+                                                </Stack>
+                                            )}
+
+                                            {createRepoMode === "github" && (
+                                                <Stack spacing={1.2}>
+                                                    <TextField
+                                                        label="Owner"
+                                                        value={createGitForm.owner}
+                                                        onChange={(e) =>
+                                                            setCreateGitForm((f) => ({ ...f, owner: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="Repository"
+                                                        value={createGitForm.repo}
+                                                        onChange={(e) =>
+                                                            setCreateGitForm((f) => ({ ...f, repo: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="Branch"
+                                                        value={createGitForm.branch}
+                                                        onChange={(e) =>
+                                                            setCreateGitForm((f) => ({ ...f, branch: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="Token"
+                                                        value={createGitForm.token}
+                                                        onChange={(e) =>
+                                                            setCreateGitForm((f) => ({ ...f, token: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="Paths (comma-separated)"
+                                                        value={createGitForm.paths}
+                                                        onChange={(e) =>
+                                                            setCreateGitForm((f) => ({ ...f, paths: e.target.value }))
+                                                        }
+                                                        placeholder="src, docs"
+                                                        size="small"
+                                                    />
+                                                </Stack>
+                                            )}
+
+                                            {createRepoMode === "bitbucket" && (
+                                                <Stack spacing={1.2}>
+                                                    <TextField
+                                                        label="Workspace"
+                                                        value={createBitbucketForm.workspace}
+                                                        onChange={(e) =>
+                                                            setCreateBitbucketForm((f) => ({ ...f, workspace: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="Repository Slug"
+                                                        value={createBitbucketForm.repo}
+                                                        onChange={(e) =>
+                                                            setCreateBitbucketForm((f) => ({ ...f, repo: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="Branch"
+                                                        value={createBitbucketForm.branch}
+                                                        onChange={(e) =>
+                                                            setCreateBitbucketForm((f) => ({ ...f, branch: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="Username"
+                                                        value={createBitbucketForm.username}
+                                                        onChange={(e) =>
+                                                            setCreateBitbucketForm((f) => ({ ...f, username: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="App Password"
+                                                        value={createBitbucketForm.app_password}
+                                                        onChange={(e) =>
+                                                            setCreateBitbucketForm((f) => ({ ...f, app_password: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="API Base URL"
+                                                        value={createBitbucketForm.base_url}
+                                                        onChange={(e) =>
+                                                            setCreateBitbucketForm((f) => ({ ...f, base_url: e.target.value }))
+                                                        }
+                                                        placeholder="https://api.bitbucket.org/2.0"
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="Paths (comma-separated)"
+                                                        value={createBitbucketForm.paths}
+                                                        onChange={(e) =>
+                                                            setCreateBitbucketForm((f) => ({ ...f, paths: e.target.value }))
+                                                        }
+                                                        placeholder="src, docs"
+                                                        size="small"
+                                                    />
+                                                </Stack>
+                                            )}
+
+                                            {createRepoMode === "azure_devops" && (
+                                                <Stack spacing={1.2}>
+                                                    <TextField
+                                                        label="Organization"
+                                                        value={createAzureDevOpsForm.organization}
+                                                        onChange={(e) =>
+                                                            setCreateAzureDevOpsForm((f) => ({
+                                                                ...f,
+                                                                organization: e.target.value,
+                                                            }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="Project"
+                                                        value={createAzureDevOpsForm.project}
+                                                        onChange={(e) =>
+                                                            setCreateAzureDevOpsForm((f) => ({ ...f, project: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="Repository"
+                                                        value={createAzureDevOpsForm.repository}
+                                                        onChange={(e) =>
+                                                            setCreateAzureDevOpsForm((f) => ({
+                                                                ...f,
+                                                                repository: e.target.value,
+                                                            }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="Branch"
+                                                        value={createAzureDevOpsForm.branch}
+                                                        onChange={(e) =>
+                                                            setCreateAzureDevOpsForm((f) => ({ ...f, branch: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="PAT"
+                                                        value={createAzureDevOpsForm.pat}
+                                                        onChange={(e) =>
+                                                            setCreateAzureDevOpsForm((f) => ({ ...f, pat: e.target.value }))
+                                                        }
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="API Base URL"
+                                                        value={createAzureDevOpsForm.base_url}
+                                                        onChange={(e) =>
+                                                            setCreateAzureDevOpsForm((f) => ({ ...f, base_url: e.target.value }))
+                                                        }
+                                                        placeholder="https://dev.azure.com"
+                                                        size="small"
+                                                    />
+                                                    <TextField
+                                                        label="Paths (comma-separated)"
+                                                        value={createAzureDevOpsForm.paths}
+                                                        onChange={(e) =>
+                                                            setCreateAzureDevOpsForm((f) => ({ ...f, paths: e.target.value }))
+                                                        }
+                                                        placeholder="src, docs"
+                                                        size="small"
+                                                    />
+                                                </Stack>
+                                            )}
+                                        </Stack>
+                                    )}
+
+                                    {wizardStep === 1 && (
+                                        <Stack spacing={1.5}>
                                             <TextField
                                                 label="Project Key"
                                                 value={createForm.key}
@@ -1341,43 +1678,334 @@ export default function AdminPage() {
                                                 fullWidth
                                                 size="small"
                                             />
-                                            <TextField
-                                                label="Local Repo Path"
-                                                value={createForm.repo_path}
-                                                onChange={(e) =>
-                                                    setCreateForm((f) => ({ ...f, repo_path: e.target.value }))
-                                                }
-                                                placeholder="/workspace/repo"
-                                                fullWidth
-                                                size="small"
-                                                InputProps={{
-                                                    endAdornment: (
-                                                        <InputAdornment position="end">
-                                                            <IconButton
-                                                                edge="end"
-                                                                size="small"
-                                                                onClick={() => setPathPickerTarget("createRepoPath")}
-                                                            >
-                                                                <FolderOpenRounded fontSize="small" />
-                                                            </IconButton>
-                                                        </InputAdornment>
-                                                    ),
-                                                }}
-                                            />
-                                            <TextField
-                                                label="Default Branch"
-                                                value={createForm.default_branch}
-                                                onChange={(e) =>
-                                                    setCreateForm((f) => ({ ...f, default_branch: e.target.value }))
-                                                }
-                                                placeholder="main"
-                                                fullWidth
-                                                size="small"
-                                            />
                                         </Stack>
                                     )}
 
-                                    {wizardStep === 1 && (
+                                    {wizardStep === 2 && (
+                                        <Stack spacing={1.5}>
+                                            <Typography variant="body2" color="text.secondary">
+                                                Select additional connectors you want to attach to this project. Only selected connectors show configuration fields.
+                                            </Typography>
+                                            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                                                {createConnectorChoices.map((type) => {
+                                                    const selected = createOptionalConnectors.includes(type)
+                                                    return (
+                                                        <Chip
+                                                            key={type}
+                                                            label={CONNECTOR_LABELS[type]}
+                                                            clickable
+                                                            color={selected ? "primary" : "default"}
+                                                            variant={selected ? "filled" : "outlined"}
+                                                            onClick={() => toggleCreateOptionalConnector(type)}
+                                                        />
+                                                    )
+                                                })}
+                                            </Stack>
+
+                                            {!createOptionalConnectors.length && (
+                                                <Alert severity="info">No additional connectors selected.</Alert>
+                                            )}
+
+                                            {createOptionalConnectors.includes("github") && (
+                                                <Paper variant="outlined" sx={{ p: { xs: 1.25, sm: 1.5 } }}>
+                                                    <Stack spacing={1.2}>
+                                                        <Typography variant="subtitle2">GitHub Connector</Typography>
+                                                        <TextField
+                                                            label="Owner"
+                                                            value={createGitForm.owner}
+                                                            onChange={(e) =>
+                                                                setCreateGitForm((f) => ({ ...f, owner: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Repository"
+                                                            value={createGitForm.repo}
+                                                            onChange={(e) =>
+                                                                setCreateGitForm((f) => ({ ...f, repo: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Branch"
+                                                            value={createGitForm.branch}
+                                                            onChange={(e) =>
+                                                                setCreateGitForm((f) => ({ ...f, branch: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Token"
+                                                            value={createGitForm.token}
+                                                            onChange={(e) =>
+                                                                setCreateGitForm((f) => ({ ...f, token: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Paths (comma-separated)"
+                                                            value={createGitForm.paths}
+                                                            onChange={(e) =>
+                                                                setCreateGitForm((f) => ({ ...f, paths: e.target.value }))
+                                                            }
+                                                            placeholder="src, docs"
+                                                            size="small"
+                                                        />
+                                                    </Stack>
+                                                </Paper>
+                                            )}
+
+                                            {createOptionalConnectors.includes("bitbucket") && (
+                                                <Paper variant="outlined" sx={{ p: { xs: 1.25, sm: 1.5 } }}>
+                                                    <Stack spacing={1.2}>
+                                                        <Typography variant="subtitle2">Bitbucket Connector</Typography>
+                                                        <TextField
+                                                            label="Workspace"
+                                                            value={createBitbucketForm.workspace}
+                                                            onChange={(e) =>
+                                                                setCreateBitbucketForm((f) => ({ ...f, workspace: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Repository Slug"
+                                                            value={createBitbucketForm.repo}
+                                                            onChange={(e) =>
+                                                                setCreateBitbucketForm((f) => ({ ...f, repo: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Branch"
+                                                            value={createBitbucketForm.branch}
+                                                            onChange={(e) =>
+                                                                setCreateBitbucketForm((f) => ({ ...f, branch: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Username"
+                                                            value={createBitbucketForm.username}
+                                                            onChange={(e) =>
+                                                                setCreateBitbucketForm((f) => ({ ...f, username: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="App Password"
+                                                            value={createBitbucketForm.app_password}
+                                                            onChange={(e) =>
+                                                                setCreateBitbucketForm((f) => ({ ...f, app_password: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="API Base URL"
+                                                            value={createBitbucketForm.base_url}
+                                                            onChange={(e) =>
+                                                                setCreateBitbucketForm((f) => ({ ...f, base_url: e.target.value }))
+                                                            }
+                                                            placeholder="https://api.bitbucket.org/2.0"
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Paths (comma-separated)"
+                                                            value={createBitbucketForm.paths}
+                                                            onChange={(e) =>
+                                                                setCreateBitbucketForm((f) => ({ ...f, paths: e.target.value }))
+                                                            }
+                                                            placeholder="src, docs"
+                                                            size="small"
+                                                        />
+                                                    </Stack>
+                                                </Paper>
+                                            )}
+
+                                            {createOptionalConnectors.includes("azure_devops") && (
+                                                <Paper variant="outlined" sx={{ p: { xs: 1.25, sm: 1.5 } }}>
+                                                    <Stack spacing={1.2}>
+                                                        <Typography variant="subtitle2">Azure DevOps Connector</Typography>
+                                                        <TextField
+                                                            label="Organization"
+                                                            value={createAzureDevOpsForm.organization}
+                                                            onChange={(e) =>
+                                                                setCreateAzureDevOpsForm((f) => ({
+                                                                    ...f,
+                                                                    organization: e.target.value,
+                                                                }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Project"
+                                                            value={createAzureDevOpsForm.project}
+                                                            onChange={(e) =>
+                                                                setCreateAzureDevOpsForm((f) => ({ ...f, project: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Repository"
+                                                            value={createAzureDevOpsForm.repository}
+                                                            onChange={(e) =>
+                                                                setCreateAzureDevOpsForm((f) => ({
+                                                                    ...f,
+                                                                    repository: e.target.value,
+                                                                }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Branch"
+                                                            value={createAzureDevOpsForm.branch}
+                                                            onChange={(e) =>
+                                                                setCreateAzureDevOpsForm((f) => ({ ...f, branch: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="PAT"
+                                                            value={createAzureDevOpsForm.pat}
+                                                            onChange={(e) =>
+                                                                setCreateAzureDevOpsForm((f) => ({ ...f, pat: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="API Base URL"
+                                                            value={createAzureDevOpsForm.base_url}
+                                                            onChange={(e) =>
+                                                                setCreateAzureDevOpsForm((f) => ({ ...f, base_url: e.target.value }))
+                                                            }
+                                                            placeholder="https://dev.azure.com"
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Paths (comma-separated)"
+                                                            value={createAzureDevOpsForm.paths}
+                                                            onChange={(e) =>
+                                                                setCreateAzureDevOpsForm((f) => ({ ...f, paths: e.target.value }))
+                                                            }
+                                                            placeholder="src, docs"
+                                                            size="small"
+                                                        />
+                                                    </Stack>
+                                                </Paper>
+                                            )}
+
+                                            {createOptionalConnectors.includes("local") && (
+                                                <Paper variant="outlined" sx={{ p: { xs: 1.25, sm: 1.5 } }}>
+                                                    <Stack spacing={1.2}>
+                                                        <Typography variant="subtitle2">Local Repository Connector</Typography>
+                                                        <TextField
+                                                            label="Paths (comma-separated)"
+                                                            value={createLocalConnectorForm.paths}
+                                                            onChange={(e) =>
+                                                                setCreateLocalConnectorForm((f) => ({ ...f, paths: e.target.value }))
+                                                            }
+                                                            placeholder="src, docs"
+                                                            size="small"
+                                                            helperText="Reads from project local repo_path on backend host."
+                                                        />
+                                                    </Stack>
+                                                </Paper>
+                                            )}
+
+                                            {createOptionalConnectors.includes("confluence") && (
+                                                <Paper variant="outlined" sx={{ p: { xs: 1.25, sm: 1.5 } }}>
+                                                    <Stack spacing={1.2}>
+                                                        <Typography variant="subtitle2">Confluence Connector</Typography>
+                                                        <TextField
+                                                            label="Base URL"
+                                                            value={createConfluenceForm.baseUrl}
+                                                            onChange={(e) =>
+                                                                setCreateConfluenceForm((f) => ({
+                                                                    ...f,
+                                                                    baseUrl: e.target.value,
+                                                                }))
+                                                            }
+                                                            placeholder="https://your-domain.atlassian.net/wiki"
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Space Key"
+                                                            value={createConfluenceForm.spaceKey}
+                                                            onChange={(e) =>
+                                                                setCreateConfluenceForm((f) => ({
+                                                                    ...f,
+                                                                    spaceKey: e.target.value,
+                                                                }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Email"
+                                                            value={createConfluenceForm.email}
+                                                            onChange={(e) =>
+                                                                setCreateConfluenceForm((f) => ({ ...f, email: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="API Token"
+                                                            value={createConfluenceForm.apiToken}
+                                                            onChange={(e) =>
+                                                                setCreateConfluenceForm((f) => ({
+                                                                    ...f,
+                                                                    apiToken: e.target.value,
+                                                                }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                    </Stack>
+                                                </Paper>
+                                            )}
+
+                                            {createOptionalConnectors.includes("jira") && (
+                                                <Paper variant="outlined" sx={{ p: { xs: 1.25, sm: 1.5 } }}>
+                                                    <Stack spacing={1.2}>
+                                                        <Typography variant="subtitle2">Jira Connector</Typography>
+                                                        <TextField
+                                                            label="Base URL"
+                                                            value={createJiraForm.baseUrl}
+                                                            onChange={(e) =>
+                                                                setCreateJiraForm((f) => ({ ...f, baseUrl: e.target.value }))
+                                                            }
+                                                            placeholder="https://your-domain.atlassian.net"
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="Email"
+                                                            value={createJiraForm.email}
+                                                            onChange={(e) =>
+                                                                setCreateJiraForm((f) => ({ ...f, email: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="API Token"
+                                                            value={createJiraForm.apiToken}
+                                                            onChange={(e) =>
+                                                                setCreateJiraForm((f) => ({ ...f, apiToken: e.target.value }))
+                                                            }
+                                                            size="small"
+                                                        />
+                                                        <TextField
+                                                            label="JQL"
+                                                            value={createJiraForm.jql}
+                                                            onChange={(e) =>
+                                                                setCreateJiraForm((f) => ({ ...f, jql: e.target.value }))
+                                                            }
+                                                            placeholder="project = CORE ORDER BY updated DESC"
+                                                            size="small"
+                                                        />
+                                                    </Stack>
+                                                </Paper>
+                                            )}
+                                        </Stack>
+                                    )}
+
+                                    {wizardStep === 3 && (
                                         <Stack spacing={1.5}>
                                             <FormControl fullWidth size="small">
                                                 <InputLabel id="create-llm-profile-label">LLM Profile</InputLabel>
@@ -1510,380 +2138,34 @@ export default function AdminPage() {
                                         </Stack>
                                     )}
 
-                                    {wizardStep === 2 && (
+                                    {wizardStep === 4 && (
                                         <Stack spacing={1.5}>
                                             <Paper variant="outlined" sx={{ p: { xs: 1.25, sm: 1.5 } }}>
-                                                <Stack spacing={1.2}>
-                                                    <FormControlLabel
-                                                        control={
-                                                            <Switch
-                                                                checked={createGitForm.isEnabled}
-                                                                onChange={(e) =>
-                                                                    setCreateGitForm((f) => ({
-                                                                        ...f,
-                                                                        isEnabled: e.target.checked,
-                                                                    }))
-                                                                }
-                                                            />
-                                                        }
-                                                        label="Enable Git source"
-                                                    />
-                                                    <TextField
-                                                        label="Owner"
-                                                        value={createGitForm.owner}
-                                                        onChange={(e) =>
-                                                            setCreateGitForm((f) => ({ ...f, owner: e.target.value }))
-                                                        }
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="Repository"
-                                                        value={createGitForm.repo}
-                                                        onChange={(e) =>
-                                                            setCreateGitForm((f) => ({ ...f, repo: e.target.value }))
-                                                        }
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="Branch"
-                                                        value={createGitForm.branch}
-                                                        onChange={(e) =>
-                                                            setCreateGitForm((f) => ({ ...f, branch: e.target.value }))
-                                                        }
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="Token"
-                                                        value={createGitForm.token}
-                                                        onChange={(e) =>
-                                                            setCreateGitForm((f) => ({ ...f, token: e.target.value }))
-                                                        }
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="Paths (comma-separated)"
-                                                        value={createGitForm.paths}
-                                                        onChange={(e) =>
-                                                            setCreateGitForm((f) => ({ ...f, paths: e.target.value }))
-                                                        }
-                                                        placeholder="src, docs"
-                                                        size="small"
-                                                    />
+                                                <Stack spacing={1}>
+                                                    <Typography variant="subtitle2">Repository</Typography>
+                                                    <Typography variant="body2" color="text.secondary">
+                                                        Source: {CONNECTOR_LABELS[primaryRepoConnector]}
+                                                    </Typography>
+                                                    <Typography variant="body2" color="text.secondary">
+                                                        Branch: {createRepoBranch || "main"}
+                                                    </Typography>
+                                                    <Typography variant="body2" color="text.secondary">
+                                                        {createRepoMode === "local"
+                                                            ? `Repo path: ${createForm.repo_path || "not set"}`
+                                                            : createRepoMode === "github"
+                                                            ? `Repository: ${createGitForm.owner || "?"}/${createGitForm.repo || "?"}`
+                                                            : createRepoMode === "bitbucket"
+                                                            ? `Repository: ${createBitbucketForm.workspace || "?"}/${createBitbucketForm.repo || "?"}`
+                                                            : `Repository: ${createAzureDevOpsForm.organization || "?"}/${createAzureDevOpsForm.project || "?"}/${createAzureDevOpsForm.repository || "?"}`}
+                                                    </Typography>
                                                 </Stack>
                                             </Paper>
 
-                                            <Paper variant="outlined" sx={{ p: { xs: 1.25, sm: 1.5 } }}>
-                                                <Stack spacing={1.2}>
-                                                    <FormControlLabel
-                                                        control={
-                                                            <Switch
-                                                                checked={createBitbucketForm.isEnabled}
-                                                                onChange={(e) =>
-                                                                    setCreateBitbucketForm((f) => ({
-                                                                        ...f,
-                                                                        isEnabled: e.target.checked,
-                                                                    }))
-                                                                }
-                                                            />
-                                                        }
-                                                        label="Enable Bitbucket source"
-                                                    />
-                                                    <TextField
-                                                        label="Workspace"
-                                                        value={createBitbucketForm.workspace}
-                                                        onChange={(e) =>
-                                                            setCreateBitbucketForm((f) => ({ ...f, workspace: e.target.value }))
-                                                        }
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="Repository Slug"
-                                                        value={createBitbucketForm.repo}
-                                                        onChange={(e) =>
-                                                            setCreateBitbucketForm((f) => ({ ...f, repo: e.target.value }))
-                                                        }
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="Branch"
-                                                        value={createBitbucketForm.branch}
-                                                        onChange={(e) =>
-                                                            setCreateBitbucketForm((f) => ({ ...f, branch: e.target.value }))
-                                                        }
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="Username"
-                                                        value={createBitbucketForm.username}
-                                                        onChange={(e) =>
-                                                            setCreateBitbucketForm((f) => ({ ...f, username: e.target.value }))
-                                                        }
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="App Password"
-                                                        value={createBitbucketForm.app_password}
-                                                        onChange={(e) =>
-                                                            setCreateBitbucketForm((f) => ({ ...f, app_password: e.target.value }))
-                                                        }
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="API Base URL"
-                                                        value={createBitbucketForm.base_url}
-                                                        onChange={(e) =>
-                                                            setCreateBitbucketForm((f) => ({ ...f, base_url: e.target.value }))
-                                                        }
-                                                        placeholder="https://api.bitbucket.org/2.0"
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="Paths (comma-separated)"
-                                                        value={createBitbucketForm.paths}
-                                                        onChange={(e) =>
-                                                            setCreateBitbucketForm((f) => ({ ...f, paths: e.target.value }))
-                                                        }
-                                                        placeholder="src, docs"
-                                                        size="small"
-                                                    />
-                                                </Stack>
-                                            </Paper>
-
-                                            <Paper variant="outlined" sx={{ p: { xs: 1.25, sm: 1.5 } }}>
-                                                <Stack spacing={1.2}>
-                                                    <FormControlLabel
-                                                        control={
-                                                            <Switch
-                                                                checked={createAzureDevOpsForm.isEnabled}
-                                                                onChange={(e) =>
-                                                                    setCreateAzureDevOpsForm((f) => ({
-                                                                        ...f,
-                                                                        isEnabled: e.target.checked,
-                                                                    }))
-                                                                }
-                                                            />
-                                                        }
-                                                        label="Enable Azure DevOps source"
-                                                    />
-                                                    <TextField
-                                                        label="Organization"
-                                                        value={createAzureDevOpsForm.organization}
-                                                        onChange={(e) =>
-                                                            setCreateAzureDevOpsForm((f) => ({ ...f, organization: e.target.value }))
-                                                        }
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="Project"
-                                                        value={createAzureDevOpsForm.project}
-                                                        onChange={(e) =>
-                                                            setCreateAzureDevOpsForm((f) => ({ ...f, project: e.target.value }))
-                                                        }
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="Repository"
-                                                        value={createAzureDevOpsForm.repository}
-                                                        onChange={(e) =>
-                                                            setCreateAzureDevOpsForm((f) => ({ ...f, repository: e.target.value }))
-                                                        }
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="Branch"
-                                                        value={createAzureDevOpsForm.branch}
-                                                        onChange={(e) =>
-                                                            setCreateAzureDevOpsForm((f) => ({ ...f, branch: e.target.value }))
-                                                        }
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="PAT"
-                                                        value={createAzureDevOpsForm.pat}
-                                                        onChange={(e) =>
-                                                            setCreateAzureDevOpsForm((f) => ({ ...f, pat: e.target.value }))
-                                                        }
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="API Base URL"
-                                                        value={createAzureDevOpsForm.base_url}
-                                                        onChange={(e) =>
-                                                            setCreateAzureDevOpsForm((f) => ({ ...f, base_url: e.target.value }))
-                                                        }
-                                                        placeholder="https://dev.azure.com"
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="Paths (comma-separated)"
-                                                        value={createAzureDevOpsForm.paths}
-                                                        onChange={(e) =>
-                                                            setCreateAzureDevOpsForm((f) => ({ ...f, paths: e.target.value }))
-                                                        }
-                                                        placeholder="src, docs"
-                                                        size="small"
-                                                    />
-                                                </Stack>
-                                            </Paper>
-
-                                            <Paper variant="outlined" sx={{ p: { xs: 1.25, sm: 1.5 } }}>
-                                                <Stack spacing={1.2}>
-                                                    <FormControlLabel
-                                                        control={
-                                                            <Switch
-                                                                checked={createLocalConnectorForm.isEnabled}
-                                                                onChange={(e) =>
-                                                                    setCreateLocalConnectorForm((f) => ({
-                                                                        ...f,
-                                                                        isEnabled: e.target.checked,
-                                                                    }))
-                                                                }
-                                                            />
-                                                        }
-                                                        label="Enable Local Repository source"
-                                                    />
-                                                    <TextField
-                                                        label="Paths (comma-separated)"
-                                                        value={createLocalConnectorForm.paths}
-                                                        onChange={(e) =>
-                                                            setCreateLocalConnectorForm((f) => ({ ...f, paths: e.target.value }))
-                                                        }
-                                                        placeholder="src, docs"
-                                                        size="small"
-                                                        helperText="Reads from project local repo_path on backend host."
-                                                    />
-                                                </Stack>
-                                            </Paper>
-
-                                            <Paper variant="outlined" sx={{ p: { xs: 1.25, sm: 1.5 } }}>
-                                                <Stack spacing={1.2}>
-                                                    <FormControlLabel
-                                                        control={
-                                                            <Switch
-                                                                checked={createConfluenceForm.isEnabled}
-                                                                onChange={(e) =>
-                                                                    setCreateConfluenceForm((f) => ({
-                                                                        ...f,
-                                                                        isEnabled: e.target.checked,
-                                                                    }))
-                                                                }
-                                                            />
-                                                        }
-                                                        label="Enable Confluence source"
-                                                    />
-                                                    <TextField
-                                                        label="Base URL"
-                                                        value={createConfluenceForm.baseUrl}
-                                                        onChange={(e) =>
-                                                            setCreateConfluenceForm((f) => ({
-                                                                ...f,
-                                                                baseUrl: e.target.value,
-                                                            }))
-                                                        }
-                                                        placeholder="https://your-domain.atlassian.net/wiki"
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="Space Key"
-                                                        value={createConfluenceForm.spaceKey}
-                                                        onChange={(e) =>
-                                                            setCreateConfluenceForm((f) => ({
-                                                                ...f,
-                                                                spaceKey: e.target.value,
-                                                            }))
-                                                        }
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="Email"
-                                                        value={createConfluenceForm.email}
-                                                        onChange={(e) =>
-                                                            setCreateConfluenceForm((f) => ({ ...f, email: e.target.value }))
-                                                        }
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="API Token"
-                                                        value={createConfluenceForm.apiToken}
-                                                        onChange={(e) =>
-                                                            setCreateConfluenceForm((f) => ({
-                                                                ...f,
-                                                                apiToken: e.target.value,
-                                                            }))
-                                                        }
-                                                        size="small"
-                                                    />
-                                                </Stack>
-                                            </Paper>
-
-                                            <Paper variant="outlined" sx={{ p: { xs: 1.25, sm: 1.5 } }}>
-                                                <Stack spacing={1.2}>
-                                                    <FormControlLabel
-                                                        control={
-                                                            <Switch
-                                                                checked={createJiraForm.isEnabled}
-                                                                onChange={(e) =>
-                                                                    setCreateJiraForm((f) => ({
-                                                                        ...f,
-                                                                        isEnabled: e.target.checked,
-                                                                    }))
-                                                                }
-                                                            />
-                                                        }
-                                                        label="Enable Jira source"
-                                                    />
-                                                    <TextField
-                                                        label="Base URL"
-                                                        value={createJiraForm.baseUrl}
-                                                        onChange={(e) =>
-                                                            setCreateJiraForm((f) => ({ ...f, baseUrl: e.target.value }))
-                                                        }
-                                                        placeholder="https://your-domain.atlassian.net"
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="Email"
-                                                        value={createJiraForm.email}
-                                                        onChange={(e) =>
-                                                            setCreateJiraForm((f) => ({ ...f, email: e.target.value }))
-                                                        }
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="API Token"
-                                                        value={createJiraForm.apiToken}
-                                                        onChange={(e) =>
-                                                            setCreateJiraForm((f) => ({ ...f, apiToken: e.target.value }))
-                                                        }
-                                                        size="small"
-                                                    />
-                                                    <TextField
-                                                        label="JQL"
-                                                        value={createJiraForm.jql}
-                                                        onChange={(e) =>
-                                                            setCreateJiraForm((f) => ({ ...f, jql: e.target.value }))
-                                                        }
-                                                        placeholder="project = CORE ORDER BY updated DESC"
-                                                        size="small"
-                                                    />
-                                                </Stack>
-                                            </Paper>
-                                        </Stack>
-                                    )}
-
-                                    {wizardStep === 3 && (
-                                        <Stack spacing={1.5}>
                                             <Paper variant="outlined" sx={{ p: { xs: 1.25, sm: 1.5 } }}>
                                                 <Stack spacing={1}>
                                                     <Typography variant="subtitle2">Project</Typography>
                                                     <Typography variant="body2" color="text.secondary">
                                                         {createForm.name || "(no name)"} · {createForm.key || "(no key)"}
-                                                    </Typography>
-                                                    <Typography variant="body2" color="text.secondary">
-                                                        Branch: {createForm.default_branch || "main"}
-                                                    </Typography>
-                                                    <Typography variant="body2" color="text.secondary">
-                                                        Repo path: {createForm.repo_path || "not set"}
                                                     </Typography>
                                                 </Stack>
                                             </Paper>
@@ -1905,36 +2187,9 @@ export default function AdminPage() {
                                             </Paper>
 
                                             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                                                <Chip
-                                                    label={`Git: ${createGitForm.isEnabled ? "enabled" : "disabled"}`}
-                                                    color={createGitForm.isEnabled ? "primary" : "default"}
-                                                    variant={createGitForm.isEnabled ? "filled" : "outlined"}
-                                                />
-                                                <Chip
-                                                    label={`Confluence: ${createConfluenceForm.isEnabled ? "enabled" : "disabled"}`}
-                                                    color={createConfluenceForm.isEnabled ? "primary" : "default"}
-                                                    variant={createConfluenceForm.isEnabled ? "filled" : "outlined"}
-                                                />
-                                                <Chip
-                                                    label={`Bitbucket: ${createBitbucketForm.isEnabled ? "enabled" : "disabled"}`}
-                                                    color={createBitbucketForm.isEnabled ? "primary" : "default"}
-                                                    variant={createBitbucketForm.isEnabled ? "filled" : "outlined"}
-                                                />
-                                                <Chip
-                                                    label={`Azure DevOps: ${createAzureDevOpsForm.isEnabled ? "enabled" : "disabled"}`}
-                                                    color={createAzureDevOpsForm.isEnabled ? "primary" : "default"}
-                                                    variant={createAzureDevOpsForm.isEnabled ? "filled" : "outlined"}
-                                                />
-                                                <Chip
-                                                    label={`Local Repo: ${createLocalConnectorForm.isEnabled ? "enabled" : "disabled"}`}
-                                                    color={createLocalConnectorForm.isEnabled ? "primary" : "default"}
-                                                    variant={createLocalConnectorForm.isEnabled ? "filled" : "outlined"}
-                                                />
-                                                <Chip
-                                                    label={`Jira: ${createJiraForm.isEnabled ? "enabled" : "disabled"}`}
-                                                    color={createJiraForm.isEnabled ? "primary" : "default"}
-                                                    variant={createJiraForm.isEnabled ? "filled" : "outlined"}
-                                                />
+                                                {selectedCreateConnectorTypes.map((type) => (
+                                                    <Chip key={type} label={CONNECTOR_LABELS[type]} color="primary" variant="filled" />
+                                                ))}
                                             </Stack>
 
                                             <FormControlLabel
@@ -1968,8 +2223,10 @@ export default function AdminPage() {
                                                     onClick={() => {
                                                         if (!canOpenStep(wizardStep + 1)) {
                                                             if (wizardStep === 0) {
-                                                                setError("Please enter at least project key and name.")
+                                                                setError("Please complete repository setup before continuing.")
                                                             } else if (wizardStep === 1) {
+                                                                setError("Please enter project key and name before continuing.")
+                                                            } else if (wizardStep === 3) {
                                                                 setError("Please choose an LLM profile or set provider and model before continuing.")
                                                             }
                                                             return
@@ -1987,7 +2244,7 @@ export default function AdminPage() {
                                                     variant="contained"
                                                     startIcon={<AddRounded />}
                                                     onClick={() => void createProjectFromWizard()}
-                                                    disabled={busy || !basicsValid || !llmValid}
+                                                    disabled={busy || !repoValid || !projectValid || !llmValid}
                                                     sx={{ width: { xs: "100%", sm: "auto" } }}
                                                 >
                                                     Create Project

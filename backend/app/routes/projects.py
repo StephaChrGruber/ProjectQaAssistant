@@ -3,8 +3,12 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 from typing import Any
 from bson import ObjectId
+import base64
 import subprocess
 from datetime import datetime, timedelta
+from pathlib import Path
+
+import httpx
 
 from ..db import get_db  # however you access Mongo (Motor/PyMongo)
 from ..services.documentation import (
@@ -42,6 +46,182 @@ def project_to_json(p: dict) -> dict:
     if key:
         p["llm_api_key"] = "***" + key[-4:] if len(key) > 4 else "***"
     return p
+
+
+def _ordered_branches(default_branch: str, branches: list[str]) -> list[str]:
+    default = (default_branch or "main").strip() or "main"
+    seen: set[str] = set()
+    out: list[str] = []
+    if default:
+        out.append(default)
+        seen.add(default)
+    for raw in branches:
+        name = str(raw or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out or [default]
+
+
+def _github_headers(token: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def _bitbucket_headers(config: dict[str, Any]) -> dict[str, str]:
+    token = str(config.get("token") or "").strip()
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+    username = str(config.get("username") or "").strip()
+    app_password = str(config.get("app_password") or config.get("appPassword") or "").strip()
+    if username and app_password:
+        raw = f"{username}:{app_password}".encode("utf-8")
+        return {"Authorization": f"Basic {base64.b64encode(raw).decode('ascii')}"}
+    return {}
+
+
+def _bitbucket_base_url(config: dict[str, Any]) -> str:
+    return str(config.get("base_url") or config.get("baseUrl") or "https://api.bitbucket.org/2.0").rstrip("/")
+
+
+def _azure_headers(config: dict[str, Any]) -> dict[str, str]:
+    pat = str(config.get("pat") or config.get("token") or "").strip()
+    if not pat:
+        return {}
+    raw = f":{pat}".encode("utf-8")
+    return {"Authorization": f"Basic {base64.b64encode(raw).decode('ascii')}"}
+
+
+def _azure_base_url(config: dict[str, Any]) -> str:
+    return str(config.get("base_url") or config.get("baseUrl") or "https://dev.azure.com").rstrip("/")
+
+
+def _azure_parts(config: dict[str, Any]) -> tuple[str, str, str]:
+    org = str(config.get("organization") or config.get("org") or "").strip()
+    project = str(config.get("project") or "").strip()
+    repo = str(config.get("repository") or config.get("repo") or "").strip()
+    return org, project, repo
+
+
+async def _github_branches(config: dict[str, Any], limit: int = 400) -> list[str]:
+    owner = str(config.get("owner") or "").strip()
+    repo = str(config.get("repo") or "").strip()
+    if not owner or not repo:
+        return []
+    headers = _github_headers(str(config.get("token") or "").strip())
+    out: list[str] = []
+    async with httpx.AsyncClient(timeout=20) as client:
+        page = 1
+        while len(out) < limit:
+            res = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/branches",
+                headers=headers,
+                params={"per_page": 100, "page": page},
+            )
+            res.raise_for_status()
+            rows = res.json() or []
+            if not isinstance(rows, list) or not rows:
+                break
+            for row in rows:
+                name = str((row or {}).get("name") or "").strip()
+                if name:
+                    out.append(name)
+                if len(out) >= limit:
+                    break
+            if len(rows) < 100:
+                break
+            page += 1
+    return out
+
+
+async def _bitbucket_branches(config: dict[str, Any], limit: int = 400) -> list[str]:
+    workspace = str(config.get("workspace") or "").strip()
+    repo_slug = str(config.get("repo_slug") or config.get("repo") or "").strip()
+    if not workspace or not repo_slug:
+        return []
+    endpoint = f"{_bitbucket_base_url(config)}/repositories/{workspace}/{repo_slug}/refs/branches"
+    out: list[str] = []
+    async with httpx.AsyncClient(timeout=20) as client:
+        next_url: str | None = endpoint
+        params: dict[str, Any] | None = {"pagelen": 100}
+        while next_url and len(out) < limit:
+            res = await client.get(next_url, headers=_bitbucket_headers(config), params=params)
+            res.raise_for_status()
+            body = res.json() or {}
+            rows = body.get("values") or []
+            if not isinstance(rows, list):
+                rows = []
+            for row in rows:
+                name = str((row or {}).get("name") or "").strip()
+                if name:
+                    out.append(name)
+                if len(out) >= limit:
+                    break
+            next_url = body.get("next")
+            params = None
+    return out
+
+
+async def _azure_branches(config: dict[str, Any], limit: int = 1000) -> list[str]:
+    org, project, repo = _azure_parts(config)
+    if not org or not project or not repo:
+        return []
+    api_version = str(config.get("api_version") or "7.1").strip() or "7.1"
+    endpoint = f"{_azure_base_url(config)}/{org}/{project}/_apis/git/repositories/{repo}/refs"
+    out: list[str] = []
+    continuation: str | None = None
+    async with httpx.AsyncClient(timeout=20) as client:
+        while len(out) < limit:
+            params: dict[str, Any] = {
+                "filter": "heads/",
+                "$top": min(1000, limit),
+                "api-version": api_version,
+            }
+            if continuation:
+                params["continuationToken"] = continuation
+            res = await client.get(endpoint, headers=_azure_headers(config), params=params)
+            res.raise_for_status()
+            body = res.json() or {}
+            rows = body.get("value") or []
+            if not isinstance(rows, list):
+                rows = []
+            for row in rows:
+                raw = str((row or {}).get("name") or "").strip()
+                name = raw.removeprefix("refs/heads/") if raw.startswith("refs/heads/") else raw
+                if name:
+                    out.append(name)
+                if len(out) >= limit:
+                    break
+            continuation = str(res.headers.get("x-ms-continuationtoken") or "").strip() or None
+            if not continuation:
+                break
+    return out
+
+
+async def _remote_project_branches(project_id: str, default_branch: str) -> list[str]:
+    rows = await get_db()["connectors"].find(
+        {"projectId": project_id, "isEnabled": True, "type": {"$in": ["github", "bitbucket", "azure_devops"]}}
+    ).to_list(length=20)
+    by_type = {str(r.get("type") or ""): r for r in rows}
+    for t in ("github", "bitbucket", "azure_devops"):
+        row = by_type.get(t)
+        if not row:
+            continue
+        config = row.get("config") or {}
+        try:
+            if t == "github":
+                return _ordered_branches(default_branch, await _github_branches(config))
+            if t == "bitbucket":
+                return _ordered_branches(default_branch, await _bitbucket_branches(config))
+            if t == "azure_devops":
+                return _ordered_branches(default_branch, await _azure_branches(config))
+        except Exception:
+            continue
+    return [default_branch]
 
 
 def _pctl(values: list[int], p: float) -> int:
@@ -98,7 +278,12 @@ async def list_project_branches(project_id: str, x_dev_user: str | None = Header
     default_branch = (p.get("default_branch") or "main").strip() or "main"
     repo_path = (p.get("repo_path") or "").strip()
     if not repo_path:
-        return {"branches": [default_branch]}
+        branches = await _remote_project_branches(project_id, default_branch)
+        return {"branches": branches}
+
+    if not Path(repo_path).exists():
+        branches = await _remote_project_branches(project_id, default_branch)
+        return {"branches": branches}
 
     try:
         proc = subprocess.run(

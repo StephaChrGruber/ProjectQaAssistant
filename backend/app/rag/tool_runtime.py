@@ -23,10 +23,19 @@ from ..models.tools import (
     GetToolDetailsRequest,
     GetToolDetailsResponse,
     GetProjectMetadataRequest,
+    GitCheckoutBranchRequest,
+    GitCommitRequest,
+    GitCreateBranchRequest,
     GitDiffRequest,
+    GitFetchRequest,
+    GitListBranchesRequest,
     GitLogRequest,
+    GitPullRequest,
+    GitPushRequest,
     GitShowFileAtRefRequest,
+    GitStageFilesRequest,
     GitStatusRequest,
+    GitUnstageFilesRequest,
     KeywordSearchRequest,
     ListToolsRequest,
     ListToolsResponse,
@@ -52,11 +61,20 @@ from .tool_exec import (
     create_chat_task,
     create_jira_issue,
     generate_project_docs,
+    git_checkout_branch,
+    git_commit,
+    git_create_branch,
     get_project_metadata,
     git_diff,
+    git_fetch,
+    git_list_branches,
     git_log,
+    git_pull,
+    git_push,
     git_show_file_at_ref,
+    git_stage_files,
     git_status,
+    git_unstage_files,
     keyword_search,
     open_file,
     request_user_input,
@@ -827,6 +845,106 @@ def build_default_tool_runtime(
             max_retries=1,
             cache_ttl_sec=0,
             read_only=True,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="git_list_branches",
+            description="Lists branches from local repo or configured remote git connector.",
+            model=GitListBranchesRequest,
+            handler=git_list_branches,
+            timeout_sec=35,
+            rate_limit_per_min=90,
+            max_retries=1,
+            cache_ttl_sec=8,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="git_checkout_branch",
+            description="Checks out/switches branch (local) or switches active connector branch (remote).",
+            model=GitCheckoutBranchRequest,
+            handler=git_checkout_branch,
+            timeout_sec=45,
+            rate_limit_per_min=40,
+            read_only=False,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="git_create_branch",
+            description="Creates a new branch from a source ref (local or remote connector).",
+            model=GitCreateBranchRequest,
+            handler=git_create_branch,
+            timeout_sec=55,
+            rate_limit_per_min=30,
+            read_only=False,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="git_stage_files",
+            description="Stages selected files (or all) in local repository.",
+            model=GitStageFilesRequest,
+            handler=git_stage_files,
+            timeout_sec=35,
+            rate_limit_per_min=60,
+            read_only=False,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="git_unstage_files",
+            description="Unstages selected files (or all) in local repository.",
+            model=GitUnstageFilesRequest,
+            handler=git_unstage_files,
+            timeout_sec=35,
+            rate_limit_per_min=60,
+            read_only=False,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="git_commit",
+            description="Creates a git commit in local repository.",
+            model=GitCommitRequest,
+            handler=git_commit,
+            timeout_sec=50,
+            rate_limit_per_min=25,
+            read_only=False,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="git_fetch",
+            description="Fetches refs from remote in local repository.",
+            model=GitFetchRequest,
+            handler=git_fetch,
+            timeout_sec=70,
+            rate_limit_per_min=25,
+            read_only=False,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="git_pull",
+            description="Pulls updates from remote branch in local repository.",
+            model=GitPullRequest,
+            handler=git_pull,
+            timeout_sec=90,
+            rate_limit_per_min=20,
+            read_only=False,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="git_push",
+            description="Pushes local branch to remote repository.",
+            model=GitPushRequest,
+            handler=git_push,
+            timeout_sec=90,
+            rate_limit_per_min=15,
+            read_only=False,
         )
     )
     rt.register(

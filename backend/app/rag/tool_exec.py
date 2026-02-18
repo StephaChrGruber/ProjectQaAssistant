@@ -31,13 +31,32 @@ from ..models.tools import (
     CreateChatTaskResponse,
     CreateJiraIssueRequest,
     CreateJiraIssueResponse,
+    GitBranchItem,
+    GitCheckoutBranchRequest,
+    GitCheckoutBranchResponse,
+    GitCommitRequest,
+    GitCommitResponse,
+    GitCreateBranchRequest,
+    GitCreateBranchResponse,
     GitDiffRequest,
     GitDiffResponse,
+    GitFetchRequest,
+    GitFetchResponse,
+    GitListBranchesRequest,
+    GitListBranchesResponse,
     GitLogItem,
     GitLogRequest,
     GitLogResponse,
+    GitPullRequest,
+    GitPullResponse,
+    GitPushRequest,
+    GitPushResponse,
+    GitStageFilesRequest,
+    GitStageFilesResponse,
     GitStatusRequest,
     GitStatusResponse,
+    GitUnstageFilesRequest,
+    GitUnstageFilesResponse,
     GrepMatch,
     KeywordHit,
     KeywordSearchRequest,
@@ -155,6 +174,12 @@ def _limit_text(text: str, max_chars: int) -> tuple[str, bool]:
     if len(text) <= max_chars:
         return text, False
     return text[:max_chars] + "\n... (truncated)\n", True
+
+
+def _proc_output(proc: subprocess.CompletedProcess, max_chars: int = 50_000) -> str:
+    combined = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    out, _ = _limit_text(combined, max_chars)
+    return out
 
 
 async def _project_doc(project_id: str) -> dict[str, Any]:
@@ -518,6 +543,374 @@ async def _remote_open_file(remote: dict[str, Any], path: str, requested_ref: Op
     if last_err:
         raise last_err
     raise ValueError("Unsupported remote connector")
+
+
+def _sanitize_branch_name(raw: str) -> str:
+    branch = (raw or "").strip()
+    if not branch:
+        raise RuntimeError("branch is required")
+    if branch.startswith("-"):
+        raise RuntimeError("Invalid branch name")
+    if ".." in branch or branch.endswith("/") or branch.startswith("/") or " " in branch:
+        raise RuntimeError("Invalid branch name")
+    if not re.fullmatch(r"[A-Za-z0-9._/\-]+", branch):
+        raise RuntimeError("Invalid branch name")
+    return branch
+
+
+def _sanitize_rel_paths(items: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in items:
+        p = str(raw or "").strip().replace("\\", "/")
+        if not p or p == ".":
+            continue
+        if p.startswith("/") or ".." in p.split("/"):
+            continue
+        if p in seen:
+            continue
+        seen.add(p)
+        out.append(p)
+    return out
+
+
+def _merge_branch_items(
+    raw_items: list[GitBranchItem],
+    *,
+    default_branch: str,
+    active_branch: str,
+    max_branches: int,
+) -> list[GitBranchItem]:
+    by_name: dict[str, GitBranchItem] = {}
+    for item in raw_items:
+        name = str(item.name or "").strip()
+        if not name:
+            continue
+        existing = by_name.get(name)
+        if not existing:
+            by_name[name] = GitBranchItem(name=name, commit=item.commit)
+            continue
+        if not existing.commit and item.commit:
+            existing.commit = item.commit
+
+    if default_branch and default_branch not in by_name:
+        by_name[default_branch] = GitBranchItem(name=default_branch)
+    if active_branch and active_branch not in by_name:
+        by_name[active_branch] = GitBranchItem(name=active_branch)
+
+    ordered_names: list[str] = []
+    for name in (active_branch, default_branch):
+        if name and name in by_name and name not in ordered_names:
+            ordered_names.append(name)
+    for name in sorted(by_name.keys()):
+        if name not in ordered_names:
+            ordered_names.append(name)
+
+    out: list[GitBranchItem] = []
+    for name in ordered_names[: max(1, min(max_branches, 1000))]:
+        item = by_name[name]
+        item.is_default = bool(default_branch and name == default_branch)
+        out.append(item)
+    return out
+
+
+def _local_branch_items(repo_path: str) -> list[GitBranchItem]:
+    stdout = _git_stdout(
+        repo_path,
+        ["for-each-ref", "--format=%(refname:short)%09%(objectname)", "refs/heads", "refs/remotes/origin"],
+        timeout=25,
+        not_found_ok=True,
+    )
+    out: list[GitBranchItem] = []
+    seen: set[str] = set()
+    for line in stdout.splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        parts = raw.split("\t")
+        name = (parts[0] or "").strip()
+        sha = (parts[1] or "").strip() if len(parts) > 1 else None
+        if not name or name == "origin/HEAD":
+            continue
+        if name.startswith("origin/"):
+            name = name[7:]
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(GitBranchItem(name=name, commit=sha or None))
+    return out
+
+
+async def _github_list_branches(config: dict[str, Any], max_branches: int) -> list[GitBranchItem]:
+    owner = str(config.get("owner") or "").strip()
+    repo = str(config.get("repo") or "").strip()
+    if not owner or not repo:
+        return []
+    headers = _github_headers(str(config.get("token") or "").strip())
+    out: list[GitBranchItem] = []
+    async with httpx.AsyncClient(timeout=30) as client:
+        page = 1
+        while len(out) < max_branches:
+            resp = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/branches",
+                headers=headers,
+                params={"per_page": min(100, max_branches), "page": page},
+            )
+            resp.raise_for_status()
+            data = resp.json() or []
+            if not isinstance(data, list) or not data:
+                break
+            for row in data:
+                name = str((row or {}).get("name") or "").strip()
+                sha = str(((row or {}).get("commit") or {}).get("sha") or "").strip() or None
+                if not name:
+                    continue
+                out.append(GitBranchItem(name=name, commit=sha))
+                if len(out) >= max_branches:
+                    break
+            if len(data) < 100:
+                break
+            page += 1
+    return out
+
+
+async def _bitbucket_list_branches(config: dict[str, Any], max_branches: int) -> list[GitBranchItem]:
+    workspace = str(config.get("workspace") or "").strip()
+    repo_slug = str(config.get("repo_slug") or config.get("repo") or "").strip()
+    if not workspace or not repo_slug:
+        return []
+
+    endpoint = f"{_bitbucket_base_url(config)}/repositories/{workspace}/{repo_slug}/refs/branches"
+    headers = _bitbucket_headers(config)
+    out: list[GitBranchItem] = []
+    async with httpx.AsyncClient(timeout=30) as client:
+        next_url: Optional[str] = endpoint
+        params: Optional[dict[str, Any]] = {"pagelen": min(100, max_branches)}
+        while next_url and len(out) < max_branches:
+            resp = await client.get(next_url, headers=headers, params=params)
+            resp.raise_for_status()
+            data = resp.json() or {}
+            values = data.get("values") or []
+            if not isinstance(values, list):
+                values = []
+            for row in values:
+                name = str((row or {}).get("name") or "").strip()
+                sha = str(((row or {}).get("target") or {}).get("hash") or "").strip() or None
+                if not name:
+                    continue
+                out.append(GitBranchItem(name=name, commit=sha))
+                if len(out) >= max_branches:
+                    break
+            next_url = data.get("next")
+            params = None
+    return out
+
+
+async def _azure_list_branches(config: dict[str, Any], max_branches: int) -> list[GitBranchItem]:
+    org, project, repo = _azure_parts(config)
+    if not org or not project or not repo:
+        return []
+    api_version = str(config.get("api_version") or "7.1").strip() or "7.1"
+    endpoint = f"{_azure_base_url(config)}/{org}/{project}/_apis/git/repositories/{repo}/refs"
+    headers = _azure_headers(config)
+    out: list[GitBranchItem] = []
+    continuation: Optional[str] = None
+    async with httpx.AsyncClient(timeout=30) as client:
+        while len(out) < max_branches:
+            params: dict[str, Any] = {
+                "filter": "heads/",
+                "$top": min(1000, max_branches),
+                "api-version": api_version,
+            }
+            if continuation:
+                params["continuationToken"] = continuation
+            resp = await client.get(endpoint, headers=headers, params=params)
+            resp.raise_for_status()
+            data = resp.json() or {}
+            values = data.get("value") or []
+            if not isinstance(values, list):
+                values = []
+            for row in values:
+                raw_name = str((row or {}).get("name") or "").strip()
+                name = raw_name.removeprefix("refs/heads/") if raw_name.startswith("refs/heads/") else raw_name
+                sha = str((row or {}).get("objectId") or "").strip() or None
+                if not name:
+                    continue
+                out.append(GitBranchItem(name=name, commit=sha))
+                if len(out) >= max_branches:
+                    break
+            continuation = str(resp.headers.get("x-ms-continuationtoken") or "").strip() or None
+            if not continuation:
+                break
+    return out
+
+
+async def _remote_branch_items(remote: dict[str, Any], max_branches: int) -> list[GitBranchItem]:
+    rtype = str(remote.get("type") or "")
+    config = remote.get("config") or {}
+    if rtype == "github":
+        return await _github_list_branches(config, max_branches)
+    if rtype == "bitbucket":
+        return await _bitbucket_list_branches(config, max_branches)
+    if rtype == "azure_devops":
+        return await _azure_list_branches(config, max_branches)
+    return []
+
+
+async def _github_branch_commit_sha(config: dict[str, Any], branch: str) -> str:
+    owner = str(config.get("owner") or "").strip()
+    repo = str(config.get("repo") or "").strip()
+    if not owner or not repo:
+        raise RuntimeError("GitHub connector missing owner/repo")
+    headers = _github_headers(str(config.get("token") or "").strip())
+    safe_branch = quote(branch, safe="")
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}/git/ref/heads/{safe_branch}",
+            headers=headers,
+        )
+        resp.raise_for_status()
+    payload = resp.json() or {}
+    sha = str(((payload.get("object") or {}).get("sha")) or "").strip()
+    if not sha:
+        raise RuntimeError(f"Could not resolve source branch SHA for {branch}")
+    return sha
+
+
+async def _bitbucket_branch_commit_sha(config: dict[str, Any], branch: str) -> str:
+    workspace = str(config.get("workspace") or "").strip()
+    repo_slug = str(config.get("repo_slug") or config.get("repo") or "").strip()
+    if not workspace or not repo_slug:
+        raise RuntimeError("Bitbucket connector missing workspace/repo")
+    headers = _bitbucket_headers(config)
+    endpoint = (
+        f"{_bitbucket_base_url(config)}/repositories/{workspace}/{repo_slug}/refs/branches/"
+        f"{quote(branch, safe='')}"
+    )
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(endpoint, headers=headers)
+        resp.raise_for_status()
+    body = resp.json() or {}
+    sha = str(((body.get("target") or {}).get("hash")) or "").strip()
+    if not sha:
+        raise RuntimeError(f"Could not resolve source branch SHA for {branch}")
+    return sha
+
+
+async def _azure_branch_commit_sha(config: dict[str, Any], branch: str) -> str:
+    org, project, repo = _azure_parts(config)
+    if not org or not project or not repo:
+        raise RuntimeError("Azure DevOps connector missing organization/project/repository")
+    api_version = str(config.get("api_version") or "7.1").strip() or "7.1"
+    endpoint = f"{_azure_base_url(config)}/{org}/{project}/_apis/git/repositories/{repo}/refs"
+    params = {
+        "filter": f"heads/{branch}",
+        "$top": 1,
+        "api-version": api_version,
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(endpoint, headers=_azure_headers(config), params=params)
+        resp.raise_for_status()
+    rows = (resp.json() or {}).get("value") or []
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError(f"Source branch not found on Azure DevOps: {branch}")
+    sha = str((rows[0] or {}).get("objectId") or "").strip()
+    if not sha:
+        raise RuntimeError(f"Could not resolve source branch SHA for {branch}")
+    return sha
+
+
+async def _create_remote_branch(remote: dict[str, Any], branch: str, source_ref: str) -> None:
+    rtype = str(remote.get("type") or "")
+    config = remote.get("config") or {}
+    if rtype == "github":
+        owner = str(config.get("owner") or "").strip()
+        repo = str(config.get("repo") or "").strip()
+        if not owner or not repo:
+            raise RuntimeError("GitHub connector missing owner/repo")
+        sha = await _github_branch_commit_sha(config, source_ref)
+        payload = {"ref": f"refs/heads/{branch}", "sha": sha}
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"https://api.github.com/repos/{owner}/{repo}/git/refs",
+                headers=_github_headers(str(config.get("token") or "").strip()),
+                json=payload,
+            )
+            resp.raise_for_status()
+        return
+
+    if rtype == "bitbucket":
+        workspace = str(config.get("workspace") or "").strip()
+        repo_slug = str(config.get("repo_slug") or config.get("repo") or "").strip()
+        if not workspace or not repo_slug:
+            raise RuntimeError("Bitbucket connector missing workspace/repo")
+        sha = await _bitbucket_branch_commit_sha(config, source_ref)
+        endpoint = f"{_bitbucket_base_url(config)}/repositories/{workspace}/{repo_slug}/refs/branches"
+        payload = {"name": branch, "target": {"hash": sha}}
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(endpoint, headers=_bitbucket_headers(config), json=payload)
+            resp.raise_for_status()
+        return
+
+    if rtype == "azure_devops":
+        org, project, repo = _azure_parts(config)
+        if not org or not project or not repo:
+            raise RuntimeError("Azure DevOps connector missing organization/project/repository")
+        sha = await _azure_branch_commit_sha(config, source_ref)
+        api_version = str(config.get("api_version") or "7.1").strip() or "7.1"
+        endpoint = f"{_azure_base_url(config)}/{org}/{project}/_apis/git/repositories/{repo}/refs"
+        payload = [
+            {
+                "name": f"refs/heads/{branch}",
+                "oldObjectId": "0000000000000000000000000000000000000000",
+                "newObjectId": sha,
+            }
+        ]
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                endpoint,
+                headers=_azure_headers(config),
+                params={"api-version": api_version},
+                json=payload,
+            )
+            resp.raise_for_status()
+        return
+
+    raise RuntimeError("No supported remote git connector available")
+
+
+async def _set_project_default_branch(project_id: str, branch: str) -> None:
+    project = await _project_doc(project_id)
+    db = get_db()
+    await db["projects"].update_one(
+        {"_id": project.get("_id")},
+        {"$set": {"default_branch": branch}},
+    )
+
+
+async def _set_remote_branch_config(project_id: str, remote: dict[str, Any], branch: str, *, set_default_branch: bool) -> None:
+    db = get_db()
+    remote_type = str(remote.get("type") or "")
+    if not remote_type:
+        return
+    await db["connectors"].update_one(
+        {"projectId": project_id, "type": remote_type},
+        {
+            "$set": {
+                "config.branch": branch,
+                "updatedAt": datetime.utcnow(),
+            }
+        },
+    )
+    if set_default_branch:
+        await _set_project_default_branch(project_id, branch)
+
+
+def _require_local_repo_path(meta: ProjectMetadataResponse, tool_name: str) -> str:
+    repo_path = str((meta.repo_path or "")).strip()
+    if not repo_path or not Path(repo_path).exists():
+        raise RuntimeError(f"Local repository not available for {tool_name}")
+    return repo_path
 
 
 def _iter_local_worktree_files(repo_path: str, glob_pat: Optional[str]) -> list[str]:
@@ -950,6 +1343,294 @@ async def repo_tree(req: RepoTreeRequest) -> RepoTreeResponse:
 
     entries = sorted(entries, key=lambda e: (e.path.count("/"), e.path, e.type))[: req.max_entries]
     return RepoTreeResponse(root=base_rel or ".", branch=branch, entries=entries)
+
+
+async def git_list_branches(req: GitListBranchesRequest) -> GitListBranchesResponse:
+    req.max_branches = max(1, min(req.max_branches, 1000))
+    meta = await get_project_metadata(req.project_id)
+    default_branch = (meta.default_branch or "main").strip() or "main"
+    root = Path(meta.repo_path) if meta.repo_path else None
+
+    if root and root.exists():
+        repo_path = str(root)
+        active_branch = _current_branch(repo_path)
+        raw_items = _local_branch_items(repo_path)
+        branches = _merge_branch_items(
+            raw_items,
+            default_branch=default_branch,
+            active_branch=active_branch,
+            max_branches=req.max_branches,
+        )
+        return GitListBranchesResponse(
+            active_branch=active_branch,
+            default_branch=default_branch,
+            remote_mode=False,
+            branches=branches,
+        )
+
+    remote = await _remote_repo_connector(req.project_id)
+    if remote:
+        config = remote.get("config") or {}
+        active_branch = str(config.get("branch") or default_branch or "main").strip() or "main"
+        raw_items = await _remote_branch_items(remote, req.max_branches)
+        branches = _merge_branch_items(
+            raw_items,
+            default_branch=default_branch,
+            active_branch=active_branch,
+            max_branches=req.max_branches,
+        )
+        return GitListBranchesResponse(
+            active_branch=active_branch,
+            default_branch=default_branch,
+            remote_mode=True,
+            branches=branches,
+        )
+
+    return GitListBranchesResponse(
+        active_branch=default_branch,
+        default_branch=default_branch,
+        remote_mode=False,
+        branches=[GitBranchItem(name=default_branch, is_default=True)],
+    )
+
+
+async def git_checkout_branch(req: GitCheckoutBranchRequest) -> GitCheckoutBranchResponse:
+    branch = _sanitize_branch_name(req.branch)
+    start_point = _sanitize_branch_name(req.start_point) if (req.start_point or "").strip() else None
+
+    meta = await get_project_metadata(req.project_id)
+    root = Path(meta.repo_path) if meta.repo_path else None
+    if root and root.exists():
+        repo_path = str(root)
+        previous_branch = _current_branch(repo_path)
+        created = False
+
+        if _branch_exists(repo_path, branch):
+            proc = _run_git(repo_path, ["checkout", branch], timeout=25)
+            if proc.returncode != 0:
+                raise RuntimeError(_proc_output(proc, 5000) or f"Failed to checkout branch: {branch}")
+        else:
+            if not req.create_if_missing:
+                raise RuntimeError(f"Branch does not exist locally: {branch}")
+            source = start_point or previous_branch or (meta.default_branch or "main")
+            proc = _run_git(repo_path, ["checkout", "-b", branch, source], timeout=30)
+            if proc.returncode != 0:
+                raise RuntimeError(_proc_output(proc, 5000) or f"Failed to create branch: {branch}")
+            created = True
+
+        if req.set_default_branch:
+            await _set_project_default_branch(req.project_id, branch)
+
+        return GitCheckoutBranchResponse(
+            branch=branch,
+            previous_branch=previous_branch,
+            created=created,
+            remote_mode=False,
+            message=f"Checked out local branch '{branch}'.",
+        )
+
+    remote = await _remote_repo_connector(req.project_id)
+    if not remote:
+        raise RuntimeError("No local repository or remote git connector is available")
+
+    config = remote.get("config") or {}
+    previous_branch = str(config.get("branch") or meta.default_branch or "main").strip() or "main"
+    branches = await _remote_branch_items(remote, 2000)
+    names = {b.name for b in branches if b.name}
+    created = False
+    if branch not in names:
+        if not req.create_if_missing:
+            raise RuntimeError(f"Branch does not exist on remote connector: {branch}")
+        source = start_point or previous_branch or (meta.default_branch or "main")
+        await _create_remote_branch(remote, branch, source)
+        created = True
+
+    await _set_remote_branch_config(req.project_id, remote, branch, set_default_branch=bool(req.set_default_branch))
+    return GitCheckoutBranchResponse(
+        branch=branch,
+        previous_branch=previous_branch,
+        created=created,
+        remote_mode=True,
+        message=f"Active connector branch set to '{branch}'.",
+    )
+
+
+async def git_create_branch(req: GitCreateBranchRequest) -> GitCreateBranchResponse:
+    branch = _sanitize_branch_name(req.branch)
+    source_ref = _sanitize_branch_name(req.source_ref) if (req.source_ref or "").strip() else ""
+
+    meta = await get_project_metadata(req.project_id)
+    root = Path(meta.repo_path) if meta.repo_path else None
+    if root and root.exists():
+        repo_path = str(root)
+        current = _current_branch(repo_path)
+        source = source_ref or current or (meta.default_branch or "main")
+        if _branch_exists(repo_path, branch):
+            raise RuntimeError(f"Branch already exists locally: {branch}")
+        if not _branch_exists(repo_path, source):
+            raise RuntimeError(f"Source branch not found locally: {source}")
+
+        proc = _run_git(repo_path, ["branch", branch, source], timeout=25)
+        if proc.returncode != 0:
+            raise RuntimeError(_proc_output(proc, 5000) or f"Failed to create branch: {branch}")
+
+        checked_out = False
+        if req.checkout:
+            switch_proc = _run_git(repo_path, ["checkout", branch], timeout=25)
+            if switch_proc.returncode != 0:
+                raise RuntimeError(_proc_output(switch_proc, 5000) or f"Failed to checkout branch: {branch}")
+            checked_out = True
+
+        if req.set_default_branch and checked_out:
+            await _set_project_default_branch(req.project_id, branch)
+
+        return GitCreateBranchResponse(
+            branch=branch,
+            source_ref=source,
+            created=True,
+            checked_out=checked_out,
+            remote_mode=False,
+            message=f"Created local branch '{branch}' from '{source}'.",
+        )
+
+    remote = await _remote_repo_connector(req.project_id)
+    if not remote:
+        raise RuntimeError("No local repository or remote git connector is available")
+
+    config = remote.get("config") or {}
+    source = source_ref or str(config.get("branch") or meta.default_branch or "main").strip() or "main"
+    branches = await _remote_branch_items(remote, 2000)
+    names = {b.name for b in branches if b.name}
+    if branch in names:
+        raise RuntimeError(f"Branch already exists on remote connector: {branch}")
+
+    await _create_remote_branch(remote, branch, source)
+    checked_out = bool(req.checkout)
+    if checked_out:
+        await _set_remote_branch_config(req.project_id, remote, branch, set_default_branch=bool(req.set_default_branch))
+    elif req.set_default_branch:
+        await _set_project_default_branch(req.project_id, branch)
+
+    return GitCreateBranchResponse(
+        branch=branch,
+        source_ref=source,
+        created=True,
+        checked_out=checked_out,
+        remote_mode=True,
+        message=f"Created remote branch '{branch}' from '{source}'.",
+    )
+
+
+async def git_stage_files(req: GitStageFilesRequest) -> GitStageFilesResponse:
+    meta = await get_project_metadata(req.project_id)
+    repo_path = _require_local_repo_path(meta, "git_stage_files")
+
+    if req.all:
+        proc = _run_git(repo_path, ["add", "-A"], timeout=30)
+        if proc.returncode != 0:
+            raise RuntimeError(_proc_output(proc, 5000) or "Failed to stage all files")
+        status = await git_status(GitStatusRequest(project_id=req.project_id))
+        return GitStageFilesResponse(staged_paths=status.staged, status="Staged all changes.")
+
+    paths = _sanitize_rel_paths(req.paths or [])
+    if not paths:
+        raise RuntimeError("paths is required when all=false")
+    proc = _run_git(repo_path, ["add", "--", *paths], timeout=30)
+    if proc.returncode != 0:
+        raise RuntimeError(_proc_output(proc, 5000) or "Failed to stage files")
+    status = await git_status(GitStatusRequest(project_id=req.project_id))
+    return GitStageFilesResponse(staged_paths=status.staged, status=f"Staged {len(paths)} path(s).")
+
+
+async def git_unstage_files(req: GitUnstageFilesRequest) -> GitUnstageFilesResponse:
+    meta = await get_project_metadata(req.project_id)
+    repo_path = _require_local_repo_path(meta, "git_unstage_files")
+
+    if req.all:
+        proc = _run_git(repo_path, ["reset"], timeout=25)
+        if proc.returncode != 0:
+            raise RuntimeError(_proc_output(proc, 5000) or "Failed to unstage all files")
+        status = await git_status(GitStatusRequest(project_id=req.project_id))
+        return GitUnstageFilesResponse(unstaged_paths=status.modified + status.untracked, status="Unstaged all files.")
+
+    paths = _sanitize_rel_paths(req.paths or [])
+    if not paths:
+        raise RuntimeError("paths is required when all=false")
+    proc = _run_git(repo_path, ["reset", "HEAD", "--", *paths], timeout=25)
+    if proc.returncode != 0:
+        raise RuntimeError(_proc_output(proc, 5000) or "Failed to unstage files")
+    status = await git_status(GitStatusRequest(project_id=req.project_id))
+    return GitUnstageFilesResponse(
+        unstaged_paths=status.modified + status.untracked,
+        status=f"Unstaged {len(paths)} path(s).",
+    )
+
+
+async def git_commit(req: GitCommitRequest) -> GitCommitResponse:
+    message = (req.message or "").strip()
+    if not message:
+        raise RuntimeError("message is required")
+
+    meta = await get_project_metadata(req.project_id)
+    repo_path = _require_local_repo_path(meta, "git_commit")
+
+    args = ["commit", "-m", message]
+    if req.all:
+        args.insert(1, "-a")
+    if req.amend:
+        args.insert(1, "--amend")
+    proc = _run_git(repo_path, args, timeout=40)
+    if proc.returncode != 0:
+        raise RuntimeError(_proc_output(proc, 7000) or "git commit failed")
+
+    commit = _git_stdout(repo_path, ["rev-parse", "HEAD"], timeout=15, not_found_ok=True).strip() or "HEAD"
+    branch = _current_branch(repo_path)
+    summary = _proc_output(proc, 6000) or f"Committed to {branch}"
+    return GitCommitResponse(branch=branch, commit=commit, summary=summary)
+
+
+async def git_fetch(req: GitFetchRequest) -> GitFetchResponse:
+    meta = await get_project_metadata(req.project_id)
+    repo_path = _require_local_repo_path(meta, "git_fetch")
+    remote = (req.remote or "origin").strip() or "origin"
+    args = ["fetch", remote]
+    if req.prune:
+        args.append("--prune")
+    proc = _run_git(repo_path, args, timeout=60)
+    if proc.returncode != 0:
+        raise RuntimeError(_proc_output(proc, 7000) or "git fetch failed")
+    return GitFetchResponse(remote=remote, output=_proc_output(proc, 7000) or f"Fetched from {remote}.")
+
+
+async def git_pull(req: GitPullRequest) -> GitPullResponse:
+    meta = await get_project_metadata(req.project_id)
+    repo_path = _require_local_repo_path(meta, "git_pull")
+    remote = (req.remote or "origin").strip() or "origin"
+    branch = (req.branch or _current_branch(repo_path) or "main").strip() or "main"
+    args = ["pull", remote, branch]
+    if req.rebase:
+        args.append("--rebase")
+    proc = _run_git(repo_path, args, timeout=90)
+    if proc.returncode != 0:
+        raise RuntimeError(_proc_output(proc, 9000) or "git pull failed")
+    return GitPullResponse(remote=remote, branch=branch, output=_proc_output(proc, 9000) or f"Pulled {remote}/{branch}.")
+
+
+async def git_push(req: GitPushRequest) -> GitPushResponse:
+    meta = await get_project_metadata(req.project_id)
+    repo_path = _require_local_repo_path(meta, "git_push")
+    remote = (req.remote or "origin").strip() or "origin"
+    branch = (req.branch or _current_branch(repo_path) or "main").strip() or "main"
+    args = ["push"]
+    if req.set_upstream:
+        args.append("-u")
+    if req.force_with_lease:
+        args.append("--force-with-lease")
+    args.extend([remote, branch])
+    proc = _run_git(repo_path, args, timeout=90)
+    if proc.returncode != 0:
+        raise RuntimeError(_proc_output(proc, 9000) or "git push failed")
+    return GitPushResponse(remote=remote, branch=branch, output=_proc_output(proc, 9000) or f"Pushed to {remote}/{branch}.")
 
 
 async def git_status(req: GitStatusRequest) -> GitStatusResponse:
