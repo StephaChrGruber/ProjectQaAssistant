@@ -51,7 +51,11 @@ def _is_text_file(path: str) -> bool:
 async def fetch_local_repo_docs(project, config: dict) -> list[dict]:
     repo_path = str(config.get("repo_path") or project.repo_path or "").strip()
     if not repo_path:
-        return []
+        # Fallback for empty local path config: scan the current project folder.
+        try:
+            repo_path = str(Path(__file__).resolve().parents[3])
+        except Exception:
+            repo_path = str(Path.cwd())
 
     root = Path(repo_path)
     if not root.exists() or not root.is_dir():

@@ -327,17 +327,34 @@ def _discover_openai_models(base_url: str | None, api_key: str | None) -> tuple[
 
 
 def _path_picker_roots() -> list[Path]:
-    raw = (settings.PATH_PICKER_ROOTS or "/").split(",")
+    raw = (settings.PATH_PICKER_ROOTS or "").split(",")
     roots: list[Path] = []
     for item in raw:
         p = item.strip()
         if not p:
             continue
         try:
-            roots.append(Path(p).expanduser().resolve())
+            resolved = Path(p).expanduser().resolve()
+            if resolved.exists() and resolved.is_dir():
+                roots.append(resolved)
         except Exception:
             continue
-    return roots or [Path("/")]
+    if roots:
+        return roots
+
+    # PATH_PICKER_ROOTS may be intentionally empty; default to the project root
+    # so admins can still browse useful directories without exposing full "/".
+    try:
+        project_root = Path(__file__).resolve().parents[3]
+        if project_root.exists() and project_root.is_dir():
+            return [project_root]
+    except Exception:
+        pass
+
+    cwd = Path.cwd()
+    if cwd.exists() and cwd.is_dir():
+        return [cwd]
+    return [Path("/")]
 
 
 def _is_allowed_path(path: Path, roots: list[Path]) -> bool:
@@ -384,7 +401,65 @@ def _http_ok(
         return False, str(err)
 
 
-def _connector_health(connector: Connector) -> dict[str, object]:
+def _has_any_nonempty(values: list[object]) -> bool:
+    for item in values:
+        if isinstance(item, str):
+            if item.strip():
+                return True
+            continue
+        if item is not None and str(item).strip():
+            return True
+    return False
+
+
+def _connector_is_configured(connector: Connector, project_repo_path: str = "") -> bool:
+    ctype = str(connector.type or "")
+    cfg = connector.config or {}
+
+    if ctype == "local":
+        paths = cfg.get("paths")
+        has_paths = isinstance(paths, list) and _has_any_nonempty(list(paths))
+        repo_path = str(cfg.get("repo_path") or "").strip() or str(project_repo_path or "").strip()
+        return has_paths or bool(repo_path)
+
+    if ctype in {"github", "git"}:
+        owner = str(cfg.get("owner") or "").strip()
+        repo = str(cfg.get("repo") or "").strip()
+        token = str(cfg.get("token") or "").strip()
+        return bool(owner and repo and token)
+
+    if ctype == "bitbucket":
+        workspace = str(cfg.get("workspace") or "").strip()
+        repo = str(cfg.get("repo_slug") or cfg.get("repo") or "").strip()
+        token = str(cfg.get("token") or "").strip()
+        username = str(cfg.get("username") or "").strip()
+        app_password = str(cfg.get("app_password") or cfg.get("appPassword") or "").strip()
+        has_auth = bool(token) or bool(username and app_password)
+        return bool(workspace and repo and has_auth)
+
+    if ctype == "azure_devops":
+        organization = str(cfg.get("organization") or cfg.get("org") or "").strip()
+        project = str(cfg.get("project") or "").strip()
+        repository = str(cfg.get("repository") or cfg.get("repo") or "").strip()
+        pat = str(cfg.get("pat") or cfg.get("token") or "").strip()
+        return bool(organization and project and repository and pat)
+
+    if ctype == "confluence":
+        base_url = str(cfg.get("baseUrl") or "").strip()
+        email = str(cfg.get("email") or "").strip()
+        api_token = str(cfg.get("apiToken") or "").strip()
+        return bool(base_url and email and api_token)
+
+    if ctype == "jira":
+        base_url = str(cfg.get("baseUrl") or "").strip()
+        email = str(cfg.get("email") or "").strip()
+        api_token = str(cfg.get("apiToken") or "").strip()
+        return bool(base_url and email and api_token)
+
+    return False
+
+
+def _connector_health(connector: Connector, *, project_repo_path: str = "") -> dict[str, object]:
     started = time.perf_counter()
     ctype = str(connector.type or "")
     cfg = connector.config or {}
@@ -399,7 +474,20 @@ def _connector_health(connector: Connector) -> dict[str, object]:
             severity = "info"
             detail = "local paths configured"
         else:
-            detail = "no local paths configured"
+            repo_path = str(cfg.get("repo_path") or "").strip() or str(project_repo_path or "").strip()
+            if repo_path:
+                if repo_path.lower().startswith("browser-local://"):
+                    ok = True
+                    severity = "info"
+                    detail = "browser-local repo configured (checked on client)"
+                elif Path(repo_path).exists():
+                    ok = True
+                    severity = "info"
+                    detail = "using project local repo path"
+                else:
+                    detail = f"local repo path missing on backend: {repo_path}"
+            else:
+                detail = "no local paths configured"
     elif ctype in {"github", "git"}:
         owner = str(cfg.get("owner") or "").strip()
         repo = str(cfg.get("repo") or "").strip()
@@ -419,9 +507,15 @@ def _connector_health(connector: Connector) -> dict[str, object]:
         base = str(cfg.get("base_url") or cfg.get("baseUrl") or "https://api.bitbucket.org/2.0").rstrip("/")
         workspace = str(cfg.get("workspace") or "").strip()
         repo = str(cfg.get("repo_slug") or cfg.get("repo") or "").strip()
+        token = str(cfg.get("token") or "").strip()
         username = str(cfg.get("username") or "").strip()
         app_password = str(cfg.get("app_password") or cfg.get("appPassword") or "").strip()
-        if workspace and repo and username and app_password:
+        if workspace and repo and token:
+            ok, detail = _http_ok(
+                f"{base}/repositories/{workspace}/{repo}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        elif workspace and repo and username and app_password:
             ok, detail = _http_ok(
                 f"{base}/repositories/{workspace}/{repo}",
                 auth=(username, app_password),
@@ -500,12 +594,36 @@ async def _persist_connector_health_snapshot(project_id: str, items: list[dict[s
         return
 
 
-async def _build_connector_health_history(project_id: str, *, hours: int, limit: int = 1000) -> dict[str, object]:
+def _empty_connector_health_history(project_id: str, safe_hours: int) -> dict[str, object]:
+    return {
+        "project_id": project_id,
+        "hours": safe_hours,
+        "checks": 0,
+        "latest_checked_at": None,
+        "series": [],
+        "alerts": [],
+    }
+
+
+async def _build_connector_health_history(
+    project_id: str,
+    *,
+    hours: int,
+    limit: int = 1000,
+    connector_ids: set[str] | None = None,
+) -> dict[str, object]:
     safe_hours = max(1, min(int(hours or 24), 24 * 30))
     safe_limit = max(10, min(int(limit or 1000), 5000))
+    allowed_ids = {str(x).strip() for x in (connector_ids or set()) if str(x).strip()}
+    if connector_ids is not None and not allowed_ids:
+        return _empty_connector_health_history(project_id, safe_hours)
+
     since = datetime.utcnow() - timedelta(hours=safe_hours)
+    query: dict[str, object] = {"project_id": project_id, "checked_at": {"$gte": since}}
+    if allowed_ids:
+        query["connector_id"] = {"$in": list(allowed_ids)}
     rows = await get_db()["connector_health_events"].find(
-        {"project_id": project_id, "checked_at": {"$gte": since}},
+        query,
         {"_id": 0},
     ).sort("checked_at", -1).limit(safe_limit).to_list(length=safe_limit)
 
@@ -824,10 +942,21 @@ async def project_connectors_health(project_id: str, user=Depends(current_user))
             "items": [],
         }
     connectors = await Connector.find(Connector.projectId == project_id).to_list()
-    items = [_connector_health(c) for c in connectors]
+    project_repo_path = str(project.repo_path or "").strip()
+    configured_connectors = [
+        c
+        for c in connectors
+        if bool(c.isEnabled) and _connector_is_configured(c, project_repo_path)
+    ]
+    items = [_connector_health(c, project_repo_path=project_repo_path) for c in configured_connectors]
     await _persist_connector_health_snapshot(project_id, items)
     ok_count = sum(1 for row in items if bool(row.get("ok")))
-    history = await _build_connector_health_history(project_id, hours=72, limit=1200)
+    history = await _build_connector_health_history(
+        project_id,
+        hours=72,
+        limit=1200,
+        connector_ids={str(c.id) for c in configured_connectors},
+    )
     return {
         "project_id": project_id,
         "enabled": True,
@@ -861,7 +990,19 @@ async def project_connectors_health_history(project_id: str, hours: int = 72, li
             "series": [],
             "alerts": [],
         }
-    history = await _build_connector_health_history(project_id, hours=hours, limit=limit)
+    connectors = await Connector.find(Connector.projectId == project_id).to_list()
+    project_repo_path = str(project.repo_path or "").strip()
+    configured_ids = {
+        str(c.id)
+        for c in connectors
+        if bool(c.isEnabled) and _connector_is_configured(c, project_repo_path)
+    }
+    history = await _build_connector_health_history(
+        project_id,
+        hours=hours,
+        limit=limit,
+        connector_ids=configured_ids,
+    )
     history["enabled"] = True
     return history
 
