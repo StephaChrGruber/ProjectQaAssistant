@@ -1,49 +1,31 @@
 "use client"
 
-import { Dispatch, FormEvent, SetStateAction, useEffect, useMemo, useState } from "react"
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import {
     Alert,
     Box,
     Button,
-    Card,
-    CardContent,
-    Checkbox,
-    Chip,
     Container,
-    Divider,
-    FormControl,
-    FormControlLabel,
-    IconButton,
-    InputAdornment,
-    InputLabel,
     LinearProgress,
-    MenuItem,
     Paper,
-    Select,
     Stack,
-    Step,
-    StepButton,
-    Stepper,
-    Switch,
-    TextField,
     Typography,
     useMediaQuery,
     useTheme,
 } from "@mui/material"
-import AddRounded from "@mui/icons-material/AddRounded"
-import SaveRounded from "@mui/icons-material/SaveRounded"
-import CloudUploadRounded from "@mui/icons-material/CloudUploadRounded"
-import RefreshRounded from "@mui/icons-material/RefreshRounded"
-import ArrowBackRounded from "@mui/icons-material/ArrowBackRounded"
-import DeleteForeverRounded from "@mui/icons-material/DeleteForeverRounded"
-import FolderOpenRounded from "@mui/icons-material/FolderOpenRounded"
 import { backendJson } from "@/lib/backend"
 import PathPickerDialog from "@/components/PathPickerDialog"
+import { AdminWorkflowHeader } from "@/features/admin/projects/AdminWorkflowHeader"
 import DeleteProjectDialog from "@/features/admin/projects/DeleteProjectDialog"
 import ExistingProjectSetupCard from "@/features/admin/projects/ExistingProjectSetupCard"
 import LlmProfilesCard from "@/features/admin/projects/LlmProfilesCard"
 import NewProjectWizardCard from "@/features/admin/projects/NewProjectWizardCard"
+import {
+    resolveDefaultBaseUrlForProvider,
+    resolveModelOptionsForProvider,
+    resolveProviderOptions,
+} from "@/features/llm/provider-utils"
 import {
     isBrowserLocalRepoPath,
     moveLocalRepoSnapshot,
@@ -51,9 +33,7 @@ import {
 import {
     asStr,
     connectorPayloads,
-    CONNECTOR_LABELS,
     CREATE_DRAFT_LOCAL_REPO_KEY,
-    CREATE_STEPS,
     DEFAULT_PROVIDER_OPTIONS,
     emptyAzureDevOps,
     emptyBitbucket,
@@ -73,7 +53,6 @@ import {
     type AzureDevOpsForm,
     type BitbucketForm,
     type ConfluenceForm,
-    type ConnectorDoc,
     type CreateConnectorType,
     type DeleteProjectResponse,
     type GitForm,
@@ -81,7 +60,6 @@ import {
     type LlmOptionsResponse,
     type LlmProfileDoc,
     type LlmProfileForm,
-    type LlmProviderOption,
     type LocalConnectorForm,
     type MeResponse,
     type MeUser,
@@ -205,43 +183,52 @@ export default function AdminPage() {
     )
 
     const providerOptions = useMemo(
-        () => (llmOptions?.providers?.length ? llmOptions.providers : DEFAULT_PROVIDER_OPTIONS),
+        () => resolveProviderOptions(llmOptions, DEFAULT_PROVIDER_OPTIONS),
         [llmOptions]
     )
 
-    function defaultBaseUrlForProvider(provider: string): string {
-        const found = providerOptions.find((item) => item.value === provider)
-        if (found?.defaultBaseUrl) return found.defaultBaseUrl
-        return provider === "openai" ? "https://api.openai.com/v1" : "http://ollama:11434/v1"
-    }
-
-    function defaultModelsForProvider(provider: string): string[] {
-        if (provider === "openai") {
-            return llmOptions?.openai_models?.length ? llmOptions.openai_models : FALLBACK_OPENAI_MODELS
-        }
-        return llmOptions?.ollama_models?.length ? llmOptions.ollama_models : FALLBACK_OLLAMA_MODELS
-    }
-
-    function modelOptionsForProvider(provider: string, current?: string): string[] {
-        const opts = [...defaultModelsForProvider(provider)]
-        if (current?.trim() && !opts.includes(current.trim())) {
-            opts.unshift(current.trim())
-        }
-        return Array.from(new Set(opts))
-    }
+    const defaultBaseUrlForProvider = useCallback(
+        (provider: string) =>
+            resolveDefaultBaseUrlForProvider(provider, providerOptions, {
+                openai: "https://api.openai.com/v1",
+                ollama: "http://ollama:11434/v1",
+            }),
+        [providerOptions]
+    )
 
     const createModelOptions = useMemo(
-        () => modelOptionsForProvider(createForm.llm_provider, createForm.llm_model),
+        () =>
+            resolveModelOptionsForProvider({
+                provider: createForm.llm_provider,
+                current: createForm.llm_model,
+                llmOptions,
+                fallbackOpenAiModels: FALLBACK_OPENAI_MODELS,
+                fallbackOllamaModels: FALLBACK_OLLAMA_MODELS,
+            }),
         [createForm.llm_provider, createForm.llm_model, llmOptions]
     )
 
     const editModelOptions = useMemo(
-        () => modelOptionsForProvider(editForm.llm_provider, editForm.llm_model),
+        () =>
+            resolveModelOptionsForProvider({
+                provider: editForm.llm_provider,
+                current: editForm.llm_model,
+                llmOptions,
+                fallbackOpenAiModels: FALLBACK_OPENAI_MODELS,
+                fallbackOllamaModels: FALLBACK_OLLAMA_MODELS,
+            }),
         [editForm.llm_provider, editForm.llm_model, llmOptions]
     )
 
     const llmProfileModelOptions = useMemo(
-        () => modelOptionsForProvider(llmProfileForm.provider, llmProfileForm.model),
+        () =>
+            resolveModelOptionsForProvider({
+                provider: llmProfileForm.provider,
+                current: llmProfileForm.model,
+                llmOptions,
+                fallbackOpenAiModels: FALLBACK_OPENAI_MODELS,
+                fallbackOllamaModels: FALLBACK_OLLAMA_MODELS,
+            }),
         [llmProfileForm.model, llmProfileForm.provider, llmOptions]
     )
 
@@ -295,7 +282,7 @@ export default function AdminPage() {
     }
 
     function applyProviderChange(
-        setForm: Dispatch<SetStateAction<ProjectForm>>,
+        setForm: (updater: (prev: ProjectForm) => ProjectForm) => void,
         nextProvider: string
     ) {
         setForm((prev) => {
@@ -307,7 +294,13 @@ export default function AdminPage() {
                     ? nextDefaultBase
                     : prev.llm_base_url
 
-            const nextModelOptions = modelOptionsForProvider(nextProvider, prev.llm_model)
+            const nextModelOptions = resolveModelOptionsForProvider({
+                provider: nextProvider,
+                current: prev.llm_model,
+                llmOptions,
+                fallbackOpenAiModels: FALLBACK_OPENAI_MODELS,
+                fallbackOllamaModels: FALLBACK_OLLAMA_MODELS,
+            })
             const nextModel =
                 prev.llm_model && nextModelOptions.includes(prev.llm_model)
                     ? prev.llm_model
@@ -340,7 +333,13 @@ export default function AdminPage() {
                     ? nextDefaultBase
                     : prev.base_url
 
-            const nextModelOptions = modelOptionsForProvider(nextProvider, prev.model)
+            const nextModelOptions = resolveModelOptionsForProvider({
+                provider: nextProvider,
+                current: prev.model,
+                llmOptions,
+                fallbackOpenAiModels: FALLBACK_OPENAI_MODELS,
+                fallbackOllamaModels: FALLBACK_OLLAMA_MODELS,
+            })
             const nextModel =
                 prev.model && nextModelOptions.includes(prev.model)
                     ? prev.model
@@ -408,7 +407,15 @@ export default function AdminPage() {
             default_branch: p.default_branch || "main",
             llm_provider: p.llm_provider || "ollama",
             llm_base_url: p.llm_base_url || defaultBaseUrlForProvider(p.llm_provider || "ollama"),
-            llm_model: p.llm_model || modelOptionsForProvider(p.llm_provider || "ollama")[0] || "",
+            llm_model:
+                p.llm_model ||
+                resolveModelOptionsForProvider({
+                    provider: p.llm_provider || "ollama",
+                    llmOptions,
+                    fallbackOpenAiModels: FALLBACK_OPENAI_MODELS,
+                    fallbackOllamaModels: FALLBACK_OLLAMA_MODELS,
+                })[0] ||
+                "",
             llm_api_key: p.llm_api_key || ((p.llm_provider || "ollama") === "ollama" ? "ollama" : ""),
             llm_profile_id: p.llm_profile_id || "",
         })
@@ -471,7 +478,7 @@ export default function AdminPage() {
             apiToken: asStr(j?.config?.apiToken),
             jql: asStr(j?.config?.jql),
         })
-    }, [selectedProject, llmOptions])
+    }, [defaultBaseUrlForProvider, llmOptions, selectedProject])
 
     useEffect(() => {
         setCreateOptionalConnectors((prev) => prev.filter((t) => t !== primaryRepoConnector))
@@ -812,46 +819,7 @@ export default function AdminPage() {
         <Box sx={{ minHeight: "100vh", py: { xs: 2, md: 3 } }}>
             <Container maxWidth="xl">
                 <Stack spacing={{ xs: 2, md: 2.5 }}>
-                    <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 } }}>
-                        <Stack
-                            direction={{ xs: "column", md: "row" }}
-                            spacing={2}
-                            alignItems={{ xs: "flex-start", md: "center" }}
-                            justifyContent="space-between"
-                        >
-                            <Box>
-                                <Typography variant="overline" color="primary.light" sx={{ letterSpacing: "0.14em" }}>
-                                    Admin Workflow
-                                </Typography>
-                                <Typography variant="h4" sx={{ fontWeight: 700, mt: 0.5, fontSize: { xs: "1.6rem", md: "2.1rem" } }}>
-                                    Project + Source Configuration
-                                </Typography>
-                                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                                    Create projects, configure GitHub/Bitbucket/Azure DevOps/Local/Confluence/Jira sources,
-                                    choose model provider or reusable profile, and run ingestion.
-                                </Typography>
-                            </Box>
-
-                            <Stack direction="row" spacing={1}>
-                                <Button
-                                    component={Link}
-                                    href="/admin/custom-tools"
-                                    variant="contained"
-                                    startIcon={<AddRounded />}
-                                >
-                                    Custom Tools
-                                </Button>
-                                <Button
-                                    component={Link}
-                                    href="/projects"
-                                    variant="outlined"
-                                    startIcon={<ArrowBackRounded />}
-                                >
-                                    Back to projects
-                                </Button>
-                            </Stack>
-                        </Stack>
-                    </Paper>
+                    <AdminWorkflowHeader />
 
                     {busy && <LinearProgress />}
                     {error && <Alert severity="error">{error}</Alert>}

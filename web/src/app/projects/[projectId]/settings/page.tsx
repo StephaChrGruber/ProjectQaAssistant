@@ -1,40 +1,25 @@
 "use client"
 
-import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import {
     Alert,
     Box,
-    Button,
-    Card,
-    CardContent,
-    Chip,
-    Divider,
-    FormControl,
-    FormControlLabel,
-    IconButton,
-    InputAdornment,
-    InputLabel,
-    MenuItem,
-    Select,
     Stack,
-    Switch,
-    TextField,
-    Typography,
 } from "@mui/material"
-import OpenInNewRounded from "@mui/icons-material/OpenInNewRounded"
-import SaveRounded from "@mui/icons-material/SaveRounded"
-import CloudUploadRounded from "@mui/icons-material/CloudUploadRounded"
-import RefreshRounded from "@mui/icons-material/RefreshRounded"
-import FolderOpenRounded from "@mui/icons-material/FolderOpenRounded"
 import { backendJson } from "@/lib/backend"
 import { ProjectDrawerLayout, type DrawerChat, type DrawerUser } from "@/components/ProjectDrawerLayout"
 import { buildChatPath, saveLastChat } from "@/lib/last-chat"
 import PathPickerDialog from "@/components/PathPickerDialog"
 import DetailCard from "@/features/project-settings/DetailCard"
 import ProjectSettingsAdminPanel from "@/features/project-settings/ProjectSettingsAdminPanel"
+import { ProjectSettingsOverviewCards } from "@/features/project-settings/ProjectSettingsOverviewCards"
 import { hasLocalRepoSnapshot, isBrowserLocalRepoPath } from "@/lib/local-repo-bridge"
+import {
+    resolveDefaultBaseUrlForProvider,
+    resolveModelOptionsForProvider,
+    resolveProviderOptions,
+} from "@/features/llm/provider-utils"
 import {
     asStr,
     csvToList,
@@ -51,7 +36,6 @@ import {
     FALLBACK_OPENAI_MODELS,
     getConnector,
     makeChatId,
-    maskSecret,
     normalizedOpenAiKey,
     type AzureDevOpsForm,
     type BitbucketForm,
@@ -140,33 +124,28 @@ export default function ProjectSettingsPage() {
     )
 
     const providerOptions = useMemo(
-        () => (llmOptions?.providers?.length ? llmOptions.providers : DEFAULT_PROVIDER_OPTIONS),
+        () => resolveProviderOptions(llmOptions, DEFAULT_PROVIDER_OPTIONS),
         [llmOptions]
     )
 
-    function defaultBaseUrlForProvider(provider: string): string {
-        const found = providerOptions.find((item) => item.value === provider)
-        if (found?.defaultBaseUrl) return found.defaultBaseUrl
-        return provider === "openai" ? "https://api.openai.com/v1" : "http://ollama:11434/v1"
-    }
-
-    function defaultModelsForProvider(provider: string): string[] {
-        if (provider === "openai") {
-            return llmOptions?.openai_models?.length ? llmOptions.openai_models : FALLBACK_OPENAI_MODELS
-        }
-        return llmOptions?.ollama_models?.length ? llmOptions.ollama_models : FALLBACK_OLLAMA_MODELS
-    }
-
-    function modelOptionsForProvider(provider: string, current?: string): string[] {
-        const opts = [...defaultModelsForProvider(provider)]
-        if (current?.trim() && !opts.includes(current.trim())) {
-            opts.unshift(current.trim())
-        }
-        return Array.from(new Set(opts))
-    }
+    const defaultBaseUrlForProvider = useCallback(
+        (provider: string) =>
+            resolveDefaultBaseUrlForProvider(provider, providerOptions, {
+                openai: "https://api.openai.com/v1",
+                ollama: "http://ollama:11434/v1",
+            }),
+        [providerOptions]
+    )
 
     const editModelOptions = useMemo(
-        () => modelOptionsForProvider(editForm.llm_provider, editForm.llm_model),
+        () =>
+            resolveModelOptionsForProvider({
+                provider: editForm.llm_provider,
+                current: editForm.llm_model,
+                llmOptions,
+                fallbackOpenAiModels: FALLBACK_OPENAI_MODELS,
+                fallbackOllamaModels: FALLBACK_OLLAMA_MODELS,
+            }),
         [editForm.llm_provider, editForm.llm_model, llmOptions]
     )
 
@@ -180,7 +159,13 @@ export default function ProjectSettingsPage() {
                     ? nextDefaultBase
                     : prev.llm_base_url
 
-            const nextModelOptions = modelOptionsForProvider(nextProvider, prev.llm_model)
+            const nextModelOptions = resolveModelOptionsForProvider({
+                provider: nextProvider,
+                current: prev.llm_model,
+                llmOptions,
+                fallbackOpenAiModels: FALLBACK_OPENAI_MODELS,
+                fallbackOllamaModels: FALLBACK_OLLAMA_MODELS,
+            })
             const nextModel =
                 prev.llm_model && nextModelOptions.includes(prev.llm_model)
                     ? prev.llm_model
@@ -215,7 +200,7 @@ export default function ProjectSettingsPage() {
         }
     }, [branch, projectId, userId])
 
-    async function loadLlmOptions(opts?: { openaiApiKey?: string; openaiBaseUrl?: string }) {
+    const loadLlmOptions = useCallback(async (opts?: { openaiApiKey?: string; openaiBaseUrl?: string }) => {
         setLoadingLlmOptions(true)
         try {
             const params = new URLSearchParams()
@@ -236,18 +221,18 @@ export default function ProjectSettingsPage() {
         } finally {
             setLoadingLlmOptions(false)
         }
-    }
+    }, [])
 
-    async function loadLlmProfiles() {
+    const loadLlmProfiles = useCallback(async () => {
         try {
             const profiles = await backendJson<LlmProfileDoc[]>("/api/llm/profiles")
             setLlmProfiles((profiles || []).filter((p) => p && p.id))
         } catch {
             setLlmProfiles([])
         }
-    }
+    }, [])
 
-    async function loadConnectors(defaultBranch: string) {
+    const loadConnectors = useCallback(async (defaultBranch: string) => {
         const connectors = await backendJson<ConnectorsResponse>(`/api/admin/projects/${projectId}/connectors`)
         const git = getConnector(connectors, "github")
         const bitbucket = getConnector(connectors, "bitbucket")
@@ -302,7 +287,22 @@ export default function ProjectSettingsPage() {
             apiToken: asStr(jira?.config?.apiToken),
             jql: asStr(jira?.config?.jql),
         })
-    }
+    }, [projectId])
+
+    const loadQaMetrics = useCallback(async () => {
+        if (!me?.isGlobalAdmin) return
+        setLoadingQaMetrics(true)
+        try {
+            const out = await backendJson<QaMetricsResponse>(
+                `/api/projects/${projectId}/qa-metrics?hours=72&branch=${encodeURIComponent(branch)}`
+            )
+            setQaMetrics(out)
+        } catch (err) {
+            setError(errText(err))
+        } finally {
+            setLoadingQaMetrics(false)
+        }
+    }, [branch, me?.isGlobalAdmin, projectId])
 
     useEffect(() => {
         let cancelled = false
@@ -320,8 +320,18 @@ export default function ProjectSettingsPage() {
                 setProject(projectRes)
 
                 const provider = projectRes.llm_provider || "ollama"
-                const defaultBase = defaultBaseUrlForProvider(provider)
-                const defaultModel = modelOptionsForProvider(provider, projectRes.llm_model)[0] || ""
+                const defaultBase = resolveDefaultBaseUrlForProvider(provider, DEFAULT_PROVIDER_OPTIONS, {
+                    openai: "https://api.openai.com/v1",
+                    ollama: "http://ollama:11434/v1",
+                })
+                const defaultModel =
+                    resolveModelOptionsForProvider({
+                        provider,
+                        current: projectRes.llm_model,
+                        llmOptions: null,
+                        fallbackOpenAiModels: FALLBACK_OPENAI_MODELS,
+                        fallbackOllamaModels: FALLBACK_OLLAMA_MODELS,
+                    })[0] || ""
                 const grounding = (projectRes.extra?.grounding || {}) as Record<string, any>
                 const routing = (projectRes.extra?.llm_routing || {}) as Record<string, any>
                 const security = (projectRes.extra?.security || {}) as Record<string, any>
@@ -366,7 +376,6 @@ export default function ProjectSettingsPage() {
                         loadLlmOptions(),
                         loadLlmProfiles(),
                         loadConnectors(projectRes.default_branch || "main"),
-                        loadQaMetrics(),
                     ])
                 }
             } catch (err) {
@@ -378,7 +387,7 @@ export default function ProjectSettingsPage() {
         return () => {
             cancelled = true
         }
-    }, [projectId])
+    }, [loadConnectors, loadLlmOptions, loadLlmProfiles, projectId])
 
     useEffect(() => {
         void loadChats().catch((err) => setError(errText(err)))
@@ -387,7 +396,7 @@ export default function ProjectSettingsPage() {
     useEffect(() => {
         if (!me?.isGlobalAdmin) return
         void loadQaMetrics()
-    }, [me?.isGlobalAdmin, branch])
+    }, [loadQaMetrics, me?.isGlobalAdmin])
 
     async function onSaveProjectSettings() {
         if (!me?.isGlobalAdmin) return
@@ -553,21 +562,6 @@ export default function ProjectSettingsPage() {
         }
     }
 
-    async function loadQaMetrics() {
-        if (!me?.isGlobalAdmin) return
-        setLoadingQaMetrics(true)
-        try {
-            const out = await backendJson<QaMetricsResponse>(
-                `/api/projects/${projectId}/qa-metrics?hours=72&branch=${encodeURIComponent(branch)}`
-            )
-            setQaMetrics(out)
-        } catch (err) {
-            setError(errText(err))
-        } finally {
-            setLoadingQaMetrics(false)
-        }
-    }
-
     async function runIncrementalIngest() {
         if (!me?.isGlobalAdmin) return
         setRunningIncrementalIngest(true)
@@ -673,91 +667,15 @@ export default function ProjectSettingsPage() {
         >
             <Box sx={{ minHeight: 0, flex: 1, overflowY: "auto", px: { xs: 1.5, md: 3 }, py: { xs: 1.8, md: 2.5 } }}>
                 <Stack spacing={2} sx={{ maxWidth: 980, mx: "auto" }}>
-                    <Card variant="outlined">
-                        <CardContent sx={{ p: { xs: 1.5, md: 2.5 } }}>
-                            <Typography variant="overline" color="primary.light" sx={{ letterSpacing: "0.14em" }}>
-                                Workspace Settings
-                            </Typography>
-                            <Typography variant="h4" sx={{ mt: 0.5, fontWeight: 700, fontSize: { xs: "1.55rem", md: "2.1rem" } }}>
-                                {projectLabel}
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                                Review and configure this project&apos;s assistant behavior.
-                            </Typography>
-                        </CardContent>
-                    </Card>
+                    <ProjectSettingsOverviewCards
+                        projectId={projectId}
+                        project={project}
+                        projectLabel={projectLabel}
+                        isGlobalAdmin={Boolean(me?.isGlobalAdmin)}
+                    />
 
                     {error && <Alert severity="error">{error}</Alert>}
                     {notice && <Alert severity="success">{notice}</Alert>}
-
-                    <Card variant="outlined">
-                        <CardContent sx={{ p: { xs: 1.5, md: 2.5 } }}>
-                            <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                                Project Snapshot
-                            </Typography>
-                            <Box
-                                sx={{
-                                    mt: 1.5,
-                                    display: "grid",
-                                    gap: 1.2,
-                                    gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
-                                }}
-                            >
-                                <DetailCard title="Project ID" value={projectId} />
-                                <DetailCard title="Default Branch" value={project?.default_branch || "main"} />
-                                <Box sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}>
-                                    <DetailCard title="Local Repo Path" value={project?.repo_path || "not configured"} />
-                                </Box>
-                                <Box sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}>
-                                    <DetailCard title="Description" value={project?.description || "No description"} />
-                                </Box>
-                                <DetailCard title="LLM Provider" value={project?.llm_provider || "default"} />
-                                <DetailCard title="LLM Model" value={project?.llm_model || "backend default"} />
-                                <DetailCard title="LLM Profile" value={project?.llm_profile_id || "none"} />
-                                <Box sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}>
-                                    <DetailCard title="LLM Base URL" value={project?.llm_base_url || "backend default"} />
-                                </Box>
-                                <Box sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}>
-                                    <DetailCard title="LLM API Key" value={maskSecret(project?.llm_api_key)} />
-                                </Box>
-                            </Box>
-                        </CardContent>
-                    </Card>
-
-                    {!me?.isGlobalAdmin && (
-                        <Card variant="outlined">
-                            <CardContent sx={{ p: { xs: 1.5, md: 2.5 } }}>
-                                <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                                    Sources
-                                </Typography>
-                                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                                    Source connectors are managed by a global admin.
-                                </Typography>
-                                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 1.5 }}>
-                                    <Chip label="Git" color="primary" variant="outlined" />
-                                    <Chip label="Bitbucket" color="primary" variant="outlined" />
-                                    <Chip label="Azure DevOps" color="primary" variant="outlined" />
-                                    <Chip label="Local Repo" color="primary" variant="outlined" />
-                                    <Chip label="Confluence" color="primary" variant="outlined" />
-                                    <Chip label="Jira" color="primary" variant="outlined" />
-                                </Stack>
-                                <Stack
-                                    direction="row"
-                                    spacing={1}
-                                    useFlexGap
-                                    flexWrap="wrap"
-                                    sx={{ mt: 2, "& .MuiButton-root": { width: { xs: "100%", sm: "auto" } } }}
-                                >
-                                    <Button component={Link} href={`/projects/${projectId}/chat`} variant="contained">
-                                        Open Chat
-                                    </Button>
-                                    <Button component={Link} href="/admin" variant="outlined" endIcon={<OpenInNewRounded />}>
-                                        Open Admin Workflow
-                                    </Button>
-                                </Stack>
-                            </CardContent>
-                        </Card>
-                    )}
 
                     {me?.isGlobalAdmin && (
                         <ProjectSettingsAdminPanel
