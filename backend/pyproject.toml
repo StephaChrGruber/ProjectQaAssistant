@@ -1,0 +1,39 @@
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+exclude = [
+  ".venv",
+  "__pycache__",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+no_implicit_optional = true
+ignore_missing_imports = true
+exclude = [
+  "tests/",
+]
+
+[[tool.mypy.overrides]]
+module = [
+  "app.routes.*",
+  "app.services.*",
+  "app.rag.*",
+]
+disallow_untyped_defs = false
+check_untyped_defs = true
+

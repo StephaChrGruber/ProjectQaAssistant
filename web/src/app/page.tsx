@@ -1,51 +1,31 @@
 "use client"
 
-import { useEffect } from "react"
+import { useEffect, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { Box, CircularProgress, Paper, Stack, Typography } from "@mui/material"
 import { readLastChat } from "@/lib/last-chat"
-import { backendJson } from "@/lib/backend"
-
-type ProjectDoc = {
-    _id: string
-    default_branch?: string
-}
+import { useProjectsQuery } from "@/features/projects/hooks"
 
 export default function Home() {
     const router = useRouter()
+    const last = useMemo(() => readLastChat(), [])
+    const projectsQuery = useProjectsQuery(!last?.path)
 
     useEffect(() => {
-        let cancelled = false
-
-        async function go() {
-            const last = readLastChat()
-            if (last?.path) {
-                router.replace(last.path)
-                return
-            }
-
-            try {
-                const projects = await backendJson<ProjectDoc[]>("/api/projects")
-                if (cancelled) return
-                const first = projects[0]
-                if (first?._id) {
-                    router.replace(`/projects/${encodeURIComponent(first._id)}/chat`)
-                    return
-                }
-            } catch {
-                // Fallback below.
-            }
-
-            if (!cancelled) {
-                router.replace("/projects")
-            }
+        if (last?.path) {
+            router.replace(last.path)
+            return
         }
 
-        void go()
-        return () => {
-            cancelled = true
+        if (!projectsQuery.isFetched) return
+        const first = projectsQuery.data?.[0]
+        if (first?._id) {
+            router.replace(`/projects/${encodeURIComponent(first._id)}/chat`)
+            return
         }
-    }, [router])
+
+        router.replace("/projects")
+    }, [last?.path, projectsQuery.data, projectsQuery.isFetched, router])
 
     return (
         <Box sx={{ minHeight: "100vh", display: "grid", placeItems: "center", px: 2 }}>

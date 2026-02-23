@@ -12,10 +12,6 @@ import {
     Chip,
     Container,
     Divider,
-    Dialog,
-    DialogActions,
-    DialogContent,
-    DialogTitle,
     FormControl,
     FormControlLabel,
     IconButton,
@@ -44,365 +40,52 @@ import DeleteForeverRounded from "@mui/icons-material/DeleteForeverRounded"
 import FolderOpenRounded from "@mui/icons-material/FolderOpenRounded"
 import { backendJson } from "@/lib/backend"
 import PathPickerDialog from "@/components/PathPickerDialog"
+import DeleteProjectDialog from "@/features/admin/projects/DeleteProjectDialog"
+import LlmProfilesCard from "@/features/admin/projects/LlmProfilesCard"
 import {
     isBrowserLocalRepoPath,
     moveLocalRepoSnapshot,
 } from "@/lib/local-repo-bridge"
-
-type MeUser = {
-    id?: string
-    email?: string
-    displayName?: string
-    isGlobalAdmin?: boolean
-}
-
-type MeResponse = {
-    user?: MeUser
-}
-
-type ConnectorDoc = {
-    id?: string
-    type: "confluence" | "jira" | "github" | "bitbucket" | "azure_devops" | "local"
-    isEnabled: boolean
-    config: Record<string, unknown>
-}
-
-type AdminProject = {
-    id: string
-    key: string
-    name: string
-    description?: string
-    repo_path?: string
-    default_branch?: string
-    llm_provider?: string
-    llm_base_url?: string
-    llm_model?: string
-    llm_api_key?: string
-    llm_profile_id?: string
-    connectors?: ConnectorDoc[]
-}
-
-type LlmProfileDoc = {
-    id: string
-    name: string
-    description?: string
-    provider: string
-    base_url?: string
-    model: string
-    api_key?: string
-    isEnabled?: boolean
-}
-
-type LlmProfileForm = {
-    name: string
-    description: string
-    provider: string
-    base_url: string
-    model: string
-    api_key: string
-    isEnabled: boolean
-}
-
-type ProjectForm = {
-    key: string
-    name: string
-    description: string
-    repo_path: string
-    default_branch: string
-    llm_provider: string
-    llm_base_url: string
-    llm_model: string
-    llm_api_key: string
-    llm_profile_id: string
-}
-
-type GitForm = {
-    isEnabled: boolean
-    owner: string
-    repo: string
-    branch: string
-    token: string
-    paths: string
-}
-
-type BitbucketForm = {
-    isEnabled: boolean
-    workspace: string
-    repo: string
-    branch: string
-    username: string
-    app_password: string
-    paths: string
-    base_url: string
-}
-
-type AzureDevOpsForm = {
-    isEnabled: boolean
-    organization: string
-    project: string
-    repository: string
-    branch: string
-    pat: string
-    paths: string
-    base_url: string
-}
-
-type LocalConnectorForm = {
-    isEnabled: boolean
-    paths: string
-}
-
-type ConfluenceForm = {
-    isEnabled: boolean
-    baseUrl: string
-    spaceKey: string
-    email: string
-    apiToken: string
-}
-
-type JiraForm = {
-    isEnabled: boolean
-    baseUrl: string
-    email: string
-    apiToken: string
-    jql: string
-}
-
-type RepoSourceMode = "local" | "github" | "bitbucket" | "azure_devops"
-type CreateConnectorType = "github" | "bitbucket" | "azure_devops" | "local" | "confluence" | "jira"
-
-const CREATE_STEPS = ["Repository", "Project", "Connectors", "LLM", "Review"] as const
-const FALLBACK_OLLAMA_MODELS = ["llama3.2:3b", "llama3.1:8b", "mistral:7b", "qwen2.5:7b"]
-const FALLBACK_OPENAI_MODELS = ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1", "gpt-4o"]
-
-type LlmProviderOption = {
-    value: string
-    label: string
-    defaultBaseUrl: string
-    requiresApiKey: boolean
-}
-
-type LlmOptionsResponse = {
-    providers: LlmProviderOption[]
-    ollama_models: string[]
-    openai_models: string[]
-    discovery_error?: string | null
-    openai_discovery_error?: string | null
-    ollama_discovery_error?: string | null
-}
-
-type DeleteProjectResponse = {
-    projectId: string
-    projectKey?: string
-    deleted?: Record<string, number>
-    chroma?: {
-        path?: string
-        deleted?: boolean
-        error?: string | null
-    }
-}
-
-const DEFAULT_PROVIDER_OPTIONS: LlmProviderOption[] = [
-    {
-        value: "ollama",
-        label: "Ollama (local)",
-        defaultBaseUrl: "http://ollama:11434/v1",
-        requiresApiKey: false,
-    },
-    {
-        value: "openai",
-        label: "ChatGPT / OpenAI API",
-        defaultBaseUrl: "https://api.openai.com/v1",
-        requiresApiKey: true,
-    },
-]
-
-function emptyProjectForm(): ProjectForm {
-    return {
-        key: "",
-        name: "",
-        description: "",
-        repo_path: "",
-        default_branch: "main",
-        llm_provider: "ollama",
-        llm_base_url: "http://ollama:11434/v1",
-        llm_model: "llama3.2:3b",
-        llm_api_key: "ollama",
-        llm_profile_id: "",
-    }
-}
-
-function emptyGit(): GitForm {
-    return { isEnabled: true, owner: "", repo: "", branch: "main", token: "", paths: "" }
-}
-
-function emptyConfluence(): ConfluenceForm {
-    return { isEnabled: false, baseUrl: "", spaceKey: "", email: "", apiToken: "" }
-}
-
-function emptyJira(): JiraForm {
-    return { isEnabled: false, baseUrl: "", email: "", apiToken: "", jql: "" }
-}
-
-function emptyBitbucket(): BitbucketForm {
-    return {
-        isEnabled: false,
-        workspace: "",
-        repo: "",
-        branch: "main",
-        username: "",
-        app_password: "",
-        paths: "",
-        base_url: "https://api.bitbucket.org/2.0",
-    }
-}
-
-function emptyAzureDevOps(): AzureDevOpsForm {
-    return {
-        isEnabled: false,
-        organization: "",
-        project: "",
-        repository: "",
-        branch: "main",
-        pat: "",
-        paths: "",
-        base_url: "https://dev.azure.com",
-    }
-}
-
-function emptyLocalConnector(): LocalConnectorForm {
-    return {
-        isEnabled: false,
-        paths: "",
-    }
-}
-
-function emptyLlmProfileForm(): LlmProfileForm {
-    return {
-        name: "",
-        description: "",
-        provider: "ollama",
-        base_url: "http://ollama:11434/v1",
-        model: "llama3.2:3b",
-        api_key: "ollama",
-        isEnabled: true,
-    }
-}
-
-function errText(err: unknown): string {
-    if (err instanceof Error) return err.message
-    return String(err)
-}
-
-function csvToList(v: string): string[] {
-    return v
-        .split(",")
-        .map((x) => x.trim())
-        .filter(Boolean)
-}
-
-function asStr(v: unknown): string {
-    return typeof v === "string" ? v : ""
-}
-
-function normalizedOpenAiKey(input?: string): string {
-    const key = (input || "").trim()
-    if (!key) return ""
-    if (key.toLowerCase() === "ollama") return ""
-    if (key.startsWith("***")) return ""
-    return key
-}
-
-function getConnector(project: AdminProject | undefined, type: ConnectorDoc["type"]): ConnectorDoc | undefined {
-    return project?.connectors?.find((c) => c.type === type)
-}
-
-const CREATE_DRAFT_LOCAL_REPO_KEY = "draft:create:active"
-const CONNECTOR_LABELS: Record<CreateConnectorType, string> = {
-    github: "GitHub",
-    bitbucket: "Bitbucket",
-    azure_devops: "Azure DevOps",
-    local: "Local Repository",
-    confluence: "Confluence",
-    jira: "Jira",
-}
-
-function repoModeToConnector(mode: RepoSourceMode): CreateConnectorType {
-    if (mode === "github") return "github"
-    if (mode === "bitbucket") return "bitbucket"
-    if (mode === "azure_devops") return "azure_devops"
-    return "local"
-}
-
-function connectorPayloads(
-    git: GitForm,
-    bitbucket: BitbucketForm,
-    azureDevOps: AzureDevOpsForm,
-    localConnector: LocalConnectorForm,
-    confluence: ConfluenceForm,
-    jira: JiraForm
-) {
-    return {
-        git: {
-            isEnabled: git.isEnabled,
-            config: {
-                owner: git.owner.trim(),
-                repo: git.repo.trim(),
-                branch: git.branch.trim() || "main",
-                token: git.token.trim(),
-                paths: csvToList(git.paths),
-            },
-        },
-        bitbucket: {
-            isEnabled: bitbucket.isEnabled,
-            config: {
-                workspace: bitbucket.workspace.trim(),
-                repo_slug: bitbucket.repo.trim(),
-                branch: bitbucket.branch.trim() || "main",
-                username: bitbucket.username.trim(),
-                app_password: bitbucket.app_password.trim(),
-                paths: csvToList(bitbucket.paths),
-                base_url: bitbucket.base_url.trim(),
-            },
-        },
-        azure_devops: {
-            isEnabled: azureDevOps.isEnabled,
-            config: {
-                organization: azureDevOps.organization.trim(),
-                project: azureDevOps.project.trim(),
-                repository: azureDevOps.repository.trim(),
-                branch: azureDevOps.branch.trim() || "main",
-                pat: azureDevOps.pat.trim(),
-                paths: csvToList(azureDevOps.paths),
-                base_url: azureDevOps.base_url.trim(),
-            },
-        },
-        local: {
-            isEnabled: localConnector.isEnabled,
-            config: {
-                paths: csvToList(localConnector.paths),
-            },
-        },
-        confluence: {
-            isEnabled: confluence.isEnabled,
-            config: {
-                baseUrl: confluence.baseUrl.trim(),
-                spaceKey: confluence.spaceKey.trim(),
-                email: confluence.email.trim(),
-                apiToken: confluence.apiToken.trim(),
-            },
-        },
-        jira: {
-            isEnabled: jira.isEnabled,
-            config: {
-                baseUrl: jira.baseUrl.trim(),
-                email: jira.email.trim(),
-                apiToken: jira.apiToken.trim(),
-                jql: jira.jql.trim(),
-            },
-        },
-    }
-}
+import {
+    asStr,
+    connectorPayloads,
+    CONNECTOR_LABELS,
+    CREATE_DRAFT_LOCAL_REPO_KEY,
+    CREATE_STEPS,
+    DEFAULT_PROVIDER_OPTIONS,
+    emptyAzureDevOps,
+    emptyBitbucket,
+    emptyConfluence,
+    emptyGit,
+    emptyJira,
+    emptyLlmProfileForm,
+    emptyLocalConnector,
+    emptyProjectForm,
+    errText,
+    FALLBACK_OLLAMA_MODELS,
+    FALLBACK_OPENAI_MODELS,
+    getConnector,
+    normalizedOpenAiKey,
+    repoModeToConnector,
+    type AdminProject,
+    type AzureDevOpsForm,
+    type BitbucketForm,
+    type ConfluenceForm,
+    type ConnectorDoc,
+    type CreateConnectorType,
+    type DeleteProjectResponse,
+    type GitForm,
+    type JiraForm,
+    type LlmOptionsResponse,
+    type LlmProfileDoc,
+    type LlmProfileForm,
+    type LlmProviderOption,
+    type LocalConnectorForm,
+    type MeResponse,
+    type MeUser,
+    type ProjectForm,
+    type RepoSourceMode,
+} from "@/features/admin/projects/form-model"
 
 export default function AdminPage() {
     const theme = useTheme()
@@ -1172,191 +855,37 @@ export default function AdminPage() {
                     {error && <Alert severity="error">{error}</Alert>}
                     {notice && <Alert severity="success">{notice}</Alert>}
 
-                    <Card variant="outlined">
-                        <CardContent sx={{ p: { xs: 1.5, md: 2.5 } }}>
-                            <Stack spacing={1.5}>
-                                <Box>
-                                    <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                                        Reusable LLM Profiles
-                                    </Typography>
-                                    <Typography variant="body2" color="text.secondary">
-                                        Create once and reuse across projects and chats.
-                                    </Typography>
-                                </Box>
-
-                                <Box
-                                    sx={{
-                                        display: "grid",
-                                        gap: 1.2,
-                                        gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
-                                    }}
-                                >
-                                    <TextField
-                                        label="Profile Name"
-                                        value={llmProfileForm.name}
-                                        onChange={(e) => setLlmProfileForm((f) => ({ ...f, name: e.target.value }))}
-                                        size="small"
-                                        fullWidth
-                                    />
-                                    <FormControl size="small" fullWidth>
-                                        <InputLabel id="llm-profile-provider-label">Provider</InputLabel>
-                                        <Select
-                                            labelId="llm-profile-provider-label"
-                                            label="Provider"
-                                            value={llmProfileForm.provider}
-                                            onChange={(e) => applyProviderChangeToLlmProfile(e.target.value)}
-                                        >
-                                            {providerOptions.map((option) => (
-                                                <MenuItem key={option.value} value={option.value}>
-                                                    {option.label}
-                                                </MenuItem>
-                                            ))}
-                                        </Select>
-                                    </FormControl>
-                                    <TextField
-                                        label="Description"
-                                        value={llmProfileForm.description}
-                                        onChange={(e) => setLlmProfileForm((f) => ({ ...f, description: e.target.value }))}
-                                        size="small"
-                                        fullWidth
-                                        sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}
-                                    />
-                                    <Stack
-                                        direction="row"
-                                        alignItems="center"
-                                        justifyContent="space-between"
-                                        spacing={1}
-                                        sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}
-                                    >
-                                        <Typography variant="caption" color="text.secondary">
-                                            {llmProfileForm.provider === "openai"
-                                                ? "Use OpenAI-compatible model IDs for this profile."
-                                                : "Choose from discovered local Ollama models."}
-                                        </Typography>
-                                        <Button
-                                            variant="text"
-                                            size="small"
-                                            onClick={() =>
-                                                void loadLlmOptions(
-                                                    llmProfileForm.provider === "openai"
-                                                        ? {
-                                                            openaiApiKey: llmProfileForm.api_key,
-                                                            openaiBaseUrl: llmProfileForm.base_url,
-                                                        }
-                                                        : undefined
-                                                )
-                                            }
-                                            disabled={loadingLlmOptions}
-                                        >
-                                            {loadingLlmOptions ? "Refreshing..." : "Refresh models"}
-                                        </Button>
-                                    </Stack>
-                                    {llmOptionsError && (
-                                        <Alert severity="warning" sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}>
-                                            Model discovery warning: {llmOptionsError}
-                                        </Alert>
-                                    )}
-                                    <TextField
-                                        label="Base URL"
-                                        value={llmProfileForm.base_url}
-                                        onChange={(e) => setLlmProfileForm((f) => ({ ...f, base_url: e.target.value }))}
-                                        size="small"
-                                        fullWidth
-                                    />
-                                    <FormControl fullWidth size="small">
-                                        <InputLabel id="llm-profile-model-label">Model</InputLabel>
-                                        <Select
-                                            labelId="llm-profile-model-label"
-                                            label="Model"
-                                            value={llmProfileForm.model}
-                                            onChange={(e) => setLlmProfileForm((f) => ({ ...f, model: e.target.value }))}
-                                        >
-                                            {llmProfileModelOptions.map((model) => (
-                                                <MenuItem key={model} value={model}>
-                                                    {model}
-                                                </MenuItem>
-                                            ))}
-                                        </Select>
-                                    </FormControl>
-                                    <TextField
-                                        label="Custom Model ID (optional)"
-                                        value={llmProfileForm.model}
-                                        onChange={(e) => setLlmProfileForm((f) => ({ ...f, model: e.target.value }))}
-                                        size="small"
-                                        fullWidth
-                                        sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}
-                                    />
-                                    <TextField
-                                        label="API Key"
-                                        value={llmProfileForm.api_key}
-                                        onChange={(e) => setLlmProfileForm((f) => ({ ...f, api_key: e.target.value }))}
-                                        size="small"
-                                        fullWidth
-                                        sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}
-                                    />
-                                    <FormControlLabel
-                                        control={
-                                            <Switch
-                                                checked={llmProfileForm.isEnabled}
-                                                onChange={(e) =>
-                                                    setLlmProfileForm((f) => ({ ...f, isEnabled: e.target.checked }))
-                                                }
-                                            />
-                                        }
-                                        label="Enabled"
-                                    />
-                                </Box>
-
-                                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                                    <Button variant="contained" onClick={() => void saveLlmProfile()} disabled={busy}>
-                                        {editingLlmProfileId ? "Update Profile" : "Create Profile"}
-                                    </Button>
-                                    <Button
-                                        variant="outlined"
-                                        onClick={() => {
-                                            setEditingLlmProfileId(null)
-                                            setLlmProfileForm(emptyLlmProfileForm())
-                                        }}
-                                        disabled={busy}
-                                    >
-                                        Reset
-                                    </Button>
-                                </Stack>
-
-                                <Divider />
-
-                                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                                    {llmProfiles.map((profile) => (
-                                        <Chip
-                                            key={profile.id}
-                                            label={`${profile.name} · ${profile.provider.toUpperCase()} · ${profile.model}`}
-                                            variant={editingLlmProfileId === profile.id ? "filled" : "outlined"}
-                                            color={editingLlmProfileId === profile.id ? "primary" : "default"}
-                                            onClick={() => {
-                                                setEditingLlmProfileId(profile.id)
-                                                setLlmProfileForm({
-                                                    name: profile.name || "",
-                                                    description: profile.description || "",
-                                                    provider: profile.provider || "ollama",
-                                                    base_url: profile.base_url || "",
-                                                    model: profile.model || "",
-                                                    api_key: profile.api_key || "",
-                                                    isEnabled: profile.isEnabled !== false,
-                                                })
-                                            }}
-                                            onDelete={() => void deleteLlmProfile(profile.id)}
-                                            disabled={busy}
-                                        />
-                                    ))}
-                                    {!llmProfiles.length && (
-                                        <Typography variant="body2" color="text.secondary">
-                                            No LLM profiles configured yet.
-                                        </Typography>
-                                    )}
-                                </Stack>
-                            </Stack>
-                        </CardContent>
-                    </Card>
+                    <LlmProfilesCard
+                        llmProfileForm={llmProfileForm}
+                        setLlmProfileForm={setLlmProfileForm}
+                        providerOptions={providerOptions}
+                        applyProviderChangeToLlmProfile={applyProviderChangeToLlmProfile}
+                        loadingLlmOptions={loadingLlmOptions}
+                        loadLlmOptions={loadLlmOptions}
+                        llmOptionsError={llmOptionsError}
+                        llmProfileModelOptions={llmProfileModelOptions}
+                        busy={busy}
+                        editingLlmProfileId={editingLlmProfileId}
+                        llmProfiles={llmProfiles}
+                        saveLlmProfile={saveLlmProfile}
+                        onSelectProfile={(profile) => {
+                            setEditingLlmProfileId(profile.id)
+                            setLlmProfileForm({
+                                name: profile.name || "",
+                                description: profile.description || "",
+                                provider: profile.provider || "ollama",
+                                base_url: profile.base_url || "",
+                                model: profile.model || "",
+                                api_key: profile.api_key || "",
+                                isEnabled: profile.isEnabled !== false,
+                            })
+                        }}
+                        deleteLlmProfile={deleteLlmProfile}
+                        onResetEditing={() => {
+                            setEditingLlmProfileId(null)
+                            setLlmProfileForm(emptyLlmProfileForm())
+                        }}
+                    />
 
                     <Box
                         sx={{
@@ -2957,51 +2486,19 @@ export default function AdminPage() {
                     </Box>
                 </Stack>
 
-                <Dialog
+                <DeleteProjectDialog
                     open={deleteDialogOpen}
+                    busy={busy}
+                    projectKey={selectedProject?.key || ""}
+                    confirmKey={deleteConfirmKey}
+                    setConfirmKey={setDeleteConfirmKey}
                     onClose={() => {
-                        if (!busy) setDeleteDialogOpen(false)
+                        if (!busy) {
+                            setDeleteDialogOpen(false)
+                        }
                     }}
-                    fullWidth
-                    maxWidth="sm"
-                >
-                    <DialogTitle>Delete Project</DialogTitle>
-                    <DialogContent>
-                        <Stack spacing={1.5} sx={{ mt: 0.5 }}>
-                            <Alert severity="warning">
-                                This removes the project configuration, connectors, chats, and indexed data.
-                            </Alert>
-                            <Typography variant="body2" color="text.secondary">
-                                Type <strong>{selectedProject?.key || ""}</strong> to confirm deletion.
-                            </Typography>
-                            <TextField
-                                label="Project Key Confirmation"
-                                value={deleteConfirmKey}
-                                onChange={(e) => setDeleteConfirmKey(e.target.value)}
-                                autoFocus
-                                fullWidth
-                                disabled={busy}
-                            />
-                        </Stack>
-                    </DialogContent>
-                    <DialogActions>
-                        <Button
-                            onClick={() => setDeleteDialogOpen(false)}
-                            disabled={busy}
-                        >
-                            Cancel
-                        </Button>
-                        <Button
-                            color="error"
-                            variant="contained"
-                            startIcon={<DeleteForeverRounded />}
-                            disabled={busy || !selectedProject || deleteConfirmKey.trim() !== (selectedProject?.key || "")}
-                            onClick={() => void deleteSelectedProject()}
-                        >
-                            Delete Project
-                        </Button>
-                    </DialogActions>
-                </Dialog>
+                    onDelete={deleteSelectedProject}
+                />
 
                 <PathPickerDialog
                     open={Boolean(pathPickerTarget)}

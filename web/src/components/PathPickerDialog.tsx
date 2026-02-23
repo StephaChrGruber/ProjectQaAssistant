@@ -219,7 +219,7 @@ export default function PathPickerDialog({
                     {roots.length > 0 && (
                         <Typography variant="caption" color="text.secondary">
                             Server-side picker (backend filesystem). Allowed roots: {roots.join(", ")}.
-                            For repos on your laptop, use "Pick From This Device".
+                            For repos on your laptop, use &quot;Pick From This Device&quot;.
                         </Typography>
                     )}
                 </Stack>

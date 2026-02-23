@@ -5,6 +5,9 @@
 __pycache__/
 *.py[cod]
 .venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # IDE
 .idea/
@@ -21,3 +24,7 @@ web/out/
 
 # Logs
 *.log
+
+# Coverage
+.coverage
+coverage/

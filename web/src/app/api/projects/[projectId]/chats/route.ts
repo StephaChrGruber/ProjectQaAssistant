@@ -1,7 +1,4 @@
-import { NextResponse } from "next/server"
-
-const BACKEND = process.env.BACKEND_BASE_URL || "http://backend:8080"
-const DEV_USER = process.env.POC_DEV_USER || "dev@local"
+import { backendUrl, devProxyHeaders, proxyJsonResponse } from "@/lib/http/backend-proxy"
 
 export async function GET(
     req: Request,
@@ -13,7 +10,7 @@ export async function GET(
     const limit = url.searchParams.get("limit")
     const user = url.searchParams.get("user")
 
-    const upstream = new URL(`${BACKEND}/chats/by-project/${encodeURIComponent(projectId)}`)
+    const upstream = new URL(backendUrl(`/chats/by-project/${encodeURIComponent(projectId)}`))
     if (branch) {
         upstream.searchParams.set("branch", branch)
     }
@@ -25,13 +22,8 @@ export async function GET(
     }
 
     const res = await fetch(upstream.toString(), {
-        headers: { "X-Dev-User": DEV_USER },
+        headers: devProxyHeaders(),
         cache: "no-store",
     })
-
-    const text = await res.text()
-    return new NextResponse(text, {
-        status: res.status,
-        headers: { "Content-Type": res.headers.get("content-type") || "application/json" },
-    })
+    return proxyJsonResponse(res)
 }

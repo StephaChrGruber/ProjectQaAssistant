@@ -1,8 +1,4 @@
-// web/src/app/api/ask_agent/route.ts
-import { NextResponse } from "next/server"
-
-const BACKEND = process.env.BACKEND_BASE_URL || "http://backend:8080"
-const DEV_USER = process.env.POC_DEV_USER || "dev@local"
+import { fetchBackend, proxyJsonResponse } from "@/lib/http/backend-proxy"
 
 export async function POST(req: Request) {
     const body = await req.json()
@@ -27,19 +23,12 @@ export async function POST(req: Request) {
         local_repo_context: body.local_repo_context ?? body.localRepoContext ?? null,
     }
 
-    const res = await fetch(`${BACKEND}/ask_agent`, {
+    const res = await fetchBackend("/ask_agent", {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
-            "X-Dev-User": DEV_USER,
         },
         body: JSON.stringify(payload),
-        cache: "no-store",
     })
-
-    const text = await res.text()
-    return new NextResponse(text, {
-        status: res.status,
-        headers: { "Content-Type": res.headers.get("content-type") || "application/json" },
-    })
+    return proxyJsonResponse(res)
 }

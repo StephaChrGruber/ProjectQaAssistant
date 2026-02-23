@@ -1,13 +1,26 @@
+import logging
 from fastapi import APIRouter, HTTPException, Header
 from datetime import datetime, timedelta
 from typing import Any
-from ..db import get_db
 from ..models.chat import ChatDoc, AppendReq, ChatResponse, ChatMessage
 from pydantic import BaseModel, Field
+from ..repositories.chat_repository import (
+    append_chat_message,
+    clear_chat_messages,
+    ensure_chat as repo_ensure_chat,
+    get_chat as repo_get_chat,
+    get_chat_owner,
+    get_is_global_admin,
+    list_active_tool_approvals,
+    list_project_chats,
+    revoke_tool_approval,
+    update_chat_llm_profile,
+    update_chat_tool_policy,
+    upsert_tool_approval,
+)
 
 router = APIRouter(prefix="/chats", tags=["chats"])
-
-COLL = "chats"
+logger = logging.getLogger(__name__)
 
 
 class ChatToolPolicyReq(BaseModel):
@@ -35,7 +48,7 @@ def _norm_tool_name(v: str) -> str:
 
 
 async def _get_chat_owner_or_403(chat_id: str, x_dev_user: str | None) -> dict[str, Any]:
-    chat = await get_db()[COLL].find_one({"chat_id": chat_id}, {"_id": 0, "chat_id": 1, "user": 1})
+    chat = await get_chat_owner(chat_id)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     owner = str(chat.get("user") or "").strip().lower()
@@ -43,8 +56,7 @@ async def _get_chat_owner_or_403(chat_id: str, x_dev_user: str | None) -> dict[s
     if not caller:
         raise HTTPException(status_code=401, detail="Missing X-Dev-User header")
     if caller and owner and caller != owner:
-        db_user = await get_db()["users"].find_one({"email": caller}, {"isGlobalAdmin": 1})
-        if not bool((db_user or {}).get("isGlobalAdmin")):
+        if not await get_is_global_admin(caller):
             raise HTTPException(status_code=403, detail="Not allowed for this chat")
     return chat
 
@@ -90,13 +102,7 @@ def _clean_policy(req: ChatToolPolicyReq) -> dict[str, Any]:
 
 
 async def _ensure_chat_doc(payload: ChatDoc):
-    # Upsert: create if missing.
-    await get_db()[COLL].update_one(
-        {"chat_id": payload.chat_id},
-        {"$setOnInsert": {**payload.model_dump(), "tool_policy": {}, "llm_profile_id": None}},
-        upsert=True,
-    )
-    return await get_db()[COLL].find_one({"chat_id": payload.chat_id}, {"_id": 0})
+    return await repo_ensure_chat(payload.model_dump())
 
 @router.get("/by-project/{project_id}")
 async def list_chats_by_project(
@@ -110,17 +116,7 @@ async def list_chats_by_project(
     if not user_id:
         raise HTTPException(status_code=401, detail="Missing user")
 
-    q: dict = {"project_id": project_id, "user": user_id}
-    if branch:
-        q["branch"] = branch
-
-    cursor = (
-        get_db()[COLL]
-        .find(q, {"_id": 0, "messages": 0})
-        .sort("updated_at", -1)
-        .limit(max(1, min(limit, 300)))
-    )
-    docs = await cursor.to_list(length=max(1, min(limit, 300)))
+    docs = await list_project_chats(project_id=project_id, user=user_id, branch=branch, limit=limit)
     # Be tolerant if duplicate chat_id docs exist in legacy data.
     deduped: list[dict] = []
     seen: set[str] = set()
@@ -134,8 +130,8 @@ async def list_chats_by_project(
 
 
 @router.get("/{chat_id}", response_model=ChatResponse)
-async def get_chat(chat_id: str):
-    doc = await get_db()[COLL].find_one({"chat_id": chat_id}, {"_id": 0})
+async def get_chat_by_id(chat_id: str):
+    doc = await repo_get_chat(chat_id, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Chat not found")
     return doc
@@ -143,10 +139,7 @@ async def get_chat(chat_id: str):
 
 @router.get("/{chat_id}/memory")
 async def get_chat_memory(chat_id: str):
-    doc = await get_db()[COLL].find_one(
-        {"chat_id": chat_id},
-        {"_id": 0, "chat_id": 1, "memory_summary": 1, "task_state": 1, "hierarchical_memory": 1},
-    )
+    doc = await repo_get_chat(chat_id, {"_id": 0, "chat_id": 1, "memory_summary": 1, "task_state": 1, "hierarchical_memory": 1})
     if not doc:
         raise HTTPException(status_code=404, detail="Chat not found")
     summary = doc.get("memory_summary")
@@ -170,46 +163,23 @@ async def ensure_chat_doc(payload: ChatDoc):
 async def append_message(chat_id: str, req: AppendReq):
     msg = ChatMessage(role=req.role, content=req.content).model_dump()
     now = datetime.utcnow()
-
-    res = await get_db()[COLL].update_one(
-        {"chat_id": chat_id},
-        {
-            "$push": {"messages": msg},
-            "$set": {"updated_at": now},
-        },
-        upsert=False,
-    )
-    if res.matched_count == 0:
+    if await append_chat_message(chat_id, msg, now) == 0:
         raise HTTPException(status_code=404, detail="Chat not found")
-
-    doc = await get_db()[COLL].find_one({"chat_id": chat_id}, {"_id": 0})
+    doc = await repo_get_chat(chat_id, {"_id": 0})
     return doc
 
 @router.post("/{chat_id}/clear", response_model=ChatResponse)
 async def clear_chat(chat_id: str):
     now = datetime.utcnow()
-    res = await get_db()[COLL].update_one(
-        {"chat_id": chat_id},
-        {
-            "$set": {
-                "messages": [],
-                "pending_user_question": None,
-                "clarification_state": {"active_goal_id": "", "goals": [], "updated_at": now.isoformat() + "Z"},
-                "updated_at": now,
-            }
-        },
-        upsert=False,
-    )
-    if res.matched_count == 0:
+    if await clear_chat_messages(chat_id, now) == 0:
         raise HTTPException(status_code=404, detail="Chat not found")
-
-    doc = await get_db()[COLL].find_one({"chat_id": chat_id}, {"_id": 0})
+    doc = await repo_get_chat(chat_id, {"_id": 0})
     return doc
 
 
 @router.get("/{chat_id}/tool-policy")
 async def get_chat_tool_policy(chat_id: str):
-    doc = await get_db()[COLL].find_one({"chat_id": chat_id}, {"_id": 0, "chat_id": 1, "tool_policy": 1})
+    doc = await repo_get_chat(chat_id, {"_id": 0, "chat_id": 1, "tool_policy": 1})
     if not doc:
         raise HTTPException(status_code=404, detail="Chat not found")
     policy = doc.get("tool_policy") if isinstance(doc.get("tool_policy"), dict) else {}
@@ -227,19 +197,14 @@ async def put_chat_tool_policy(chat_id: str, req: ChatToolPolicyReq):
         len(policy.get("allowed_tools") or []),
         len(policy.get("blocked_tools") or []),
     )
-    res = await get_db()[COLL].update_one(
-        {"chat_id": chat_id},
-        {"$set": {"tool_policy": policy, "updated_at": datetime.utcnow()}},
-        upsert=False,
-    )
-    if res.matched_count == 0:
+    if await update_chat_tool_policy(chat_id, policy, datetime.utcnow()) == 0:
         raise HTTPException(status_code=404, detail="Chat not found")
     return {"chat_id": chat_id, "tool_policy": policy}
 
 
 @router.get("/{chat_id}/llm-profile")
 async def get_chat_llm_profile(chat_id: str):
-    doc = await get_db()[COLL].find_one({"chat_id": chat_id}, {"_id": 0, "chat_id": 1, "llm_profile_id": 1})
+    doc = await repo_get_chat(chat_id, {"_id": 0, "chat_id": 1, "llm_profile_id": 1})
     if not doc:
         raise HTTPException(status_code=404, detail="Chat not found")
     profile_id = (doc.get("llm_profile_id") or "").strip() or None
@@ -249,18 +214,7 @@ async def get_chat_llm_profile(chat_id: str):
 @router.put("/{chat_id}/llm-profile")
 async def put_chat_llm_profile(chat_id: str, req: ChatLlmProfileReq):
     profile_id = (req.llm_profile_id or "").strip() or None
-    update_doc: dict[str, Any] = {"updated_at": datetime.utcnow()}
-    if profile_id is None:
-        update_doc["llm_profile_id"] = None
-    else:
-        update_doc["llm_profile_id"] = profile_id
-
-    res = await get_db()[COLL].update_one(
-        {"chat_id": chat_id},
-        {"$set": update_doc},
-        upsert=False,
-    )
-    if res.matched_count == 0:
+    if await update_chat_llm_profile(chat_id, profile_id, datetime.utcnow()) == 0:
         raise HTTPException(status_code=404, detail="Chat not found")
     return {"chat_id": chat_id, "llm_profile_id": profile_id}
 
@@ -269,10 +223,7 @@ async def put_chat_llm_profile(chat_id: str, req: ChatLlmProfileReq):
 async def list_chat_tool_approvals(chat_id: str, x_dev_user: str | None = Header(default=None)):
     await _get_chat_owner_or_403(chat_id, x_dev_user)
     now = datetime.utcnow()
-    rows = await get_db()["chat_tool_approvals"].find(
-        {"chatId": chat_id, "expiresAt": {"$gt": now}},
-        {"_id": 0},
-    ).sort("createdAt", -1).limit(200).to_list(length=200)
+    rows = await list_active_tool_approvals(chat_id, now, limit=200)
     items: list[dict[str, Any]] = []
     for row in rows:
         item = dict(row)
@@ -295,20 +246,13 @@ async def approve_chat_tool(chat_id: str, req: ChatToolApprovalReq, x_dev_user: 
     exp = now if ttl <= 0 else now.replace(microsecond=0)
     exp = exp + timedelta(minutes=ttl)
 
-    await get_db()["chat_tool_approvals"].update_one(
-        {
-            "chatId": chat_id,
-            "toolName": name,
-            "userId": str(chat.get("user") or ""),
-        },
-        {
-            "$set": {
-                "approvedBy": str(x_dev_user or chat.get("user") or ""),
-                "createdAt": now,
-                "expiresAt": exp,
-            }
-        },
-        upsert=True,
+    await upsert_tool_approval(
+        chat_id=chat_id,
+        tool_name=name,
+        user_id=str(chat.get("user") or ""),
+        approved_by=str(x_dev_user or chat.get("user") or ""),
+        created_at=now,
+        expires_at=exp,
     )
     return {
         "chat_id": chat_id,
@@ -326,7 +270,5 @@ async def revoke_chat_tool_approval(chat_id: str, tool_name: str, x_dev_user: st
     name = _norm_tool_name(tool_name)
     if not name:
         raise HTTPException(status_code=400, detail="tool_name is required")
-    await get_db()["chat_tool_approvals"].delete_many(
-        {"chatId": chat_id, "toolName": name, "userId": str(chat.get("user") or "")}
-    )
+    await revoke_tool_approval(chat_id, name, str(chat.get("user") or ""))
     return {"chat_id": chat_id, "tool_name": name, "revoked": True}

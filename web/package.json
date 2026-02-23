@@ -4,9 +4,18 @@
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",
-    "start": "next start -p 3000"
+    "start": "next start -p 3000",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit --incremental false",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "api:export": "python3 ../backend/scripts/export_openapi.py ../web/openapi.json",
+    "api:types": "openapi-typescript ./openapi.json -o ./src/lib/api/generated.ts"
   },
   "dependencies": {
+    "@tanstack/react-query": "^5.90.5",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
     "@monaco-editor/react": "^4.7.0",
@@ -26,11 +35,21 @@
     "vega-lite": "^6.4.2"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.0",
     "@tailwindcss/postcss": "^4.1.18",
+    "@types/jsdom": "^27.0.0",
     "@types/node": "^25.2.0",
     "autoprefixer": "^10.4.24",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "15.1.0",
+    "eslint-config-prettier": "^10.1.8",
+    "jsdom": "^27.0.1",
+    "openapi-typescript": "^7.10.1",
     "postcss": "^8.5.6",
+    "prettier": "^3.6.2",
     "tailwindcss": "^4.1.18",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "vitest": "^3.2.4"
   }
 }

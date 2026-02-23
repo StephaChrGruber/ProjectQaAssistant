@@ -1,11 +1,11 @@
 import "./globals.css";
-import { MuiThemeProvider } from "@/components/MuiThemeProvider";
+import { AppProviders } from "@/components/AppProviders";
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
     return (
         <html lang="en">
         <body className="min-h-screen text-slate-100 antialiased">
-        <MuiThemeProvider>{children}</MuiThemeProvider>
+        <AppProviders>{children}</AppProviders>
         </body>
         </html>
     );

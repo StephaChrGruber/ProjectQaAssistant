@@ -3,7 +3,15 @@ import chromadb
 from sentence_transformers import SentenceTransformer
 from . import llm
 
-_embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+_embedder: SentenceTransformer | None = None
+_EMBEDDER_MODEL = os.getenv("EMBEDDER_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+
+
+def _get_embedder() -> SentenceTransformer:
+    global _embedder
+    if _embedder is None:
+        _embedder = SentenceTransformer(_EMBEDDER_MODEL)
+    return _embedder
 
 def _collection_for_project(chroma_root: str, project_key: str, collection_name: str = "docs"):
     path = os.path.join(chroma_root, project_key)
@@ -12,7 +20,7 @@ def _collection_for_project(chroma_root: str, project_key: str, collection_name:
 
 def retrieve(project_key: str, chroma_root: str, question: str, k: int = 6):
     col = _collection_for_project(chroma_root, project_key)
-    q_emb = _embedder.encode([question]).tolist()[0]
+    q_emb = _get_embedder().encode([question]).tolist()[0]
     res = col.query(
         query_embeddings=[q_emb],
         n_results=k,

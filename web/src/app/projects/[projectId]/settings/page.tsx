@@ -33,283 +33,41 @@ import { ProjectDrawerLayout, type DrawerChat, type DrawerUser } from "@/compone
 import { buildChatPath, saveLastChat } from "@/lib/last-chat"
 import PathPickerDialog from "@/components/PathPickerDialog"
 import { hasLocalRepoSnapshot, isBrowserLocalRepoPath } from "@/lib/local-repo-bridge"
-
-type ProjectDoc = {
-    _id: string
-    key?: string
-    name?: string
-    description?: string
-    repo_path?: string
-    default_branch?: string
-    llm_provider?: string
-    llm_base_url?: string
-    llm_model?: string
-    llm_api_key?: string
-    llm_profile_id?: string
-    extra?: Record<string, any>
-}
-
-type MeResponse = {
-    user?: DrawerUser
-}
-
-type BranchesResponse = {
-    branches?: string[]
-}
-
-type ConnectorDoc = {
-    id?: string
-    type: "confluence" | "jira" | "github" | "bitbucket" | "azure_devops" | "local"
-    isEnabled: boolean
-    config: Record<string, unknown>
-}
-
-type ConnectorsResponse = ConnectorDoc[]
-
-type ProjectEditForm = {
-    name: string
-    description: string
-    repo_path: string
-    default_branch: string
-    llm_provider: string
-    llm_base_url: string
-    llm_model: string
-    llm_api_key: string
-    llm_profile_id: string
-    grounding_require_sources: boolean
-    grounding_min_sources: number
-    routing_enabled: boolean
-    routing_fast_profile_id: string
-    routing_strong_profile_id: string
-    routing_fallback_profile_id: string
-    security_read_only_non_admin: boolean
-    security_allow_write_members: boolean
-}
-
-type GitForm = {
-    isEnabled: boolean
-    owner: string
-    repo: string
-    branch: string
-    token: string
-    paths: string
-}
-
-type BitbucketForm = {
-    isEnabled: boolean
-    workspace: string
-    repo: string
-    branch: string
-    username: string
-    app_password: string
-    paths: string
-    base_url: string
-}
-
-type AzureDevOpsForm = {
-    isEnabled: boolean
-    organization: string
-    project: string
-    repository: string
-    branch: string
-    pat: string
-    paths: string
-    base_url: string
-}
-
-type LocalConnectorForm = {
-    isEnabled: boolean
-    paths: string
-}
-
-type LlmProfileDoc = {
-    id: string
-    name: string
-    provider: string
-    model: string
-}
-
-type ConfluenceForm = {
-    isEnabled: boolean
-    baseUrl: string
-    spaceKey: string
-    email: string
-    apiToken: string
-}
-
-type JiraForm = {
-    isEnabled: boolean
-    baseUrl: string
-    email: string
-    apiToken: string
-    jql: string
-}
-
-type LlmProviderOption = {
-    value: string
-    label: string
-    defaultBaseUrl: string
-    requiresApiKey: boolean
-}
-
-type LlmOptionsResponse = {
-    providers: LlmProviderOption[]
-    ollama_models: string[]
-    openai_models: string[]
-    discovery_error?: string | null
-    openai_discovery_error?: string | null
-    ollama_discovery_error?: string | null
-}
-
-type QaMetricsResponse = {
-    project_id: string
-    hours: number
-    branch?: string | null
-    tool_calls: number
-    tool_errors: number
-    tool_timeouts: number
-    tool_latency_avg_ms: number
-    tool_latency_p95_ms: number
-    assistant_messages: number
-    answers_with_sources: number
-    source_coverage_pct: number
-    grounded_failures: number
-    avg_tool_calls_per_answer: number
-    tool_summary: Array<{
-        tool: string
-        calls: number
-        errors: number
-        timeouts: number
-        avg_duration_ms: number
-        p95_duration_ms: number
-    }>
-}
-
-type EvalRunResponse = {
-    id?: string
-    summary?: {
-        total?: number
-        ok?: number
-        failed?: number
-        with_sources?: number
-        source_coverage_pct?: number
-        avg_latency_ms?: number
-        avg_tool_calls?: number
-    }
-}
-
-const FALLBACK_OLLAMA_MODELS = ["llama3.2:3b", "llama3.1:8b", "mistral:7b", "qwen2.5:7b"]
-const FALLBACK_OPENAI_MODELS = ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1", "gpt-4o"]
-
-const DEFAULT_PROVIDER_OPTIONS: LlmProviderOption[] = [
-    {
-        value: "ollama",
-        label: "Ollama (local)",
-        defaultBaseUrl: "http://ollama:11434/v1",
-        requiresApiKey: false,
-    },
-    {
-        value: "openai",
-        label: "ChatGPT / OpenAI API",
-        defaultBaseUrl: "https://api.openai.com/v1",
-        requiresApiKey: true,
-    },
-]
-
-function errText(err: unknown): string {
-    if (err instanceof Error) return err.message
-    return String(err)
-}
-
-function makeChatId(projectId: string, branch: string, user: string): string {
-    return `${projectId}::${branch}::${user}::${Date.now().toString(36)}`
-}
-
-function maskSecret(secret?: string): string {
-    if (!secret) return "not set"
-    if (secret.length <= 6) return "***"
-    return `${secret.slice(0, 3)}...${secret.slice(-2)}`
-}
-
-function asStr(v: unknown): string {
-    return typeof v === "string" ? v : ""
-}
-
-function normalizedOpenAiKey(input?: string): string {
-    const key = (input || "").trim()
-    if (!key) return ""
-    if (key.toLowerCase() === "ollama") return ""
-    if (key.startsWith("***")) return ""
-    return key
-}
-
-function csvToList(v: string): string[] {
-    return v
-        .split(",")
-        .map((x) => x.trim())
-        .filter(Boolean)
-}
-
-function getConnector(connectors: ConnectorDoc[], type: ConnectorDoc["type"]): ConnectorDoc | undefined {
-    return connectors.find((c) => c.type === type)
-}
-
-function emptyGit(branch = "main"): GitForm {
-    return { isEnabled: true, owner: "", repo: "", branch, token: "", paths: "" }
-}
-
-function emptyConfluence(): ConfluenceForm {
-    return { isEnabled: false, baseUrl: "", spaceKey: "", email: "", apiToken: "" }
-}
-
-function emptyJira(): JiraForm {
-    return { isEnabled: false, baseUrl: "", email: "", apiToken: "", jql: "" }
-}
-
-function emptyBitbucket(): BitbucketForm {
-    return {
-        isEnabled: false,
-        workspace: "",
-        repo: "",
-        branch: "main",
-        username: "",
-        app_password: "",
-        paths: "",
-        base_url: "https://api.bitbucket.org/2.0",
-    }
-}
-
-function emptyAzureDevOps(): AzureDevOpsForm {
-    return {
-        isEnabled: false,
-        organization: "",
-        project: "",
-        repository: "",
-        branch: "main",
-        pat: "",
-        paths: "",
-        base_url: "https://dev.azure.com",
-    }
-}
-
-function emptyLocalConnector(): LocalConnectorForm {
-    return {
-        isEnabled: false,
-        paths: "",
-    }
-}
-
-function dedupeChatsById(items: DrawerChat[]): DrawerChat[] {
-    const out: DrawerChat[] = []
-    const seen = new Set<string>()
-    for (const item of items || []) {
-        const id = (item?.chat_id || "").trim()
-        if (!id || seen.has(id)) continue
-        seen.add(id)
-        out.push(item)
-    }
-    return out
-}
+import {
+    asStr,
+    csvToList,
+    dedupeChatsById,
+    DEFAULT_PROVIDER_OPTIONS,
+    emptyAzureDevOps,
+    emptyBitbucket,
+    emptyConfluence,
+    emptyGit,
+    emptyJira,
+    emptyLocalConnector,
+    errText,
+    FALLBACK_OLLAMA_MODELS,
+    FALLBACK_OPENAI_MODELS,
+    getConnector,
+    makeChatId,
+    maskSecret,
+    normalizedOpenAiKey,
+    type AzureDevOpsForm,
+    type BitbucketForm,
+    type BranchesResponse,
+    type ConfluenceForm,
+    type ConnectorDoc,
+    type ConnectorsResponse,
+    type EvalRunResponse,
+    type GitForm,
+    type JiraForm,
+    type LlmOptionsResponse,
+    type LlmProfileDoc,
+    type LocalConnectorForm,
+    type MeResponse,
+    type ProjectDoc,
+    type ProjectEditForm,
+    type QaMetricsResponse,
+} from "@/features/project-settings/form-model"
 
 function DetailCard({ title, value }: { title: string; value: string }) {
     return (
@@ -937,7 +695,7 @@ export default function ProjectSettingsPage() {
                                 {projectLabel}
                             </Typography>
                             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                                Review and configure this project's assistant behavior.
+                                Review and configure this project&apos;s assistant behavior.
                             </Typography>
                         </CardContent>
                     </Card>

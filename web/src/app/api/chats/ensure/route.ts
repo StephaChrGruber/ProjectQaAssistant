@@ -1,15 +1,11 @@
-import { NextResponse } from "next/server"
-
-const BACKEND = process.env.BACKEND_BASE_URL!
-const DEV_USER = process.env.POC_DEV_USER || "dev"
+import { fetchBackend, proxyJsonResponse } from "@/lib/http/backend-proxy"
 
 export async function POST(req: Request) {
     const body = await req.text()
-    const res = await fetch(`${BACKEND}/chats/ensure-doc`, {
+    const res = await fetchBackend("/chats/ensure-doc", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Dev-User": DEV_USER },
+        headers: { "Content-Type": "application/json" },
         body,
     })
-    const text = await res.text()
-    return new NextResponse(text, { status: res.status })
+    return proxyJsonResponse(res)
 }
