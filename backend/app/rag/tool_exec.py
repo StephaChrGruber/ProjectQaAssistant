@@ -3094,7 +3094,7 @@ async def create_chat_task(req: CreateChatTaskRequest, ctx: Any | None = None) -
         resolved_chat_id = resolved_chat_id.strip()
     db = get_db()
     doc: dict[str, Any] = {
-        "project_id": req.project_id,
+        "project_id": "",
         "chat_id": resolved_chat_id,
         "title": title,
         "details": (req.details or "").strip(),
