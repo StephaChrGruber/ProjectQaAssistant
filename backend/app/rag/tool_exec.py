@@ -3083,16 +3083,19 @@ async def write_documentation_file(req: WriteDocumentationFileRequest) -> WriteD
     )
 
 
-async def create_chat_task(req: CreateChatTaskRequest) -> CreateChatTaskResponse:
+async def create_chat_task(req: CreateChatTaskRequest, ctx: Any | None = None) -> CreateChatTaskResponse:
     title = (req.title or "").strip()
     if not title:
         raise RuntimeError("title is required")
 
     now = _utc_iso_now()
+    resolved_chat_id = (req.chat_id or "").strip() or _ctx_field(ctx, "chat_id") or None
+    if resolved_chat_id:
+        resolved_chat_id = resolved_chat_id.strip()
     db = get_db()
     doc: dict[str, Any] = {
         "project_id": req.project_id,
-        "chat_id": (req.chat_id or "").strip() or None,
+        "chat_id": resolved_chat_id,
         "title": title,
         "details": (req.details or "").strip(),
         "assignee": (req.assignee or "").strip() or None,
@@ -3101,6 +3104,12 @@ async def create_chat_task(req: CreateChatTaskRequest) -> CreateChatTaskResponse
         "created_at": now,
         "updated_at": now,
     }
+    logger.info(
+        "create_chat_task.write project=%s chat_id=%s title=%s",
+        req.project_id,
+        doc.get("chat_id") or "",
+        title,
+    )
     res = await db["chat_tasks"].insert_one(doc)
     task_id = str(res.inserted_id)
     return CreateChatTaskResponse(id=task_id, title=title, status="open", created_at=now)
@@ -3110,7 +3119,13 @@ async def list_chat_tasks(req: ListChatTasksRequest) -> ListChatTasksResponse:
     db = get_db()
     q: dict[str, Any] = {"project_id": req.project_id}
     if (req.chat_id or "").strip():
-        q["chat_id"] = (req.chat_id or "").strip()
+        chat_id = (req.chat_id or "").strip()
+        q["$or"] = [
+            {"chat_id": chat_id},
+            {"chat_id": None},
+            {"chat_id": ""},
+            {"chat_id": {"$exists": False}},
+        ]
     if (req.status or "").strip():
         q["status"] = (req.status or "").strip().lower()
     if (req.assignee or "").strip():

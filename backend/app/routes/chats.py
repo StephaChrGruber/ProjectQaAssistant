@@ -266,10 +266,14 @@ async def list_chat_tasks(
     x_dev_user: str | None = Header(default=None),
 ):
     chat = await _get_chat_owner_or_403(chat_id, x_dev_user)
-    q: dict[str, Any] = {
-        "project_id": str(chat.get("project_id") or ""),
-        "chat_id": chat_id,
-    }
+    q: dict[str, Any] = {"project_id": str(chat.get("project_id") or "")}
+    # Include tasks scoped to this chat and legacy/unscoped tasks.
+    q["$or"] = [
+        {"chat_id": chat_id},
+        {"chat_id": None},
+        {"chat_id": ""},
+        {"chat_id": {"$exists": False}},
+    ]
     if (status or "").strip():
         q["status"] = status.strip().lower()
     safe_limit = max(1, min(int(limit or 120), 500))
@@ -314,10 +318,13 @@ async def patch_chat_task(
     x_dev_user: str | None = Header(default=None),
 ):
     chat = await _get_chat_owner_or_403(chat_id, x_dev_user)
-    q: dict[str, Any] = {
-        "project_id": str(chat.get("project_id") or ""),
-        "chat_id": chat_id,
-    }
+    q: dict[str, Any] = {"project_id": str(chat.get("project_id") or "")}
+    q["$or"] = [
+        {"chat_id": chat_id},
+        {"chat_id": None},
+        {"chat_id": ""},
+        {"chat_id": {"$exists": False}},
+    ]
     if ObjectId.is_valid(task_id):
         q["_id"] = ObjectId(task_id)
     else:
