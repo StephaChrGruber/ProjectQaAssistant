@@ -59,7 +59,9 @@ import {
     writeLocalDocumentationFiles,
 } from "@/lib/local-repo-bridge"
 import { executeLocalToolJob } from "@/lib/local-custom-tool-runner"
-import { normalizeLanguage, tokenColor, tokenizeCode } from "@/features/chat/code-highlighting"
+import { ChatMessagesPane } from "@/features/chat/ChatMessagesPane"
+import { ChatToolsDialog } from "@/features/chat/ChatToolsDialog"
+import { DocumentationDialog } from "@/features/chat/DocumentationDialog"
 import type {
     AskAgentResponse,
     BranchesResponse,
@@ -85,7 +87,6 @@ import type {
     ToolCatalogResponse,
 } from "@/features/chat/types"
 import {
-    SOURCE_PREVIEW_LIMIT,
     asksForDocumentationGeneration,
     buildDocTree,
     dedupeChatsById,
@@ -94,24 +95,9 @@ import {
     errText,
     isDocumentationPath,
     makeChatId,
-    parseChartSpec,
-    sourceDisplayText,
-    splitChartBlocks,
 } from "@/features/chat/utils"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import {
-    Bar,
-    BarChart,
-    CartesianGrid,
-    Legend,
-    Line,
-    LineChart,
-    ResponsiveContainer,
-    Tooltip,
-    XAxis,
-    YAxis,
-} from "recharts"
 
 export default function ProjectChatPage() {
     const { projectId } = useParams<{ projectId: string }>()
@@ -1319,351 +1305,16 @@ export default function ProjectChatPage() {
                     </Box>
                 )}
 
-                <Box
-                    ref={scrollRef}
-                    sx={{ minHeight: 0, flex: 1, overflowY: "auto", px: { xs: 1.25, md: 4 }, py: { xs: 1.6, md: 2.5 } }}
-                >
-                    <Stack spacing={1.5} sx={{ maxWidth: 980, mx: "auto" }}>
-                        {booting && (
-                            <Paper variant="outlined" sx={{ p: 2, display: "flex", alignItems: "center", gap: 1.2 }}>
-                                <CircularProgress size={18} />
-                                <Typography variant="body2">Loading workspace...</Typography>
-                            </Paper>
-                        )}
-
-                        {!booting && !loadingMessages && messages.length === 0 && (
-                            <Paper variant="outlined" sx={{ p: 2 }}>
-                                <Typography variant="body2" color="text.secondary">
-                                    Start with a question about this project. The assistant can use GitHub/Bitbucket/Azure DevOps, local repository, Confluence, and Jira context.
-                                </Typography>
-                            </Paper>
-                        )}
-
-                        {messages.map((m, idx) => {
-                            const isUser = m.role === "user"
-                            const sources = !isUser && m.role === "assistant" ? (m.meta?.sources || []) : []
-                            const messageKey = `${m.ts || "na"}-${idx}`
-                            const sourceExpanded = Boolean(expandedSourceMessages[messageKey])
-                            const hasManySources = sources.length > SOURCE_PREVIEW_LIMIT
-                            const previewSources = hasManySources ? sources.slice(0, SOURCE_PREVIEW_LIMIT) : sources
-                            const hiddenSources = hasManySources ? sources.slice(SOURCE_PREVIEW_LIMIT) : []
-                            return (
-                                <Box key={messageKey} sx={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start" }}>
-                                    <Paper
-                                        variant={isUser ? "elevation" : "outlined"}
-                                        elevation={isUser ? 3 : 0}
-                                        sx={{
-                                            maxWidth: { xs: "96%", sm: "92%" },
-                                            px: { xs: 1.5, sm: 2 },
-                                            py: { xs: 1.1, sm: 1.4 },
-                                            borderRadius: 3,
-                                            bgcolor: isUser ? "primary.main" : "background.paper",
-                                            color: isUser ? "primary.contrastText" : "text.primary",
-                                        }}
-                                    >
-                                        <Stack spacing={1}>
-                                            {splitChartBlocks(m.content || "").map((part, i) => {
-                                                if (part.type === "chart") {
-                                                    const spec = parseChartSpec(part.value)
-                                                    return (
-                                                        <Paper key={i} variant="outlined" sx={{ p: 1.2, bgcolor: "rgba(0,0,0,0.16)" }}>
-                                                            <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.12em" }}>
-                                                                CHART BLOCK
-                                                            </Typography>
-                                                            {spec ? (
-                                                                <Box sx={{ mt: 1.1, width: "100%", minWidth: 280 }}>
-                                                                    {spec.title && (
-                                                                        <Typography variant="subtitle2" sx={{ mb: 0.8 }}>
-                                                                            {spec.title}
-                                                                        </Typography>
-                                                                    )}
-                                                                    <ResponsiveContainer width="100%" height={spec.height || 280}>
-                                                                        {spec.type === "bar" ? (
-                                                                            <BarChart data={spec.data}>
-                                                                                <CartesianGrid strokeDasharray="3 3" />
-                                                                                <XAxis dataKey={spec.xKey} />
-                                                                                <YAxis />
-                                                                                <Tooltip />
-                                                                                <Legend />
-                                                                                {spec.series.map((s, sidx) => (
-                                                                                    <Bar
-                                                                                        key={s.key}
-                                                                                        dataKey={s.key}
-                                                                                        name={s.label || s.key}
-                                                                                        fill={s.color || ["#0088FE", "#00C49F", "#FFBB28", "#FF8042"][sidx % 4]}
-                                                                                    />
-                                                                                ))}
-                                                                            </BarChart>
-                                                                        ) : (
-                                                                            <LineChart data={spec.data}>
-                                                                                <CartesianGrid strokeDasharray="3 3" />
-                                                                                <XAxis dataKey={spec.xKey} />
-                                                                                <YAxis />
-                                                                                <Tooltip />
-                                                                                <Legend />
-                                                                                {spec.series.map((s, sidx) => (
-                                                                                    <Line
-                                                                                        key={s.key}
-                                                                                        type="monotone"
-                                                                                        dataKey={s.key}
-                                                                                        name={s.label || s.key}
-                                                                                        stroke={s.color || ["#0088FE", "#00C49F", "#FFBB28", "#FF8042"][sidx % 4]}
-                                                                                        strokeWidth={2}
-                                                                                        dot={false}
-                                                                                    />
-                                                                                ))}
-                                                                            </LineChart>
-                                                                        )}
-                                                                    </ResponsiveContainer>
-                                                                </Box>
-                                                            ) : (
-                                                                <Box
-                                                                    component="pre"
-                                                                    sx={{
-                                                                        mt: 0.8,
-                                                                        mb: 0,
-                                                                        overflowX: "auto",
-                                                                        whiteSpace: "pre",
-                                                                        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                                                                        fontSize: 12,
-                                                                    }}
-                                                                >
-                                                                    {part.value}
-                                                                </Box>
-                                                            )}
-                                                        </Paper>
-                                                    )
-                                                }
-
-                                                return (
-                                                    <Box
-                                                        key={i}
-                                                        sx={{
-                                                            "& p": { my: 0.7, lineHeight: 1.55 },
-                                                            "& ul, & ol": { my: 0.7, pl: 2.5 },
-                                                            "& li": { my: 0.3 },
-                                                            "& a": { color: "inherit", textDecoration: "underline" },
-                                                            "& img": {
-                                                                maxWidth: "100%",
-                                                                borderRadius: 1.5,
-                                                                display: "block",
-                                                                my: 1,
-                                                            },
-                                                            "& code": {
-                                                                fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                                                                fontSize: "0.82em",
-                                                                bgcolor: isUser ? "rgba(255,255,255,0.2)" : "action.hover",
-                                                                px: 0.5,
-                                                                borderRadius: 0.6,
-                                                            },
-                                                            "& pre": {
-                                                                my: 1,
-                                                                overflowX: "auto",
-                                                                borderRadius: 1.2,
-                                                                p: 1.1,
-                                                                bgcolor: isUser ? "rgba(0,0,0,0.22)" : "rgba(2,6,23,0.06)",
-                                                            },
-                                                            "& pre code": {
-                                                                display: "block",
-                                                                whiteSpace: "pre",
-                                                            },
-                                                        }}
-                                                    >
-                                                        <ReactMarkdown
-                                                            remarkPlugins={[remarkGfm]}
-                                                            components={{
-                                                                code(props: any) {
-                                                                    const { inline, className, children, ...rest } = props
-                                                                    const content = String(children ?? "")
-                                                                    if (inline) {
-                                                                        return (
-                                                                            <code className={className} {...rest}>
-                                                                                {children}
-                                                                            </code>
-                                                                        )
-                                                                    }
-
-                                                                    const match = /language-([a-zA-Z0-9_-]+)/.exec(className || "")
-                                                                    const language = normalizeLanguage(match?.[1] || "")
-                                                                    const tokens = tokenizeCode(content.replace(/\n$/, ""), language)
-                                                                    return (
-                                                                        <code className={className} {...rest}>
-                                                                            {tokens.map((t, tidx) => (
-                                                                                <span key={tidx} style={{ color: tokenColor(t.kind, isUser) }}>
-                                                                                    {t.text}
-                                                                                </span>
-                                                                            ))}
-                                                                        </code>
-                                                                    )
-                                                                },
-                                                            }}
-                                                        >
-                                                            {part.value}
-                                                        </ReactMarkdown>
-                                                    </Box>
-                                                )
-                                            })}
-
-                                            {!isUser && m.role === "assistant" && (
-                                                <Box
-                                                    sx={{
-                                                        mt: 0.4,
-                                                        pt: 0.9,
-                                                        borderTop: "1px solid",
-                                                        borderColor: "divider",
-                                                    }}
-                                                >
-                                                    <Typography
-                                                        variant="caption"
-                                                        color="text.secondary"
-                                                        sx={{ letterSpacing: "0.08em", display: "block", mb: 0.6 }}
-                                                    >
-                                                        SOURCES
-                                                    </Typography>
-                                                    {m.meta?.grounded === false && (
-                                                        <Typography variant="caption" color="warning.main" sx={{ display: "block", mb: 0.6 }}>
-                                                            Grounding check failed for this answer.
-                                                        </Typography>
-                                                    )}
-                                                    <Stack spacing={0.2}>
-                                                        {sources.length > 0 ? (
-                                                            previewSources.map((src, sidx) => {
-                                                                const clickable = Boolean(
-                                                                    (src.url && /^https?:\/\//i.test(src.url)) ||
-                                                                    isDocumentationPath(src.path)
-                                                                )
-                                                                const confidence =
-                                                                    typeof src.confidence === "number"
-                                                                        ? Math.max(0, Math.min(100, Math.round(src.confidence * 100)))
-                                                                        : null
-                                                                return (
-                                                                    <Box key={`${sourceDisplayText(src)}-${sidx}`} sx={{ py: 0.2 }}>
-                                                                        <Button
-                                                                            variant="text"
-                                                                            size="small"
-                                                                            onClick={() => {
-                                                                                void handleAnswerSourceClick(src)
-                                                                            }}
-                                                                            disabled={!clickable}
-                                                                            sx={{
-                                                                                justifyContent: "flex-start",
-                                                                                textTransform: "none",
-                                                                                px: 0,
-                                                                                minHeight: "auto",
-                                                                                fontSize: 12,
-                                                                                lineHeight: 1.35,
-                                                                            }}
-                                                                        >
-                                                                            {sourceDisplayText(src)}
-                                                                            {confidence !== null ? ` (${confidence}%)` : ""}
-                                                                        </Button>
-                                                                        {src.snippet ? (
-                                                                            <Typography
-                                                                                variant="caption"
-                                                                                color="text.secondary"
-                                                                                sx={{ display: "block", lineHeight: 1.3, pl: 0.1 }}
-                                                                            >
-                                                                                {src.snippet}
-                                                                            </Typography>
-                                                                        ) : null}
-                                                                    </Box>
-                                                                )
-                                                            })
-                                                        ) : (
-                                                            <Typography variant="caption" color="text.secondary">
-                                                                No explicit sources were captured for this answer.
-                                                            </Typography>
-                                                        )}
-                                                        {hasManySources && (
-                                                            <>
-                                                                <Collapse in={sourceExpanded} timeout="auto" unmountOnExit>
-                                                                    <Stack spacing={0.2}>
-                                                                        {hiddenSources.map((src, sidx) => {
-                                                                            const clickable = Boolean(
-                                                                                (src.url && /^https?:\/\//i.test(src.url)) ||
-                                                                                isDocumentationPath(src.path)
-                                                                            )
-                                                                            const confidence =
-                                                                                typeof src.confidence === "number"
-                                                                                    ? Math.max(0, Math.min(100, Math.round(src.confidence * 100)))
-                                                                                    : null
-                                                                            return (
-                                                                                <Box key={`${sourceDisplayText(src)}-hidden-${sidx}`} sx={{ py: 0.2 }}>
-                                                                                    <Button
-                                                                                        variant="text"
-                                                                                        size="small"
-                                                                                        onClick={() => {
-                                                                                            void handleAnswerSourceClick(src)
-                                                                                        }}
-                                                                                        disabled={!clickable}
-                                                                                        sx={{
-                                                                                            justifyContent: "flex-start",
-                                                                                            textTransform: "none",
-                                                                                            px: 0,
-                                                                                            minHeight: "auto",
-                                                                                            fontSize: 12,
-                                                                                            lineHeight: 1.35,
-                                                                                        }}
-                                                                                    >
-                                                                                        {sourceDisplayText(src)}
-                                                                                        {confidence !== null ? ` (${confidence}%)` : ""}
-                                                                                    </Button>
-                                                                                    {src.snippet ? (
-                                                                                        <Typography
-                                                                                            variant="caption"
-                                                                                            color="text.secondary"
-                                                                                            sx={{ display: "block", lineHeight: 1.3, pl: 0.1 }}
-                                                                                        >
-                                                                                            {src.snippet}
-                                                                                        </Typography>
-                                                                                    ) : null}
-                                                                                </Box>
-                                                                            )
-                                                                        })}
-                                                                    </Stack>
-                                                                </Collapse>
-                                                                <Button
-                                                                    variant="text"
-                                                                    size="small"
-                                                                    onClick={() => toggleSourceList(messageKey)}
-                                                                    endIcon={sourceExpanded ? <ExpandMoreRounded fontSize="small" /> : <ChevronRightRounded fontSize="small" />}
-                                                                    sx={{
-                                                                        justifyContent: "flex-start",
-                                                                        textTransform: "none",
-                                                                        px: 0,
-                                                                        minHeight: "auto",
-                                                                        mt: 0.2,
-                                                                        fontSize: 12,
-                                                                        lineHeight: 1.35,
-                                                                    }}
-                                                                >
-                                                                    {sourceExpanded
-                                                                        ? `Show less (${sources.length} total)`
-                                                                        : `Show ${hiddenSources.length} more (${sources.length} total)`}
-                                                                </Button>
-                                                            </>
-                                                        )}
-                                                    </Stack>
-                                                </Box>
-                                            )}
-                                        </Stack>
-                                    </Paper>
-                                </Box>
-                            )
-                        })}
-
-                        {(sending || loadingMessages) && (
-                            <Box sx={{ display: "flex", justifyContent: "flex-start" }}>
-                                <Paper variant="outlined" sx={{ px: 1.6, py: 1, display: "flex", alignItems: "center", gap: 1 }}>
-                                    <CircularProgress size={16} />
-                                    <Typography variant="body2" color="text.secondary">
-                                        Thinking...
-                                    </Typography>
-                                </Paper>
-                            </Box>
-                        )}
-                    </Stack>
-                </Box>
+                <ChatMessagesPane
+                    booting={booting}
+                    loadingMessages={loadingMessages}
+                    sending={sending}
+                    messages={messages}
+                    expandedSourceMessages={expandedSourceMessages}
+                    onToggleSourceList={toggleSourceList}
+                    onSourceClick={handleAnswerSourceClick}
+                    scrollRef={scrollRef}
+                />
 
                 <Paper
                     square
@@ -1797,229 +1448,42 @@ export default function ProjectChatPage() {
                     </Stack>
                 </Paper>
 
-                <Dialog
+                <ChatToolsDialog
                     open={toolsOpen}
+                    chatId={selectedChatId}
+                    toolsLoading={toolsLoading}
+                    toolsError={toolsError}
+                    toolsSaving={toolsSaving}
+                    toolReadOnlyOnly={toolReadOnlyOnly}
+                    toolCatalog={toolCatalog}
+                    toolEnabledSet={toolEnabledSet}
+                    approvedTools={approvedTools}
+                    approvalBusyTool={approvalBusyTool}
                     onClose={() => setToolsOpen(false)}
-                    fullWidth
-                    maxWidth="md"
-                >
-                    <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
-                        <Stack spacing={0.2}>
-                            <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                                Chat Tool Configuration
-                            </Typography>
-                            <Typography variant="caption" color="text.secondary">
-                                Chat: <code>{selectedChatId || "none"}</code>
-                            </Typography>
-                        </Stack>
-                    </DialogTitle>
-                    <DialogContent dividers sx={{ pt: 1.2 }}>
-                        {toolsLoading && (
-                            <Box sx={{ py: 2 }}>
-                                <CircularProgress size={18} />
-                            </Box>
-                        )}
-                        {toolsError && (
-                            <Box sx={{ pb: 1.2 }}>
-                                <Alert severity="error" onClose={() => setToolsError(null)}>
-                                    {toolsError}
-                                </Alert>
-                            </Box>
-                        )}
-                        <Stack spacing={1.2}>
-                            <FormControlLabel
-                                control={
-                                    <Switch
-                                        checked={toolReadOnlyOnly}
-                                        onChange={(e) => setToolReadOnlyOnly(e.target.checked)}
-                                    />
-                                }
-                                label="Read-only mode (disable all write/mutating tools)"
-                            />
-                            <Divider />
-                            <List dense>
-                                {toolCatalog.map((tool) => {
-                                    const enabled = toolEnabledSet.has(tool.name)
-                                    const requiresApproval = Boolean(tool.require_approval) && !Boolean(tool.read_only)
-                                    const isApproved = approvedTools.has(tool.name)
-                                    return (
-                                        <ListItemButton key={tool.name} onClick={() => toggleToolEnabled(tool.name)} sx={{ borderRadius: 1.5, mb: 0.35 }}>
-                                            <ListItemIcon sx={{ minWidth: 34 }}>
-                                                <Switch
-                                                    size="small"
-                                                    checked={enabled}
-                                                    onChange={() => toggleToolEnabled(tool.name)}
-                                                    onClick={(e) => e.stopPropagation()}
-                                                />
-                                            </ListItemIcon>
-                                            <ListItemText
-                                                primary={
-                                                    <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-                                                        <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                                                            {tool.name}
-                                                        </Typography>
-                                                        {enabled && <CheckCircleRounded fontSize="inherit" color="success" />}
-                                                        {tool.origin === "custom" && (
-                                                            <Chip size="small" label="Custom" color="secondary" variant="outlined" />
-                                                        )}
-                                                        {tool.runtime === "local_typescript" && (
-                                                            <Chip size="small" label="Local TS" color="secondary" variant="outlined" />
-                                                        )}
-                                                        {requiresApproval && (
-                                                            <Chip
-                                                                size="small"
-                                                                label={isApproved ? "Approved" : "Approval required"}
-                                                                color={isApproved ? "success" : "warning"}
-                                                                variant={isApproved ? "filled" : "outlined"}
-                                                            />
-                                                        )}
-                                                        {requiresApproval && (
-                                                            <Button
-                                                                size="small"
-                                                                variant="text"
-                                                                onClick={(e) => {
-                                                                    e.preventDefault()
-                                                                    e.stopPropagation()
-                                                                    void setToolApproval(tool.name, !isApproved)
-                                                                }}
-                                                                disabled={approvalBusyTool === tool.name}
-                                                            >
-                                                                {approvalBusyTool === tool.name
-                                                                    ? "..."
-                                                                    : isApproved
-                                                                        ? "Revoke"
-                                                                        : "Approve 60m"}
-                                                            </Button>
-                                                        )}
-                                                    </Stack>
-                                                }
-                                                secondary={`${tool.description || ""}${tool.read_only ? " · read-only" : " · write-enabled"}${tool.version ? ` · v${tool.version}` : ""}`}
-                                            />
-                                        </ListItemButton>
-                                    )
-                                })}
-                                {!toolCatalog.length && !toolsLoading && (
-                                    <ListItemButton disabled>
-                                        <ListItemText primary="No tools found." />
-                                    </ListItemButton>
-                                )}
-                            </List>
-                        </Stack>
-                    </DialogContent>
-                    <DialogActions>
-                        <Button onClick={() => setToolsOpen(false)}>Close</Button>
-                        <Button variant="contained" onClick={() => void saveChatToolPolicy()} disabled={toolsSaving || !selectedChatId}>
-                            {toolsSaving ? "Saving..." : "Save"}
-                        </Button>
-                    </DialogActions>
-                </Dialog>
+                    onErrorClose={() => setToolsError(null)}
+                    onToggleReadOnlyOnly={setToolReadOnlyOnly}
+                    onToggleToolEnabled={toggleToolEnabled}
+                    onSetToolApproval={setToolApproval}
+                    onSave={saveChatToolPolicy}
+                />
 
-                <Dialog
+                <DocumentationDialog
                     open={docsOpen}
+                    branch={branch}
+                    docsGenerating={docsGenerating}
+                    docsLoading={docsLoading}
+                    docContentLoading={docContentLoading}
+                    docsError={docsError}
+                    docsNotice={docsNotice}
+                    docsFilesCount={docsFiles.length}
+                    selectedDocPath={selectedDocPath}
+                    selectedDocContent={selectedDocContent}
+                    docTreeNodes={renderDocTreeNodes(docsTree)}
                     onClose={() => setDocsOpen(false)}
-                    fullWidth
-                    maxWidth="lg"
-                >
-                    <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
-                        <Stack spacing={0.2}>
-                            <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                                Project Documentation
-                            </Typography>
-                            <Typography variant="caption" color="text.secondary">
-                                Branch: {branch} · Source folder: <code>documentation/</code>
-                            </Typography>
-                        </Stack>
-                        <Stack direction="row" spacing={1}>
-                            <Button
-                                size="small"
-                                variant="contained"
-                                startIcon={<AutoFixHighRounded />}
-                                onClick={() => void generateDocumentation()}
-                                disabled={docsGenerating}
-                            >
-                                {docsGenerating ? "Generating..." : "Regenerate"}
-                            </Button>
-                            <Button
-                                size="small"
-                                variant="text"
-                                startIcon={<CloseRounded />}
-                                onClick={() => setDocsOpen(false)}
-                            >
-                                Close
-                            </Button>
-                        </Stack>
-                    </DialogTitle>
-                    <DialogContent dividers sx={{ p: 0 }}>
-                        {(docsLoading || docContentLoading) && (
-                            <Box sx={{ px: 2, py: 1 }}>
-                                <CircularProgress size={18} />
-                            </Box>
-                        )}
-                        {docsError && (
-                            <Box sx={{ p: 1.5 }}>
-                                <Alert severity="error" onClose={() => setDocsError(null)}>
-                                    {docsError}
-                                </Alert>
-                            </Box>
-                        )}
-                        {docsNotice && docsOpen && (
-                            <Box sx={{ p: 1.5 }}>
-                                <Alert severity="success" onClose={() => setDocsNotice(null)}>
-                                    {docsNotice}
-                                </Alert>
-                            </Box>
-                        )}
-
-                        <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "280px 1fr" }, minHeight: 500 }}>
-                            <Box sx={{ borderRight: { md: "1px solid" }, borderColor: "divider", bgcolor: "background.default" }}>
-                                <List dense sx={{ maxHeight: 560, overflowY: "auto" }}>
-                                    {renderDocTreeNodes(docsTree)}
-                                    {!docsFiles.length && !docsLoading && (
-                                        <ListItemButton disabled>
-                                            <ListItemText primary="No documentation files found." />
-                                        </ListItemButton>
-                                    )}
-                                </List>
-                            </Box>
-
-                            <Box sx={{ p: { xs: 1.5, md: 2.2 }, overflowY: "auto", maxHeight: 560 }}>
-                                {selectedDocPath ? (
-                                    <Stack spacing={1.4}>
-                                        <Typography variant="subtitle2" color="text.secondary">
-                                            {selectedDocPath}
-                                        </Typography>
-                                        <Divider />
-                                        <Box
-                                            sx={{
-                                                "& h1, & h2, & h3": { mt: 2, mb: 1 },
-                                                "& p, & li": { fontSize: "0.93rem" },
-                                                "& code": {
-                                                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                                                    bgcolor: "action.hover",
-                                                    px: 0.5,
-                                                    borderRadius: 0.6,
-                                                },
-                                                "& pre code": {
-                                                    display: "block",
-                                                    p: 1.2,
-                                                    overflowX: "auto",
-                                                },
-                                            }}
-                                        >
-                                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                                {selectedDocContent || "_No content._"}
-                                            </ReactMarkdown>
-                                        </Box>
-                                    </Stack>
-                                ) : (
-                                    <Typography variant="body2" color="text.secondary">
-                                        Generate documentation or select a file to preview.
-                                    </Typography>
-                                )}
-                            </Box>
-                        </Box>
-                    </DialogContent>
-                </Dialog>
+                    onRegenerate={() => generateDocumentation()}
+                    onDocsErrorClose={() => setDocsError(null)}
+                    onDocsNoticeClose={() => setDocsNotice(null)}
+                />
             </Stack>
         </ProjectDrawerLayout>
     )
