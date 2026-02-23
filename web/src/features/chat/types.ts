@@ -63,6 +63,7 @@ export type AskAgentResponse = {
   sources?: ChatAnswerSource[]
   grounded?: boolean
   memory_summary?: ChatMemorySummary
+  task_state?: ChatTaskState
   pending_user_question?: PendingUserQuestion | null
 }
 
@@ -97,7 +98,31 @@ export type ChatMemorySummary = {
   decisions?: string[]
   open_questions?: string[]
   next_steps?: string[]
+  goals?: string[]
+  constraints?: string[]
+  blockers?: string[]
+  assumptions?: string[]
+  knowledge?: string[]
   updated_at?: string
+}
+
+export type ChatTaskState = {
+  goals?: string[]
+  constraints?: string[]
+  decisions?: string[]
+  open_questions?: string[]
+  next_steps?: string[]
+  blockers?: string[]
+  assumptions?: string[]
+  knowledge?: string[]
+  updated_at?: string
+}
+
+export type ChatMemoryStateResponse = {
+  chat_id: string
+  memory_summary?: ChatMemorySummary
+  task_state?: ChatTaskState
+  hierarchical_memory?: Record<string, unknown>
 }
 
 export type PendingUserQuestion = {

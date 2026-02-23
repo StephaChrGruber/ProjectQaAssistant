@@ -21,6 +21,7 @@ from ..repositories.chat_repository import (
     upsert_tool_approval,
 )
 from ..services.feature_flags import load_project_feature_flags
+from ..services.hierarchical_memory import derive_memory_summary, derive_task_state
 
 router = APIRouter(prefix="/chats", tags=["chats"])
 logger = logging.getLogger(__name__)
@@ -68,6 +69,11 @@ class MemoryUpdateReq(BaseModel):
     decisions: list[str] | None = None
     open_questions: list[str] | None = None
     next_steps: list[str] | None = None
+    goals: list[str] | None = None
+    constraints: list[str] | None = None
+    blockers: list[str] | None = None
+    assumptions: list[str] | None = None
+    knowledge: list[str] | None = None
 
 
 def _norm_tool_name(v: str) -> str:
@@ -202,14 +208,46 @@ async def get_chat_by_id(chat_id: str):
 
 
 @router.get("/{chat_id}/memory")
-async def get_chat_memory(chat_id: str):
-    doc = await repo_get_chat(chat_id, {"_id": 0, "chat_id": 1, "memory_summary": 1, "task_state": 1, "hierarchical_memory": 1})
+async def get_chat_memory(chat_id: str, refresh: bool = False):
+    projection = {"_id": 0, "chat_id": 1, "memory_summary": 1, "task_state": 1, "hierarchical_memory": 1}
+    if refresh:
+        projection["messages"] = {"$slice": -280}
+    doc = await repo_get_chat(chat_id, projection)
     if not doc:
         raise HTTPException(status_code=404, detail="Chat not found")
     summary = doc.get("memory_summary")
-    if not isinstance(summary, dict):
-        summary = {"decisions": [], "open_questions": [], "next_steps": [], "goals": [], "constraints": [], "blockers": [], "assumptions": []}
     task_state = doc.get("task_state") if isinstance(doc.get("task_state"), dict) else {}
+    if refresh:
+        msgs = doc.get("messages") if isinstance(doc.get("messages"), list) else []
+        summary = derive_memory_summary(msgs)
+        task_state = derive_task_state(msgs, task_state)
+        await get_db()["chats"].update_one(
+            {"chat_id": chat_id},
+            {"$set": {"memory_summary": summary, "task_state": task_state, "updated_at": datetime.utcnow()}},
+        )
+    if not isinstance(summary, dict):
+        summary = {
+            "decisions": [],
+            "open_questions": [],
+            "next_steps": [],
+            "goals": [],
+            "constraints": [],
+            "blockers": [],
+            "assumptions": [],
+            "knowledge": [],
+        }
+    if not task_state:
+        task_state = {
+            "goals": summary.get("goals") or [],
+            "constraints": summary.get("constraints") or [],
+            "decisions": summary.get("decisions") or [],
+            "open_questions": summary.get("open_questions") or [],
+            "next_steps": summary.get("next_steps") or [],
+            "blockers": summary.get("blockers") or [],
+            "assumptions": summary.get("assumptions") or [],
+            "knowledge": summary.get("knowledge") or [],
+            "updated_at": summary.get("updated_at") or datetime.utcnow().isoformat() + "Z",
+        }
     hierarchical = doc.get("hierarchical_memory") if isinstance(doc.get("hierarchical_memory"), dict) else {}
     return {"chat_id": chat_id, "memory_summary": summary, "task_state": task_state, "hierarchical_memory": hierarchical}
 
@@ -221,21 +259,62 @@ async def patch_chat_memory(chat_id: str, req: MemoryUpdateReq, x_dev_user: str 
     flags = await load_project_feature_flags(project_id) if project_id else {}
     if not bool(flags.get("enable_memory_controls", True)):
         raise HTTPException(status_code=403, detail="Memory controls are disabled for this project")
-    doc = await repo_get_chat(chat_id, {"_id": 0, "memory_summary": 1})
+    doc = await repo_get_chat(chat_id, {"_id": 0, "memory_summary": 1, "task_state": 1})
     if not doc:
         raise HTTPException(status_code=404, detail="Chat not found")
 
     memory = doc.get("memory_summary") if isinstance(doc.get("memory_summary"), dict) else {}
+    task_state = doc.get("task_state") if isinstance(doc.get("task_state"), dict) else {}
     next_summary = {
         "decisions": _clean_memory_list(req.decisions if req.decisions is not None else memory.get("decisions") or []),
         "open_questions": _clean_memory_list(
             req.open_questions if req.open_questions is not None else memory.get("open_questions") or []
         ),
         "next_steps": _clean_memory_list(req.next_steps if req.next_steps is not None else memory.get("next_steps") or []),
+        "goals": _clean_memory_list(req.goals if req.goals is not None else memory.get("goals") or []),
+        "constraints": _clean_memory_list(req.constraints if req.constraints is not None else memory.get("constraints") or []),
+        "blockers": _clean_memory_list(req.blockers if req.blockers is not None else memory.get("blockers") or []),
+        "assumptions": _clean_memory_list(req.assumptions if req.assumptions is not None else memory.get("assumptions") or []),
+        "knowledge": _clean_memory_list(req.knowledge if req.knowledge is not None else memory.get("knowledge") or [], max_items=32),
         "updated_at": datetime.utcnow().isoformat() + "Z",
     }
-    await get_db()["chats"].update_one({"chat_id": chat_id}, {"$set": {"memory_summary": next_summary, "updated_at": datetime.utcnow()}})
-    return {"chat_id": chat_id, "memory_summary": next_summary}
+    next_task_state = {
+        "goals": _clean_memory_list(req.goals if req.goals is not None else task_state.get("goals") or next_summary.get("goals") or []),
+        "constraints": _clean_memory_list(
+            req.constraints if req.constraints is not None else task_state.get("constraints") or next_summary.get("constraints") or []
+        ),
+        "decisions": _clean_memory_list(
+            req.decisions if req.decisions is not None else task_state.get("decisions") or next_summary.get("decisions") or []
+        ),
+        "open_questions": _clean_memory_list(
+            req.open_questions
+            if req.open_questions is not None
+            else task_state.get("open_questions") or next_summary.get("open_questions") or []
+        ),
+        "next_steps": _clean_memory_list(
+            req.next_steps if req.next_steps is not None else task_state.get("next_steps") or next_summary.get("next_steps") or []
+        ),
+        "blockers": _clean_memory_list(
+            req.blockers if req.blockers is not None else task_state.get("blockers") or next_summary.get("blockers") or []
+        ),
+        "assumptions": _clean_memory_list(
+            req.assumptions
+            if req.assumptions is not None
+            else task_state.get("assumptions") or next_summary.get("assumptions") or []
+        ),
+        "knowledge": _clean_memory_list(
+            req.knowledge
+            if req.knowledge is not None
+            else task_state.get("knowledge") or next_summary.get("knowledge") or [],
+            max_items=32,
+        ),
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+    }
+    await get_db()["chats"].update_one(
+        {"chat_id": chat_id},
+        {"$set": {"memory_summary": next_summary, "task_state": next_task_state, "updated_at": datetime.utcnow()}},
+    )
+    return {"chat_id": chat_id, "memory_summary": next_summary, "task_state": next_task_state}
 
 
 @router.post("/{chat_id}/memory/reset")
@@ -249,13 +328,36 @@ async def reset_chat_memory(chat_id: str, x_dev_user: str | None = Header(defaul
         "decisions": [],
         "open_questions": [],
         "next_steps": [],
+        "goals": [],
+        "constraints": [],
+        "blockers": [],
+        "assumptions": [],
+        "knowledge": [],
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+    }
+    empty_task_state = {
+        "goals": [],
+        "constraints": [],
+        "decisions": [],
+        "open_questions": [],
+        "next_steps": [],
+        "blockers": [],
+        "assumptions": [],
+        "knowledge": [],
         "updated_at": datetime.utcnow().isoformat() + "Z",
     }
     await get_db()["chats"].update_one(
         {"chat_id": chat_id},
-        {"$set": {"memory_summary": empty, "task_state": {}, "hierarchical_memory": {}, "updated_at": datetime.utcnow()}},
+        {
+            "$set": {
+                "memory_summary": empty,
+                "task_state": empty_task_state,
+                "hierarchical_memory": {},
+                "updated_at": datetime.utcnow(),
+            }
+        },
     )
-    return {"chat_id": chat_id, "memory_summary": empty, "task_state": {}}
+    return {"chat_id": chat_id, "memory_summary": empty, "task_state": empty_task_state}
 
 
 @router.get("/{chat_id}/tasks")

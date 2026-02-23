@@ -135,6 +135,7 @@ def _truncate(text: str, max_chars: int) -> str:
 def _extract_memory_lines(
     text: str,
     *,
+    role: str,
     decisions: list[str],
     open_questions: list[str],
     next_steps: list[str],
@@ -142,18 +143,33 @@ def _extract_memory_lines(
     constraints: list[str],
     blockers: list[str],
     assumptions: list[str],
+    knowledge: list[str],
 ) -> None:
     for raw in (_as_text(text)).splitlines():
         line = _clean_line(raw)
         if not line:
             continue
+        if len(line) > 420:
+            # Avoid flooding memory with stack traces / log dumps.
+            continue
         low = line.lower()
+        if re.match(r"^\d{4}-\d{2}-\d{2}", line) or low.startswith(("info:", "warning:", "error:", "traceback")):
+            continue
+        if low.startswith(("file \"", "line ", "at ", "chunk id:", "process exited")):
+            continue
 
         if (
             "decision" in low
             or low.startswith("we will")
             or low.startswith("we should")
             or low.startswith("decided")
+            or low.startswith("implemented")
+            or low.startswith("updated")
+            or low.startswith("fixed")
+            or low.startswith("resolved")
+            or low.startswith("created")
+            or low.startswith("added")
+            or low.startswith("changed")
         ):
             decisions.append(line)
         if "?" in line or "open question" in low:
@@ -163,6 +179,7 @@ def _extract_memory_lines(
             or low.startswith("todo")
             or low.startswith("action")
             or low.startswith("follow-up")
+            or low.startswith("next:")
         ):
             next_steps.append(line)
         if (
@@ -172,6 +189,8 @@ def _extract_memory_lines(
             or "i want" in low
             or "we need" in low
             or "must be able to" in low
+            or "let's " in low
+            or low.startswith("please ")
         ):
             goals.append(line)
         if "must" in low or "cannot" in low or "can't" in low or "should not" in low:
@@ -180,6 +199,20 @@ def _extract_memory_lines(
             blockers.append(line)
         if "assume" in low or low.startswith("assumption") or "probably" in low:
             assumptions.append(line)
+        if role == "assistant":
+            if (
+                re.search(r"[A-Za-z0-9_./-]+\.[A-Za-z0-9]+(?::\d+)?", line)
+                or "http://" in low
+                or "https://" in low
+                or " is " in low
+                or " are " in low
+                or "uses " in low
+                or "located" in low
+            ):
+                knowledge.append(line)
+        elif role == "user":
+            if "need to" in low or "want to" in low or "please" in low:
+                next_steps.append(line)
 
 
 def derive_memory_summary(messages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -190,6 +223,7 @@ def derive_memory_summary(messages: list[dict[str, Any]]) -> dict[str, Any]:
     constraints: list[str] = []
     blockers: list[str] = []
     assumptions: list[str] = []
+    knowledge: list[str] = []
 
     for msg in messages[-120:]:
         if not isinstance(msg, dict):
@@ -202,6 +236,7 @@ def derive_memory_summary(messages: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         _extract_memory_lines(
             content,
+            role=role,
             decisions=decisions,
             open_questions=open_questions,
             next_steps=next_steps,
@@ -209,6 +244,7 @@ def derive_memory_summary(messages: list[dict[str, Any]]) -> dict[str, Any]:
             constraints=constraints,
             blockers=blockers,
             assumptions=assumptions,
+            knowledge=knowledge,
         )
 
     return {
@@ -219,6 +255,7 @@ def derive_memory_summary(messages: list[dict[str, Any]]) -> dict[str, Any]:
         "constraints": _dedupe_keep_order(constraints, 10),
         "blockers": _dedupe_keep_order(blockers, 10),
         "assumptions": _dedupe_keep_order(assumptions, 10),
+        "knowledge": _dedupe_keep_order(knowledge, 14),
         "updated_at": _utc_iso(_utc_now()),
     }
 
@@ -234,6 +271,7 @@ def _normalize_task_state(raw: Any) -> dict[str, Any]:
         "next_steps": _dedupe_keep_order([_as_text(x) for x in (raw.get("next_steps") or [])], 20),
         "blockers": _dedupe_keep_order([_as_text(x) for x in (raw.get("blockers") or [])], 20),
         "assumptions": _dedupe_keep_order([_as_text(x) for x in (raw.get("assumptions") or [])], 20),
+        "knowledge": _dedupe_keep_order([_as_text(x) for x in (raw.get("knowledge") or [])], 24),
         "updated_at": _as_text(raw.get("updated_at")) or _utc_iso(_utc_now()),
     }
 
@@ -241,7 +279,7 @@ def _normalize_task_state(raw: Any) -> dict[str, Any]:
 def derive_task_state(messages: list[dict[str, Any]], previous_state: dict[str, Any] | None = None) -> dict[str, Any]:
     base = _normalize_task_state(previous_state or {})
     summary = derive_memory_summary(messages)
-    for key in ("goals", "constraints", "decisions", "open_questions", "next_steps", "blockers", "assumptions"):
+    for key in ("goals", "constraints", "decisions", "open_questions", "next_steps", "blockers", "assumptions", "knowledge"):
         merged = [*_as_list(base.get(key)), *_as_list(summary.get(key))]
         base[key] = _dedupe_keep_order([_as_text(x) for x in merged], 24)
     base["updated_at"] = _utc_iso(_utc_now())
@@ -436,7 +474,7 @@ async def _upsert_memory_entry(
 
 def _candidate_terms(question: str, branch: str, task_state: dict[str, Any]) -> list[str]:
     base = [question, branch]
-    for key in ("goals", "constraints", "decisions", "open_questions", "next_steps", "blockers"):
+    for key in ("goals", "constraints", "decisions", "open_questions", "next_steps", "blockers", "knowledge"):
         for item in _as_list(task_state.get(key))[:8]:
             base.append(_as_text(item))
     return _tokenize("\n".join(base))
@@ -593,6 +631,7 @@ def _render_hierarchical_context(
         ("next_steps", "Next Steps"),
         ("blockers", "Blockers"),
         ("assumptions", "Assumptions"),
+        ("knowledge", "Knowledge"),
     ):
         vals = [_as_text(x) for x in _as_list(task_state.get(key))][:8]
         if not vals:
@@ -603,7 +642,7 @@ def _render_hierarchical_context(
 
     lines.append("")
     lines.append("ROLLING_SUMMARY:")
-    for key in ("decisions", "open_questions", "next_steps"):
+    for key in ("decisions", "open_questions", "next_steps", "knowledge"):
         vals = [_as_text(x) for x in _as_list(memory_summary.get(key))][:8]
         if not vals:
             continue
@@ -684,9 +723,11 @@ async def build_hierarchical_context(
         "summary_decisions": len(_as_list(summary.get("decisions"))),
         "summary_open_questions": len(_as_list(summary.get("open_questions"))),
         "summary_next_steps": len(_as_list(summary.get("next_steps"))),
+        "summary_knowledge": len(_as_list(summary.get("knowledge"))),
         "task_goals": len(_as_list(state.get("goals"))),
         "task_constraints": len(_as_list(state.get("constraints"))),
         "task_blockers": len(_as_list(state.get("blockers"))),
+        "task_knowledge": len(_as_list(state.get("knowledge"))),
         "retrieved_items": len(_as_list(retrieved.get("items") if isinstance(retrieved, dict) else [])),
         "retrieval_conflicts": len(_as_list(retrieved.get("conflicts") if isinstance(retrieved, dict) else [])),
         "query_terms": _as_list(retrieved.get("query_terms") if isinstance(retrieved, dict) else []),
@@ -726,6 +767,7 @@ async def persist_hierarchical_memory(
         "next_step": ["chat", "branch"],
         "blocker": ["chat", "branch"],
         "assumption": ["chat", "branch", "user"],
+        "fact": ["chat", "branch", "project"],
     }
 
     entries: list[tuple[str, str, str, list[str], float]] = []
@@ -743,6 +785,8 @@ async def persist_hierarchical_memory(
         entries.append(("blocker", _as_text(text), "blockers", ["blocker", "task_state"], 0.82))
     for text in _as_list(task_state.get("assumptions"))[:8]:
         entries.append(("assumption", _as_text(text), "assumptions", ["assumption", "task_state"], 0.6))
+    for text in _as_list(task_state.get("knowledge"))[:16]:
+        entries.append(("fact", _as_text(text), "knowledge", ["knowledge", "task_state"], 0.74))
 
     for kind, text, _, tags, confidence in entries:
         if not text:
@@ -840,12 +884,16 @@ async def persist_hierarchical_memory(
             )
 
     # Keep memory summary data discoverable as branch/project memory hints.
-    for key in ("decisions", "open_questions", "next_steps"):
+    for key in ("decisions", "open_questions", "next_steps", "knowledge"):
         for item in _as_list(memory_summary.get(key))[:8]:
             text = _as_text(item)
             if not text:
                 continue
-            kind = "decision" if key == "decisions" else ("open_question" if key == "open_questions" else "next_step")
+            kind = (
+                "decision"
+                if key == "decisions"
+                else ("open_question" if key == "open_questions" else ("next_step" if key == "next_steps" else "fact"))
+            )
             for scope in ("branch", "project"):
                 await _upsert_memory_entry(
                     project_id=project_id,

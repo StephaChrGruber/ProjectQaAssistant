@@ -48,6 +48,8 @@ import type {
     ChatLlmProfileResponse,
     ChatTaskItem,
     ChatTasksResponse,
+    ChatTaskState,
+    ChatMemoryStateResponse,
     ChatMemorySummary,
     ChatMessage,
     ChatResponse,
@@ -134,6 +136,7 @@ export default function ProjectChatPage() {
     const [savingLlmProfile, setSavingLlmProfile] = useState(false)
     const [expandedSourceMessages, setExpandedSourceMessages] = useState<Record<string, boolean>>({})
     const [chatMemory, setChatMemory] = useState<ChatMemorySummary | null>(null)
+    const [chatTaskState, setChatTaskState] = useState<ChatTaskState | null>(null)
     const [sessionMemoryOpen, setSessionMemoryOpen] = useState(true)
     const [resettingMemory, setResettingMemory] = useState(false)
     const [savingMemory, setSavingMemory] = useState(false)
@@ -159,13 +162,6 @@ export default function ProjectChatPage() {
         }
         return `${(project?.llm_provider || "default LLM").toUpperCase()}${project?.llm_model ? ` · ${project.llm_model}` : ""}`
     }, [project?.llm_model, project?.llm_provider, selectedLlmProfile])
-    const memoryHasItems = useMemo(() => {
-        const d = chatMemory?.decisions || []
-        const q = chatMemory?.open_questions || []
-        const n = chatMemory?.next_steps || []
-        return d.length > 0 || q.length > 0 || n.length > 0
-    }, [chatMemory])
-
     useEffect(() => {
         if (!error) return
         const timer = window.setTimeout(() => setError(null), 9000)
@@ -274,17 +270,27 @@ export default function ProjectChatPage() {
         setPendingUserQuestion((doc.pending_user_question as PendingUserQuestion) || null)
     }, [])
 
+    const loadChatMemoryState = useCallback(async (chatId: string, forceRefresh = false) => {
+        const refreshQuery = forceRefresh ? "&refresh=1" : ""
+        const out = await backendJson<ChatMemoryStateResponse>(
+            `/api/chats/${encodeURIComponent(chatId)}/memory?user=${encodeURIComponent(userId)}${refreshQuery}`
+        )
+        setChatMemory((out.memory_summary as ChatMemorySummary) || null)
+        setChatTaskState((out.task_state as ChatTaskState) || null)
+    }, [userId])
+
     const resetChatMemory = useCallback(async () => {
         const chatId = selectedChatIdRef.current
         if (!chatId) return
         setResettingMemory(true)
         setError(null)
         try {
-            const out = await backendJson<{ memory_summary?: ChatMemorySummary }>(
+            const out = await backendJson<ChatMemoryStateResponse>(
                 `/api/chats/${encodeURIComponent(chatId)}/memory/reset?user=${encodeURIComponent(userId)}`,
                 { method: "POST" }
             )
-            setChatMemory((out.memory_summary as ChatMemorySummary) || { decisions: [], open_questions: [], next_steps: [] })
+            setChatMemory((out.memory_summary as ChatMemorySummary) || null)
+            setChatTaskState((out.task_state as ChatTaskState) || null)
         } catch (err) {
             setError(errText(err))
         } finally {
@@ -298,7 +304,7 @@ export default function ProjectChatPage() {
         setSavingMemory(true)
         setError(null)
         try {
-            const out = await backendJson<{ memory_summary?: ChatMemorySummary }>(
+            const out = await backendJson<ChatMemoryStateResponse>(
                 `/api/chats/${encodeURIComponent(chatId)}/memory?user=${encodeURIComponent(userId)}`,
                 {
                     method: "PATCH",
@@ -306,10 +312,16 @@ export default function ProjectChatPage() {
                         decisions: next.decisions || [],
                         open_questions: next.open_questions || [],
                         next_steps: next.next_steps || [],
+                        goals: next.goals || [],
+                        constraints: next.constraints || [],
+                        blockers: next.blockers || [],
+                        assumptions: next.assumptions || [],
+                        knowledge: next.knowledge || [],
                     }),
                 }
             )
             setChatMemory((out.memory_summary as ChatMemorySummary) || next)
+            setChatTaskState((out.task_state as ChatTaskState) || null)
         } catch (err) {
             setError(errText(err))
         } finally {
@@ -614,7 +626,7 @@ export default function ProjectChatPage() {
             setError(null)
             try {
                 await ensureChat(chatId, branch)
-                await loadMessages(chatId)
+                await Promise.all([loadMessages(chatId), loadChatMemoryState(chatId, true)])
             } catch (err) {
                 if (!cancelled) {
                     setMessages([])
@@ -631,7 +643,7 @@ export default function ProjectChatPage() {
         return () => {
             cancelled = true
         }
-    }, [branch, ensureChat, loadMessages, selectedChatId])
+    }, [branch, ensureChat, loadChatMemoryState, loadMessages, selectedChatId])
 
     useEffect(() => {
         if (!selectedChatId) return
@@ -893,12 +905,13 @@ export default function ProjectChatPage() {
                 }
                 setLastToolEvents(res.tool_events || [])
                 setChatMemory((res.memory_summary as ChatMemorySummary) || null)
+                setChatTaskState((res.task_state as ChatTaskState) || null)
                 setPendingUserQuestion((res.pending_user_question as PendingUserQuestion) || null)
                 if (activePending) {
                     setPendingAnswerInput("")
                 }
 
-                await loadMessages(selectedChatId)
+                await Promise.all([loadMessages(selectedChatId), loadChatMemoryState(selectedChatId)])
                 await loadChats(branch, selectedChatId)
             } catch (err) {
                 setError(errText(err))
@@ -909,6 +922,7 @@ export default function ProjectChatPage() {
         [
             branch,
             input,
+            loadChatMemoryState,
             loadChats,
             loadMessages,
             maybeAutoGenerateDocsFromQuestion,
@@ -927,12 +941,12 @@ export default function ProjectChatPage() {
         setError(null)
         try {
             await backendJson(`/api/chats/${encodeURIComponent(selectedChatId)}/clear`, { method: "POST" })
-            await loadMessages(selectedChatId)
+            await Promise.all([loadMessages(selectedChatId), loadChatMemoryState(selectedChatId)])
             await loadChats(branch, selectedChatId)
         } catch (err) {
             setError(errText(err))
         }
-    }, [branch, loadChats, loadMessages, selectedChatId])
+    }, [branch, loadChatMemoryState, loadChats, loadMessages, selectedChatId])
 
     const loadDocumentationFile = useCallback(
         async (path: string) => {
@@ -1214,7 +1228,7 @@ export default function ProjectChatPage() {
                     enabledToolCount={enabledToolCount}
                     docsGenerating={docsGenerating}
                     booting={booting}
-                    memoryHasItems={memoryHasItems}
+                    memoryHasItems={Boolean(selectedChatId)}
                     sessionMemoryOpen={sessionMemoryOpen}
                     onChangeLlmProfile={(next) => {
                         setSelectedLlmProfileId(next)
@@ -1250,9 +1264,10 @@ export default function ProjectChatPage() {
                         </Alert>
                     </Box>
                 )}
-                {memoryHasItems && sessionMemoryOpen && (
+                {Boolean(selectedChatId) && sessionMemoryOpen && (
                     <ChatSessionMemoryPanel
                         chatMemory={chatMemory}
+                        chatTaskState={chatTaskState}
                         onClose={() => setSessionMemoryOpen(false)}
                         onReset={() => void resetChatMemory()}
                         resetting={resettingMemory}
