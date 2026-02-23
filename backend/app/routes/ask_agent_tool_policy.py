@@ -239,7 +239,9 @@ def active_approved_tools(rows: list[dict[str, Any]], *, user: str) -> list[str]
         row_user = as_text(row.get("userId")).lower()
         if row_user and user_norm and row_user != user_norm:
             continue
-        if not bool(row.get("approved")):
+        # Backward-compatible: older rows may not have "approved" field at all.
+        # Treat missing/None as approved, but still respect explicit false.
+        if row.get("approved") is False:
             continue
         exp = row.get("expiresAt")
         if exp is not None:

@@ -294,7 +294,7 @@ async def ask_agent(req: AskReq):
     )
     approval_rows = await db["chat_tool_approvals"].find(
         {"chatId": chat_id, "expiresAt": {"$gt": datetime.utcnow()}},
-        {"toolName": 1, "userId": 1, "expiresAt": 1},
+        {"toolName": 1, "userId": 1, "expiresAt": 1, "approved": 1},
     ).to_list(length=400)
     approved_tools = _active_approved_tools(approval_rows, user=req.user)
     if approved_tools:

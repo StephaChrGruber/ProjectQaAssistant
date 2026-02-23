@@ -428,9 +428,13 @@ async def list_chat_tool_approvals(chat_id: str, x_dev_user: str | None = Header
     await _get_chat_owner_or_403(chat_id, x_dev_user)
     now = datetime.utcnow()
     rows = await list_active_tool_approvals(chat_id, now, limit=200)
+    caller = str(x_dev_user or "").strip().lower()
     items: list[dict[str, Any]] = []
     for row in rows:
         item = dict(row)
+        row_user = str(item.get("userId") or "").strip().lower()
+        if caller and row_user and row_user != caller:
+            continue
         for key in ("createdAt", "expiresAt"):
             if isinstance(item.get(key), datetime):
                 item[key] = item[key].isoformat() + "Z"
@@ -449,11 +453,12 @@ async def approve_chat_tool(chat_id: str, req: ChatToolApprovalReq, x_dev_user: 
     now = datetime.utcnow()
     exp = now if ttl <= 0 else now.replace(microsecond=0)
     exp = exp + timedelta(minutes=ttl)
+    approval_user = str(x_dev_user or chat.get("user") or "").strip()
 
     await upsert_tool_approval(
         chat_id=chat_id,
         tool_name=name,
-        user_id=str(chat.get("user") or ""),
+        user_id=approval_user,
         approved_by=str(x_dev_user or chat.get("user") or ""),
         created_at=now,
         expires_at=exp,
@@ -461,7 +466,7 @@ async def approve_chat_tool(chat_id: str, req: ChatToolApprovalReq, x_dev_user: 
     return {
         "chat_id": chat_id,
         "tool_name": name,
-        "user_id": str(chat.get("user") or ""),
+        "user_id": approval_user,
         "approved_by": str(x_dev_user or chat.get("user") or ""),
         "createdAt": now.isoformat() + "Z",
         "expiresAt": exp.isoformat() + "Z",
@@ -474,5 +479,6 @@ async def revoke_chat_tool_approval(chat_id: str, tool_name: str, x_dev_user: st
     name = _norm_tool_name(tool_name)
     if not name:
         raise HTTPException(status_code=400, detail="tool_name is required")
-    await revoke_tool_approval(chat_id, name, str(chat.get("user") or ""))
+    approval_user = str(x_dev_user or chat.get("user") or "").strip()
+    await revoke_tool_approval(chat_id, name, approval_user)
     return {"chat_id": chat_id, "tool_name": name, "revoked": True}

@@ -114,11 +114,10 @@ async def upsert_tool_approval(
 ) -> None:
     await get_db()["chat_tool_approvals"].update_one(
         {"chatId": chat_id, "toolName": tool_name, "userId": user_id},
-        {"$set": {"approvedBy": approved_by, "createdAt": created_at, "expiresAt": expires_at}},
+        {"$set": {"approved": True, "approvedBy": approved_by, "createdAt": created_at, "expiresAt": expires_at}},
         upsert=True,
     )
 
 
 async def revoke_tool_approval(chat_id: str, tool_name: str, user_id: str) -> None:
     await get_db()["chat_tool_approvals"].delete_many({"chatId": chat_id, "toolName": tool_name, "userId": user_id})
-
