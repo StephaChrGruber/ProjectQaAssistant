@@ -15,6 +15,7 @@ export async function POST(req: Request) {
         llm_api_key: body.llm_api_key ?? body.llmApiKey ?? null,
         llm_model: body.llm_model ?? body.llmModel ?? null,
         llm_profile_id: body.llm_profile_id ?? body.llmProfileId ?? null,
+        dry_run: body.dry_run ?? body.dryRun ?? null,
         pending_question_id: body.pending_question_id ?? body.pendingQuestionId ?? null,
         pending_answer: body.pending_answer ?? body.pendingAnswer ?? null,
 

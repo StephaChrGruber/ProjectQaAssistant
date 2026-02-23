@@ -43,7 +43,10 @@ import {
     type ConfluenceForm,
     type ConnectorDoc,
     type ConnectorsResponse,
+    type ConnectorHealthResponse,
     type EvalRunResponse,
+    type FeatureFlags,
+    type FeatureFlagsResponse,
     type GitForm,
     type JiraForm,
     type LlmOptionsResponse,
@@ -112,6 +115,16 @@ export default function ProjectSettingsPage() {
     const [runningEvaluations, setRunningEvaluations] = useState(false)
     const [latestEvalRun, setLatestEvalRun] = useState<EvalRunResponse | null>(null)
     const [runningIncrementalIngest, setRunningIncrementalIngest] = useState(false)
+    const [featureFlags, setFeatureFlags] = useState<FeatureFlags>({
+        enable_audit_events: true,
+        enable_connector_health: true,
+        enable_memory_controls: true,
+        dry_run_tools_default: false,
+        require_approval_for_write_tools: false,
+    })
+    const [savingFeatureFlags, setSavingFeatureFlags] = useState(false)
+    const [connectorHealth, setConnectorHealth] = useState<ConnectorHealthResponse | null>(null)
+    const [loadingConnectorHealth, setLoadingConnectorHealth] = useState(false)
 
     const projectLabel = useMemo(
         () => project?.name || project?.key || projectId,
@@ -289,6 +302,44 @@ export default function ProjectSettingsPage() {
         })
     }, [projectId])
 
+    const loadFeatureFlags = useCallback(async () => {
+        if (!me?.isGlobalAdmin) return
+        try {
+            const out = await backendJson<FeatureFlagsResponse>(`/api/admin/projects/${projectId}/feature-flags`)
+            if (out?.feature_flags) {
+                setFeatureFlags(out.feature_flags)
+                setProject((prev) =>
+                    prev
+                        ? {
+                              ...prev,
+                              extra: {
+                                  ...(prev.extra || {}),
+                                  feature_flags: out.feature_flags,
+                              },
+                          }
+                        : prev
+                )
+            }
+        } catch (err) {
+            setError(errText(err))
+        }
+    }, [me?.isGlobalAdmin, projectId])
+
+    const refreshConnectorHealth = useCallback(async () => {
+        if (!me?.isGlobalAdmin) return
+        setLoadingConnectorHealth(true)
+        try {
+            const out = await backendJson<ConnectorHealthResponse>(
+                `/api/admin/projects/${projectId}/connectors/health`
+            )
+            setConnectorHealth(out)
+        } catch (err) {
+            setError(errText(err))
+        } finally {
+            setLoadingConnectorHealth(false)
+        }
+    }, [me?.isGlobalAdmin, projectId])
+
     const loadQaMetrics = useCallback(async () => {
         if (!me?.isGlobalAdmin) return
         setLoadingQaMetrics(true)
@@ -376,6 +427,8 @@ export default function ProjectSettingsPage() {
                         loadLlmOptions(),
                         loadLlmProfiles(),
                         loadConnectors(projectRes.default_branch || "main"),
+                        loadFeatureFlags(),
+                        refreshConnectorHealth(),
                     ])
                 }
             } catch (err) {
@@ -387,7 +440,7 @@ export default function ProjectSettingsPage() {
         return () => {
             cancelled = true
         }
-    }, [loadConnectors, loadLlmOptions, loadLlmProfiles, projectId])
+    }, [loadConnectors, loadFeatureFlags, loadLlmOptions, loadLlmProfiles, projectId, refreshConnectorHealth])
 
     useEffect(() => {
         void loadChats().catch((err) => setError(errText(err)))
@@ -432,6 +485,7 @@ export default function ProjectSettingsPage() {
                             read_only_for_non_admin: Boolean(editForm.security_read_only_non_admin),
                             allow_write_tools_for_members: Boolean(editForm.security_allow_write_members),
                         },
+                        feature_flags: featureFlags,
                     },
                 }),
             })
@@ -621,6 +675,39 @@ export default function ProjectSettingsPage() {
         }
     }
 
+    async function saveFeatureFlags() {
+        if (!me?.isGlobalAdmin) return
+        setSavingFeatureFlags(true)
+        setError(null)
+        setNotice(null)
+        try {
+            const out = await backendJson<FeatureFlagsResponse>(`/api/admin/projects/${projectId}/feature-flags`, {
+                method: "PATCH",
+                body: JSON.stringify(featureFlags),
+            })
+            if (out?.feature_flags) {
+                setFeatureFlags(out.feature_flags)
+                setProject((prev) =>
+                    prev
+                        ? {
+                              ...prev,
+                              extra: {
+                                  ...(prev.extra || {}),
+                                  feature_flags: out.feature_flags,
+                              },
+                          }
+                        : prev
+                )
+            }
+            setNotice("Feature flags updated.")
+            await refreshConnectorHealth()
+        } catch (err) {
+            setError(errText(err))
+        } finally {
+            setSavingFeatureFlags(false)
+        }
+    }
+
     const onSelectChat = useCallback(
         (chat: DrawerChat) => {
             const targetBranch = chat.branch || branch
@@ -719,6 +806,13 @@ export default function ProjectSettingsPage() {
                             runEvaluations={runEvaluations}
                             runningEvaluations={runningEvaluations}
                             latestEvalRun={latestEvalRun}
+                            featureFlags={featureFlags}
+                            setFeatureFlags={setFeatureFlags}
+                            saveFeatureFlags={saveFeatureFlags}
+                            savingFeatureFlags={savingFeatureFlags}
+                            connectorHealth={connectorHealth}
+                            loadingConnectorHealth={loadingConnectorHealth}
+                            refreshConnectorHealth={refreshConnectorHealth}
                             DetailCardComponent={DetailCard}
                         />
                     )}

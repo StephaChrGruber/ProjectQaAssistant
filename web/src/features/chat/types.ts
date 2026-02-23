@@ -108,6 +108,22 @@ export type PendingUserQuestion = {
   created_at?: string
 }
 
+export type ChatTaskItem = {
+  id: string
+  title: string
+  details?: string
+  status: "open" | "in_progress" | "blocked" | "done" | "cancelled" | string
+  assignee?: string | null
+  due_date?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export type ChatTasksResponse = {
+  chat_id: string
+  items?: ChatTaskItem[]
+}
+
 export type ToolCatalogItem = {
   name: string
   description?: string
@@ -209,4 +225,3 @@ export type LangRule = {
   kind: Exclude<TokenKind, "plain">
   re: RegExp
 }
-

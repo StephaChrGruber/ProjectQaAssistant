@@ -80,9 +80,14 @@ from ..models.tools import (
     RepoTreeResponse,
     RunTestsRequest,
     RunTestsResponse,
+    ListChatTasksRequest,
+    ListChatTasksResponse,
+    ChatTaskItem,
     SymbolSearchHit,
     SymbolSearchRequest,
     SymbolSearchResponse,
+    UpdateChatTaskRequest,
+    UpdateChatTaskResponse,
     WriteDocumentationFileRequest,
     WriteDocumentationFileResponse,
 )
@@ -377,6 +382,30 @@ async def _find_enabled_connector(project_id: str, connector_type: str) -> dict[
 
 def _utc_iso_now() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
+
+
+def _iso_value(raw: Any) -> str:
+    if isinstance(raw, datetime):
+        if raw.tzinfo is None:
+            return raw.replace(tzinfo=timezone.utc).isoformat()
+        return raw.astimezone(timezone.utc).isoformat()
+    s = str(raw or "").strip()
+    return s or _utc_iso_now()
+
+
+def _task_item_from_doc(doc: dict[str, Any]) -> ChatTaskItem:
+    return ChatTaskItem(
+        id=str(doc.get("_id") or doc.get("id") or ""),
+        project_id=str(doc.get("project_id") or ""),
+        chat_id=(str(doc.get("chat_id") or "").strip() or None),
+        title=str(doc.get("title") or ""),
+        details=str(doc.get("details") or ""),
+        status=str(doc.get("status") or "open"),
+        assignee=(str(doc.get("assignee") or "").strip() or None),
+        due_date=(str(doc.get("due_date") or "").strip() or None),
+        created_at=_iso_value(doc.get("created_at")),
+        updated_at=_iso_value(doc.get("updated_at")),
+    )
 
 
 def _is_browser_local_repo_path(repo_path: str | None) -> bool:
@@ -3075,3 +3104,74 @@ async def create_chat_task(req: CreateChatTaskRequest) -> CreateChatTaskResponse
     res = await db["chat_tasks"].insert_one(doc)
     task_id = str(res.inserted_id)
     return CreateChatTaskResponse(id=task_id, title=title, status="open", created_at=now)
+
+
+async def list_chat_tasks(req: ListChatTasksRequest) -> ListChatTasksResponse:
+    db = get_db()
+    q: dict[str, Any] = {"project_id": req.project_id}
+    if (req.chat_id or "").strip():
+        q["chat_id"] = (req.chat_id or "").strip()
+    if (req.status or "").strip():
+        q["status"] = (req.status or "").strip().lower()
+    if (req.assignee or "").strip():
+        q["assignee"] = (req.assignee or "").strip()
+    limit = max(1, min(int(req.limit or 50), 500))
+    rows = await db["chat_tasks"].find(q).sort("updated_at", -1).limit(limit).to_list(length=limit)
+    items = [_task_item_from_doc(row) for row in rows if isinstance(row, dict)]
+    return ListChatTasksResponse(total=len(items), items=items)
+
+
+async def update_chat_task(req: UpdateChatTaskRequest) -> UpdateChatTaskResponse:
+    task_id = (req.task_id or "").strip()
+    if not task_id:
+        raise RuntimeError("task_id is required")
+
+    q: dict[str, Any] = {"project_id": req.project_id}
+    if ObjectId.is_valid(task_id):
+        q["_id"] = ObjectId(task_id)
+    else:
+        q["id"] = task_id
+
+    db = get_db()
+    row = await db["chat_tasks"].find_one(q)
+    if not isinstance(row, dict):
+        raise RuntimeError("Task not found")
+
+    changes: dict[str, Any] = {}
+    if req.title is not None:
+        title = str(req.title or "").strip()
+        if not title:
+            raise RuntimeError("title must not be empty")
+        changes["title"] = title
+
+    if req.details is not None:
+        next_details = str(req.details or "").strip()
+        if bool(req.append_details) and next_details:
+            current = str(row.get("details") or "").strip()
+            if current:
+                next_details = f"{current}\n\n{next_details}"
+        changes["details"] = next_details
+
+    if req.status is not None:
+        status = str(req.status or "").strip().lower()
+        if not status:
+            raise RuntimeError("status must not be empty")
+        if status not in {"open", "in_progress", "blocked", "done", "cancelled"}:
+            raise RuntimeError("status must be one of: open, in_progress, blocked, done, cancelled")
+        changes["status"] = status
+
+    if req.assignee is not None:
+        changes["assignee"] = str(req.assignee or "").strip() or None
+
+    if req.due_date is not None:
+        changes["due_date"] = str(req.due_date or "").strip() or None
+
+    if not changes:
+        return UpdateChatTaskResponse(item=_task_item_from_doc(row))
+
+    changes["updated_at"] = _utc_iso_now()
+    await db["chat_tasks"].update_one({"_id": row["_id"]}, {"$set": changes})
+    next_row = await db["chat_tasks"].find_one({"_id": row["_id"]})
+    if not isinstance(next_row, dict):
+        raise RuntimeError("Task update failed")
+    return UpdateChatTaskResponse(item=_task_item_from_doc(next_row))

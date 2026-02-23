@@ -525,6 +525,48 @@ class CreateChatTaskResponse(BaseModel):
     created_at: str
 
 
+class ChatTaskItem(BaseModel):
+    id: str
+    project_id: str
+    chat_id: Optional[str] = None
+    title: str
+    details: str = ""
+    status: str = "open"
+    assignee: Optional[str] = None
+    due_date: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class ListChatTasksRequest(BaseModel):
+    project_id: str
+    chat_id: Optional[str] = None
+    status: Optional[str] = None
+    assignee: Optional[str] = None
+    limit: int = 50
+
+
+class ListChatTasksResponse(BaseModel):
+    total: int
+    items: List[ChatTaskItem] = Field(default_factory=list)
+
+
+class UpdateChatTaskRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    project_id: str
+    task_id: str = Field(alias="id")
+    title: Optional[str] = None
+    details: Optional[str] = None
+    append_details: bool = False
+    status: Optional[str] = None
+    assignee: Optional[str] = None
+    due_date: Optional[str] = None
+
+
+class UpdateChatTaskResponse(BaseModel):
+    item: ChatTaskItem
+
+
 class ToolError(BaseModel):
     code: str
     message: str

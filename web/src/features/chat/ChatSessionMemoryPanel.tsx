@@ -1,15 +1,17 @@
 "use client"
 
-import { Box, IconButton, Paper, Stack, Typography } from "@mui/material"
+import { Box, Button, IconButton, Paper, Stack, Typography } from "@mui/material"
 import CloseRounded from "@mui/icons-material/CloseRounded"
 import type { ChatMemorySummary } from "@/features/chat/types"
 
 type ChatSessionMemoryPanelProps = {
     chatMemory: ChatMemorySummary | null
     onClose: () => void
+    onReset?: () => void
+    resetting?: boolean
 }
 
-export function ChatSessionMemoryPanel({ chatMemory, onClose }: ChatSessionMemoryPanelProps) {
+export function ChatSessionMemoryPanel({ chatMemory, onClose, onReset, resetting = false }: ChatSessionMemoryPanelProps) {
     return (
         <Box sx={{ px: { xs: 1.5, md: 3 }, pt: 1.25 }}>
             <Paper variant="outlined" sx={{ p: { xs: 1.2, md: 1.5 }, maxWidth: 980, mx: "auto" }}>
@@ -17,9 +19,16 @@ export function ChatSessionMemoryPanel({ chatMemory, onClose }: ChatSessionMemor
                     <Typography variant="overline" color="primary" sx={{ letterSpacing: "0.12em" }}>
                         Session Memory
                     </Typography>
-                    <IconButton size="small" onClick={onClose}>
-                        <CloseRounded fontSize="small" />
-                    </IconButton>
+                    <Stack direction="row" spacing={0.6} alignItems="center">
+                        {onReset ? (
+                            <Button size="small" variant="outlined" onClick={onReset} disabled={resetting}>
+                                {resetting ? "Resetting..." : "Reset"}
+                            </Button>
+                        ) : null}
+                        <IconButton size="small" onClick={onClose}>
+                            <CloseRounded fontSize="small" />
+                        </IconButton>
+                    </Stack>
                 </Stack>
                 <Box
                     sx={{
@@ -64,4 +73,3 @@ export function ChatSessionMemoryPanel({ chatMemory, onClose }: ChatSessionMemor
         </Box>
     )
 }
-

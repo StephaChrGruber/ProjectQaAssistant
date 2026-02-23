@@ -2,8 +2,10 @@ import logging
 from fastapi import APIRouter, HTTPException, Header
 from datetime import datetime, timedelta
 from typing import Any
+from bson import ObjectId
 from ..models.chat import ChatDoc, AppendReq, ChatResponse, ChatMessage
 from pydantic import BaseModel, Field
+from ..db import get_db
 from ..repositories.chat_repository import (
     append_chat_message,
     clear_chat_messages,
@@ -18,6 +20,7 @@ from ..repositories.chat_repository import (
     update_chat_tool_policy,
     upsert_tool_approval,
 )
+from ..services.feature_flags import load_project_feature_flags
 
 router = APIRouter(prefix="/chats", tags=["chats"])
 logger = logging.getLogger(__name__)
@@ -41,6 +44,28 @@ class ChatLlmProfileReq(BaseModel):
 class ChatToolApprovalReq(BaseModel):
     tool_name: str
     ttl_minutes: int = 30
+
+
+class CreateChatTaskReq(BaseModel):
+    title: str
+    details: str = ""
+    assignee: str | None = None
+    due_date: str | None = None
+    status: str = "open"
+
+
+class UpdateChatTaskReq(BaseModel):
+    title: str | None = None
+    details: str | None = None
+    status: str | None = None
+    assignee: str | None = None
+    due_date: str | None = None
+
+
+class MemoryUpdateReq(BaseModel):
+    decisions: list[str] | None = None
+    open_questions: list[str] | None = None
+    next_steps: list[str] | None = None
 
 
 def _norm_tool_name(v: str) -> str:
@@ -101,6 +126,41 @@ def _clean_policy(req: ChatToolPolicyReq) -> dict[str, Any]:
     }
 
 
+def _clean_memory_list(raw: list[str] | None, *, max_items: int = 24, max_chars: int = 400) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        compact = " ".join(text.split())
+        if not compact:
+            continue
+        if len(compact) > max_chars:
+            compact = compact[:max_chars].rstrip() + "..."
+        if compact in seen:
+            continue
+        seen.add(compact)
+        out.append(compact)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _serialize_task_row(row: dict[str, Any]) -> dict[str, Any]:
+    item = dict(row)
+    oid = item.get("_id")
+    if oid is not None:
+        item["id"] = str(oid)
+    item.pop("_id", None)
+    for key in ("created_at", "updated_at"):
+        if isinstance(item.get(key), datetime):
+            item[key] = item[key].isoformat() + "Z"
+    return item
+
+
 async def _ensure_chat_doc(payload: ChatDoc):
     return await repo_ensure_chat(payload.model_dump())
 
@@ -148,6 +208,146 @@ async def get_chat_memory(chat_id: str):
     task_state = doc.get("task_state") if isinstance(doc.get("task_state"), dict) else {}
     hierarchical = doc.get("hierarchical_memory") if isinstance(doc.get("hierarchical_memory"), dict) else {}
     return {"chat_id": chat_id, "memory_summary": summary, "task_state": task_state, "hierarchical_memory": hierarchical}
+
+
+@router.patch("/{chat_id}/memory")
+async def patch_chat_memory(chat_id: str, req: MemoryUpdateReq, x_dev_user: str | None = Header(default=None)):
+    chat = await _get_chat_owner_or_403(chat_id, x_dev_user)
+    project_id = str(chat.get("project_id") or "")
+    flags = await load_project_feature_flags(project_id) if project_id else {}
+    if not bool(flags.get("enable_memory_controls", True)):
+        raise HTTPException(status_code=403, detail="Memory controls are disabled for this project")
+    doc = await repo_get_chat(chat_id, {"_id": 0, "memory_summary": 1})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    memory = doc.get("memory_summary") if isinstance(doc.get("memory_summary"), dict) else {}
+    next_summary = {
+        "decisions": _clean_memory_list(req.decisions if req.decisions is not None else memory.get("decisions") or []),
+        "open_questions": _clean_memory_list(
+            req.open_questions if req.open_questions is not None else memory.get("open_questions") or []
+        ),
+        "next_steps": _clean_memory_list(req.next_steps if req.next_steps is not None else memory.get("next_steps") or []),
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+    }
+    await get_db()["chats"].update_one({"chat_id": chat_id}, {"$set": {"memory_summary": next_summary, "updated_at": datetime.utcnow()}})
+    return {"chat_id": chat_id, "memory_summary": next_summary}
+
+
+@router.post("/{chat_id}/memory/reset")
+async def reset_chat_memory(chat_id: str, x_dev_user: str | None = Header(default=None)):
+    chat = await _get_chat_owner_or_403(chat_id, x_dev_user)
+    project_id = str(chat.get("project_id") or "")
+    flags = await load_project_feature_flags(project_id) if project_id else {}
+    if not bool(flags.get("enable_memory_controls", True)):
+        raise HTTPException(status_code=403, detail="Memory controls are disabled for this project")
+    empty = {
+        "decisions": [],
+        "open_questions": [],
+        "next_steps": [],
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+    }
+    await get_db()["chats"].update_one(
+        {"chat_id": chat_id},
+        {"$set": {"memory_summary": empty, "task_state": {}, "hierarchical_memory": {}, "updated_at": datetime.utcnow()}},
+    )
+    return {"chat_id": chat_id, "memory_summary": empty, "task_state": {}}
+
+
+@router.get("/{chat_id}/tasks")
+async def list_chat_tasks(
+    chat_id: str,
+    status: str | None = None,
+    limit: int = 120,
+    x_dev_user: str | None = Header(default=None),
+):
+    chat = await _get_chat_owner_or_403(chat_id, x_dev_user)
+    q: dict[str, Any] = {
+        "project_id": str(chat.get("project_id") or ""),
+        "chat_id": chat_id,
+    }
+    if (status or "").strip():
+        q["status"] = status.strip().lower()
+    safe_limit = max(1, min(int(limit or 120), 500))
+    rows = await get_db()["chat_tasks"].find(q).sort("updated_at", -1).limit(safe_limit).to_list(length=safe_limit)
+    items = [_serialize_task_row(row) for row in rows if isinstance(row, dict)]
+    return {"chat_id": chat_id, "items": items}
+
+
+@router.post("/{chat_id}/tasks")
+async def create_chat_task(chat_id: str, req: CreateChatTaskReq, x_dev_user: str | None = Header(default=None)):
+    chat = await _get_chat_owner_or_403(chat_id, x_dev_user)
+    title = str(req.title or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+
+    now = datetime.utcnow().isoformat() + "Z"
+    doc = {
+        "project_id": str(chat.get("project_id") or ""),
+        "chat_id": chat_id,
+        "title": title,
+        "details": str(req.details or "").strip(),
+        "assignee": str(req.assignee or "").strip() or None,
+        "due_date": str(req.due_date or "").strip() or None,
+        "status": str(req.status or "open").strip().lower() or "open",
+        "created_at": now,
+        "updated_at": now,
+    }
+    if doc["status"] not in {"open", "in_progress", "blocked", "done", "cancelled"}:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    res = await get_db()["chat_tasks"].insert_one(doc)
+    row = await get_db()["chat_tasks"].find_one({"_id": res.inserted_id})
+    if not isinstance(row, dict):
+        raise HTTPException(status_code=500, detail="Failed to create task")
+    return {"chat_id": chat_id, "item": _serialize_task_row(row)}
+
+
+@router.patch("/{chat_id}/tasks/{task_id}")
+async def patch_chat_task(
+    chat_id: str,
+    task_id: str,
+    req: UpdateChatTaskReq,
+    x_dev_user: str | None = Header(default=None),
+):
+    chat = await _get_chat_owner_or_403(chat_id, x_dev_user)
+    q: dict[str, Any] = {
+        "project_id": str(chat.get("project_id") or ""),
+        "chat_id": chat_id,
+    }
+    if ObjectId.is_valid(task_id):
+        q["_id"] = ObjectId(task_id)
+    else:
+        q["id"] = task_id
+
+    row = await get_db()["chat_tasks"].find_one(q)
+    if not isinstance(row, dict):
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    patch: dict[str, Any] = {}
+    if req.title is not None:
+        title = str(req.title or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title must not be empty")
+        patch["title"] = title
+    if req.details is not None:
+        patch["details"] = str(req.details or "").strip()
+    if req.status is not None:
+        status = str(req.status or "").strip().lower()
+        if status not in {"open", "in_progress", "blocked", "done", "cancelled"}:
+            raise HTTPException(status_code=400, detail="Invalid status")
+        patch["status"] = status
+    if req.assignee is not None:
+        patch["assignee"] = str(req.assignee or "").strip() or None
+    if req.due_date is not None:
+        patch["due_date"] = str(req.due_date or "").strip() or None
+    if not patch:
+        return {"chat_id": chat_id, "item": _serialize_task_row(row)}
+    patch["updated_at"] = datetime.utcnow().isoformat() + "Z"
+    await get_db()["chat_tasks"].update_one({"_id": row["_id"]}, {"$set": patch})
+    next_row = await get_db()["chat_tasks"].find_one({"_id": row["_id"]})
+    if not isinstance(next_row, dict):
+        raise HTTPException(status_code=500, detail="Task update failed")
+    return {"chat_id": chat_id, "item": _serialize_task_row(next_row)}
 
 @router.post("/ensure", response_model=ChatResponse)
 async def ensure_chat(payload: ChatDoc):

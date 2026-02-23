@@ -18,6 +18,7 @@ from ..services.documentation import (
     list_project_documentation,
     read_project_documentation_file,
 )
+from ..services.audit_events import list_audit_events as list_project_audit_events
 from ..services.project_metrics import (
     build_qa_metrics_payload,
     summarize_tool_event_rows,
@@ -185,6 +186,29 @@ async def list_tool_events(
         out.append(item)
 
     return {"project_id": project_id, "items": out}
+
+
+@router.get("/{project_id}/audit-events")
+async def list_audit_events(
+    project_id: str,
+    branch: str | None = None,
+    chat_id: str | None = None,
+    event: str | None = None,
+    limit: int = 120,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+
+    await _load_project_or_404(project_id)
+    items = await list_project_audit_events(
+        project_id=project_id,
+        branch=branch,
+        chat_id=chat_id,
+        event=event,
+        limit=max(1, min(int(limit or 120), 1000)),
+    )
+    return {"project_id": project_id, "items": items}
 
 
 @router.get("/{project_id}/tool-events/summary")

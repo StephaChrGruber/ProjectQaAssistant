@@ -5,12 +5,19 @@ const DEV_USER = process.env.POC_DEV_USER || "dev@local"
 
 export async function GET(
     req: Request,
-    { params }: { params: Promise<{ chatId: string }> }
+    ctx: { params: Promise<{ chatId: string }> }
 ) {
-    const { chatId } = await params
+    const { chatId } = await ctx.params
     const inUrl = new URL(req.url)
+    const upstream = new URL(`${BACKEND}/chats/${encodeURIComponent(chatId)}/tasks`)
+    for (const key of ["status", "limit"]) {
+        const value = inUrl.searchParams.get(key)
+        if (value != null && value !== "") {
+            upstream.searchParams.set(key, value)
+        }
+    }
     const user = inUrl.searchParams.get("user") || DEV_USER
-    const res = await fetch(`${BACKEND}/chats/${encodeURIComponent(chatId)}/memory`, {
+    const res = await fetch(upstream.toString(), {
         headers: { "X-Dev-User": user },
         cache: "no-store",
     })
@@ -21,16 +28,16 @@ export async function GET(
     })
 }
 
-export async function PATCH(
+export async function POST(
     req: Request,
-    { params }: { params: Promise<{ chatId: string }> }
+    ctx: { params: Promise<{ chatId: string }> }
 ) {
-    const { chatId } = await params
+    const { chatId } = await ctx.params
     const inUrl = new URL(req.url)
     const user = inUrl.searchParams.get("user") || DEV_USER
     const body = await req.text()
-    const res = await fetch(`${BACKEND}/chats/${encodeURIComponent(chatId)}/memory`, {
-        method: "PATCH",
+    const res = await fetch(`${BACKEND}/chats/${encodeURIComponent(chatId)}/tasks`, {
+        method: "POST",
         headers: {
             "X-Dev-User": user,
             "Content-Type": req.headers.get("content-type") || "application/json",

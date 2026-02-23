@@ -168,6 +168,39 @@ export type EvalRunResponse = {
   }
 }
 
+export type FeatureFlags = {
+  enable_audit_events: boolean
+  enable_connector_health: boolean
+  enable_memory_controls: boolean
+  dry_run_tools_default: boolean
+  require_approval_for_write_tools: boolean
+}
+
+export type FeatureFlagsResponse = {
+  project_id: string
+  feature_flags: FeatureFlags
+  defaults?: FeatureFlags
+}
+
+export type ConnectorHealthItem = {
+  id: string
+  type: string
+  isEnabled: boolean
+  ok: boolean
+  severity?: string
+  detail?: string
+  latency_ms?: number
+  updatedAt?: string | null
+}
+
+export type ConnectorHealthResponse = {
+  project_id: string
+  total: number
+  ok: number
+  failed: number
+  items: ConnectorHealthItem[]
+}
+
 export const FALLBACK_OLLAMA_MODELS = ["llama3.2:3b", "llama3.1:8b", "mistral:7b", "qwen2.5:7b"]
 export const FALLBACK_OPENAI_MODELS = ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1", "gpt-4o"]
 
@@ -280,4 +313,3 @@ export function dedupeChatsById(items: DrawerChat[]): DrawerChat[] {
   }
   return out
 }
-

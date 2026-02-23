@@ -36,6 +36,7 @@ from ..models.tools import (
     GitStageFilesRequest,
     GitStatusRequest,
     GitUnstageFilesRequest,
+    ListChatTasksRequest,
     KeywordSearchRequest,
     ListToolsRequest,
     ListToolsResponse,
@@ -51,6 +52,7 @@ from ..models.tools import (
     SymbolSearchRequest,
     ToolEnvelope,
     ToolError,
+    UpdateChatTaskRequest,
     WriteDocumentationFileRequest,
 )
 from .tool_exec import (
@@ -75,6 +77,7 @@ from .tool_exec import (
     git_stage_files,
     git_status,
     git_unstage_files,
+    list_chat_tasks,
     keyword_search,
     open_file,
     request_user_input,
@@ -84,6 +87,7 @@ from .tool_exec import (
     repo_tree,
     run_tests,
     symbol_search,
+    update_chat_task,
     write_documentation_file,
 )
 
@@ -196,6 +200,8 @@ class ToolRuntime:
         read_only_only = bool(policy.get("read_only_only"))
         if read_only_only and not spec.read_only:
             return False, "read_only_only_mode"
+        if bool(policy.get("require_approval_for_write_tools")) and not spec.read_only and name not in approved:
+            return False, "write_approval_required"
         if spec.require_approval and name not in approved:
             return False, "approval_required"
 
@@ -430,6 +436,33 @@ class ToolRuntime:
                     retryable=False,
                     details=details,
                 ),
+            )
+
+        if bool(policy.get("dry_run")) and not spec.read_only:
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            dry_result = {
+                "dry_run": True,
+                "skipped": True,
+                "message": "Dry-run enabled. Tool execution was skipped.",
+                "tool": name,
+                "args": merged,
+            }
+            result_raw = json.dumps(dry_result, ensure_ascii=False, default=str)
+            logger.info(
+                "tool.dry_run_skip tool=%s duration_ms=%s input_bytes=%s result_bytes=%s",
+                name,
+                duration_ms,
+                len(input_raw.encode("utf-8")),
+                len(result_raw.encode("utf-8")),
+            )
+            return ToolEnvelope(
+                tool=name,
+                ok=True,
+                duration_ms=duration_ms,
+                attempts=1,
+                input_bytes=len(input_raw.encode("utf-8")),
+                result_bytes=len(result_raw.encode("utf-8")),
+                result=dry_result,
             )
 
         attempts = 0
@@ -1081,6 +1114,29 @@ def build_default_tool_runtime(
             description="Creates an actionable task item linked to the current chat.",
             model=CreateChatTaskRequest,
             handler=create_chat_task,
+            timeout_sec=20,
+            rate_limit_per_min=40,
+            read_only=False,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="list_chat_tasks",
+            description="Lists task items for the current project/chat.",
+            model=ListChatTasksRequest,
+            handler=list_chat_tasks,
+            timeout_sec=20,
+            rate_limit_per_min=80,
+            max_retries=1,
+            cache_ttl_sec=5,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="update_chat_task",
+            description="Updates an existing chat task (status/title/details/assignee/due date).",
+            model=UpdateChatTaskRequest,
+            handler=update_chat_task,
             timeout_sec=20,
             rate_limit_per_min=40,
             read_only=False,

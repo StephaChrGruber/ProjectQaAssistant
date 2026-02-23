@@ -32,6 +32,13 @@ async def init_db():
             SystemToolConfig,
         ],
     )
+    # Non-Beanie collections used by runtime/analytics.
+    await db["tool_events"].create_index([("project_id", 1), ("created_at", -1)], name="tool_events_project_recent")
+    await db["tool_events"].create_index([("chat_id", 1), ("created_at", -1)], name="tool_events_chat_recent")
+    await db["chat_tasks"].create_index([("project_id", 1), ("chat_id", 1), ("updated_at", -1)], name="chat_tasks_project_chat")
+    await db["chat_tasks"].create_index([("status", 1), ("updated_at", -1)], name="chat_tasks_status_recent")
+    await db["audit_events"].create_index([("project_id", 1), ("created_at", -1)], name="audit_project_recent")
+    await db["audit_events"].create_index([("chat_id", 1), ("created_at", -1)], name="audit_chat_recent")
 
 def get_client() -> AsyncIOMotorClient:
     global _client

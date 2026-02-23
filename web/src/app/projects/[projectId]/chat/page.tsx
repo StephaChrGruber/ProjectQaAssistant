@@ -34,6 +34,7 @@ import {
 } from "@/lib/local-repo-bridge"
 import { ChatMessagesPane } from "@/features/chat/ChatMessagesPane"
 import { ChatToolsDialog } from "@/features/chat/ChatToolsDialog"
+import { ChatTasksDialog } from "@/features/chat/ChatTasksDialog"
 import { DocumentationDialog } from "@/features/chat/DocumentationDialog"
 import { ChatHeaderBar } from "@/features/chat/ChatHeaderBar"
 import { ChatToolEventsBanner } from "@/features/chat/ChatToolEventsBanner"
@@ -45,6 +46,8 @@ import type {
     BranchesResponse,
     ChatAnswerSource,
     ChatLlmProfileResponse,
+    ChatTaskItem,
+    ChatTasksResponse,
     ChatMemorySummary,
     ChatMessage,
     ChatResponse,
@@ -113,6 +116,11 @@ export default function ProjectChatPage() {
     const [toolsLoading, setToolsLoading] = useState(false)
     const [toolsSaving, setToolsSaving] = useState(false)
     const [toolsError, setToolsError] = useState<string | null>(null)
+    const [tasksOpen, setTasksOpen] = useState(false)
+    const [tasksLoading, setTasksLoading] = useState(false)
+    const [tasksSaving, setTasksSaving] = useState(false)
+    const [tasksError, setTasksError] = useState<string | null>(null)
+    const [tasks, setTasks] = useState<ChatTaskItem[]>([])
     const [toolCatalog, setToolCatalog] = useState<ToolCatalogItem[]>([])
     const [chatToolPolicy, setChatToolPolicy] = useState<ChatToolPolicy | null>(null)
     const [toolEnabledSet, setToolEnabledSet] = useState<Set<string>>(new Set())
@@ -125,6 +133,7 @@ export default function ProjectChatPage() {
     const [expandedSourceMessages, setExpandedSourceMessages] = useState<Record<string, boolean>>({})
     const [chatMemory, setChatMemory] = useState<ChatMemorySummary | null>(null)
     const [sessionMemoryOpen, setSessionMemoryOpen] = useState(true)
+    const [resettingMemory, setResettingMemory] = useState(false)
     const [pendingUserQuestion, setPendingUserQuestion] = useState<PendingUserQuestion | null>(null)
     const [pendingAnswerInput, setPendingAnswerInput] = useState("")
 
@@ -177,6 +186,12 @@ export default function ProjectChatPage() {
         const timer = window.setTimeout(() => setToolsError(null), 9000)
         return () => window.clearTimeout(timer)
     }, [toolsError])
+
+    useEffect(() => {
+        if (!tasksError) return
+        const timer = window.setTimeout(() => setTasksError(null), 9000)
+        return () => window.clearTimeout(timer)
+    }, [tasksError])
 
     useEffect(() => {
         if (!lastToolEvents?.length) {
@@ -255,6 +270,24 @@ export default function ProjectChatPage() {
         setChatMemory((doc.memory_summary as ChatMemorySummary) || null)
         setPendingUserQuestion((doc.pending_user_question as PendingUserQuestion) || null)
     }, [])
+
+    const resetChatMemory = useCallback(async () => {
+        const chatId = selectedChatIdRef.current
+        if (!chatId) return
+        setResettingMemory(true)
+        setError(null)
+        try {
+            const out = await backendJson<{ memory_summary?: ChatMemorySummary }>(
+                `/api/chats/${encodeURIComponent(chatId)}/memory/reset?user=${encodeURIComponent(userId)}`,
+                { method: "POST" }
+            )
+            setChatMemory((out.memory_summary as ChatMemorySummary) || { decisions: [], open_questions: [], next_steps: [] })
+        } catch (err) {
+            setError(errText(err))
+        } finally {
+            setResettingMemory(false)
+        }
+    }, [userId])
 
     const loadChats = useCallback(
         async (activeBranch: string, preferredChatId?: string | null) => {
@@ -346,6 +379,70 @@ export default function ProjectChatPage() {
         },
         [projectId, userId]
     )
+
+    const loadChatTasks = useCallback(async (chatId: string) => {
+        setTasksLoading(true)
+        setTasksError(null)
+        try {
+            const out = await backendJson<ChatTasksResponse>(
+                `/api/chats/${encodeURIComponent(chatId)}/tasks?user=${encodeURIComponent(userId)}`
+            )
+            setTasks((out.items || []).filter((x) => x && x.id))
+        } catch (err) {
+            setTasksError(errText(err))
+        } finally {
+            setTasksLoading(false)
+        }
+    }, [userId])
+
+    const openTasksDialog = useCallback(async () => {
+        const chatId = selectedChatIdRef.current
+        if (!chatId) return
+        setTasksOpen(true)
+        await loadChatTasks(chatId)
+    }, [loadChatTasks])
+
+    const createChatTask = useCallback(async (input: { title: string; details: string }) => {
+        const chatId = selectedChatIdRef.current
+        if (!chatId) return
+        setTasksSaving(true)
+        setTasksError(null)
+        try {
+            await backendJson(`/api/chats/${encodeURIComponent(chatId)}/tasks?user=${encodeURIComponent(userId)}`, {
+                method: "POST",
+                body: JSON.stringify({
+                    title: input.title,
+                    details: input.details,
+                }),
+            })
+            await loadChatTasks(chatId)
+        } catch (err) {
+            setTasksError(errText(err))
+        } finally {
+            setTasksSaving(false)
+        }
+    }, [loadChatTasks, userId])
+
+    const updateChatTaskStatus = useCallback(async (taskId: string, status: string) => {
+        const chatId = selectedChatIdRef.current
+        if (!chatId) return
+        setTasksSaving(true)
+        setTasksError(null)
+        try {
+            await backendJson(
+                `/api/chats/${encodeURIComponent(chatId)}/tasks/${encodeURIComponent(taskId)}?user=${encodeURIComponent(userId)}`,
+                {
+                    method: "PATCH",
+                    body: JSON.stringify({ status }),
+                }
+            )
+            await loadChatTasks(chatId)
+        } catch (err) {
+            setTasksError(errText(err))
+        } finally {
+            setTasksSaving(false)
+        }
+    }, [loadChatTasks, userId])
 
     const loadLlmProfiles = useCallback(async () => {
         try {
@@ -1089,6 +1186,7 @@ export default function ProjectChatPage() {
                         }
                     }}
                     onOpenTools={() => void openToolDialog()}
+                    onOpenTasks={() => void openTasksDialog()}
                     onOpenDocs={openDocumentationViewer}
                     onGenerateDocs={() => void generateDocumentation()}
                     onToggleSessionMemory={() => setSessionMemoryOpen((v) => !v)}
@@ -1115,6 +1213,8 @@ export default function ProjectChatPage() {
                     <ChatSessionMemoryPanel
                         chatMemory={chatMemory}
                         onClose={() => setSessionMemoryOpen(false)}
+                        onReset={() => void resetChatMemory()}
+                        resetting={resettingMemory}
                     />
                 )}
 
@@ -1166,6 +1266,22 @@ export default function ProjectChatPage() {
                     onToggleToolEnabled={toggleToolEnabled}
                     onSetToolApproval={setToolApproval}
                     onSave={saveChatToolPolicy}
+                />
+
+                <ChatTasksDialog
+                    open={tasksOpen}
+                    loading={tasksLoading}
+                    saving={tasksSaving}
+                    error={tasksError}
+                    tasks={tasks}
+                    onClose={() => setTasksOpen(false)}
+                    onRefresh={async () => {
+                        if (selectedChatId) {
+                            await loadChatTasks(selectedChatId)
+                        }
+                    }}
+                    onCreate={createChatTask}
+                    onUpdateStatus={updateChatTaskStatus}
                 />
 
                 <DocumentationDialog

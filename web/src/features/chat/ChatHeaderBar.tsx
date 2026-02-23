@@ -15,6 +15,7 @@ import DescriptionRounded from "@mui/icons-material/DescriptionRounded"
 import AutoFixHighRounded from "@mui/icons-material/AutoFixHighRounded"
 import VisibilityOffRounded from "@mui/icons-material/VisibilityOffRounded"
 import VisibilityRounded from "@mui/icons-material/VisibilityRounded"
+import AssignmentTurnedInRounded from "@mui/icons-material/AssignmentTurnedInRounded"
 import type { LlmProfileDoc } from "@/features/chat/types"
 
 type ChatHeaderBarProps = {
@@ -32,6 +33,7 @@ type ChatHeaderBarProps = {
     sessionMemoryOpen: boolean
     onChangeLlmProfile: (profileId: string) => void
     onOpenTools: () => void
+    onOpenTasks: () => void
     onOpenDocs: () => void
     onGenerateDocs: () => void
     onToggleSessionMemory: () => void
@@ -52,6 +54,7 @@ export function ChatHeaderBar({
     sessionMemoryOpen,
     onChangeLlmProfile,
     onOpenTools,
+    onOpenTasks,
     onOpenDocs,
     onGenerateDocs,
     onToggleSessionMemory,
@@ -105,6 +108,15 @@ export function ChatHeaderBar({
                 >
                     Tools ({enabledToolCount})
                 </Button>
+                <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<AssignmentTurnedInRounded />}
+                    onClick={onOpenTasks}
+                    disabled={!selectedChatId}
+                >
+                    Tasks
+                </Button>
                 <Button size="small" variant="outlined" startIcon={<DescriptionRounded />} onClick={onOpenDocs}>
                     Open Docs
                 </Button>
@@ -131,4 +143,3 @@ export function ChatHeaderBar({
         </Paper>
     )
 }
-

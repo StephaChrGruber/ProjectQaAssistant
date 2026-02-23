@@ -5,11 +5,14 @@ import ProjectSettingsFormCard from "@/features/project-settings/admin/ProjectSe
 import SourceConnectorsCard from "@/features/project-settings/admin/SourceConnectorsCard"
 import ReliabilityDashboardCard from "@/features/project-settings/admin/ReliabilityDashboardCard"
 import EvaluationRunnerCard from "@/features/project-settings/admin/EvaluationRunnerCard"
+import FeatureFlagsCard from "@/features/project-settings/admin/FeatureFlagsCard"
 import {
     type AzureDevOpsForm,
     type BitbucketForm,
+    type ConnectorHealthResponse,
     type ConfluenceForm,
     type EvalRunResponse,
+    type FeatureFlags,
     type GitForm,
     type JiraForm,
     type LlmProfileDoc,
@@ -62,6 +65,13 @@ type ProjectSettingsAdminPanelProps = {
     runEvaluations: () => Promise<void>
     runningEvaluations: boolean
     latestEvalRun: EvalRunResponse | null
+    featureFlags: FeatureFlags
+    setFeatureFlags: Dispatch<SetStateAction<FeatureFlags>>
+    saveFeatureFlags: () => Promise<void>
+    savingFeatureFlags: boolean
+    connectorHealth: ConnectorHealthResponse | null
+    loadingConnectorHealth: boolean
+    refreshConnectorHealth: () => Promise<void>
     DetailCardComponent: ComponentType<{ title: string; value: string }>
 }
 
@@ -107,6 +117,13 @@ export default function ProjectSettingsAdminPanel(props: ProjectSettingsAdminPan
         runEvaluations,
         runningEvaluations,
         latestEvalRun,
+        featureFlags,
+        setFeatureFlags,
+        saveFeatureFlags,
+        savingFeatureFlags,
+        connectorHealth,
+        loadingConnectorHealth,
+        refreshConnectorHealth,
         DetailCardComponent,
     } = props
 
@@ -167,6 +184,16 @@ export default function ProjectSettingsAdminPanel(props: ProjectSettingsAdminPan
                 runningEvaluations={runningEvaluations}
                 latestEvalRun={latestEvalRun}
                 DetailCardComponent={DetailCardComponent}
+            />
+
+            <FeatureFlagsCard
+                featureFlags={featureFlags}
+                onChange={setFeatureFlags}
+                onSave={saveFeatureFlags}
+                saving={savingFeatureFlags}
+                connectorHealth={connectorHealth}
+                connectorHealthLoading={loadingConnectorHealth}
+                onRefreshConnectorHealth={refreshConnectorHealth}
             />
         </>
     )

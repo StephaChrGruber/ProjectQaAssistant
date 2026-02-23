@@ -1,4 +1,5 @@
 from datetime import datetime
+import time
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import requests
@@ -11,6 +12,11 @@ from ..settings import settings
 from ..db import get_db
 from ..rag.agent2 import answer_with_agent
 from ..services.llm_profiles import resolve_project_llm_config
+from ..services.feature_flags import (
+    DEFAULT_FEATURE_FLAGS,
+    load_project_feature_flags,
+    update_project_feature_flags,
+)
 from ..utils.mongo import to_jsonable
 
 router = APIRouter()
@@ -103,6 +109,14 @@ class RunEvaluationsReq(BaseModel):
     branch: str | None = None
     user: str | None = None
     max_questions: int = 8
+
+
+class UpdateFeatureFlagsReq(BaseModel):
+    enable_audit_events: bool | None = None
+    enable_connector_health: bool | None = None
+    enable_memory_controls: bool | None = None
+    dry_run_tools_default: bool | None = None
+    require_approval_for_write_tools: bool | None = None
 
 
 def _serialize_project(p: Project) -> dict:
@@ -352,6 +366,113 @@ def _eval_sources_count_from_tool_events(tool_events: list[dict]) -> int:
             count += 1
     return count
 
+
+def _http_ok(
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    auth: tuple[str, str] | None = None,
+    timeout: int = 8,
+) -> tuple[bool, str]:
+    try:
+        res = requests.get(url, headers=headers, auth=auth, timeout=timeout)
+        if 200 <= res.status_code < 300:
+            return True, "ok"
+        return False, f"{res.status_code} {res.reason}"
+    except Exception as err:
+        return False, str(err)
+
+
+def _connector_health(connector: Connector) -> dict[str, object]:
+    started = time.perf_counter()
+    ctype = str(connector.type or "")
+    cfg = connector.config or {}
+    ok = False
+    detail = "not_checked"
+    severity = "warning"
+
+    if ctype == "local":
+        paths = cfg.get("paths")
+        if isinstance(paths, list) and any(str(x).strip() for x in paths):
+            ok = True
+            severity = "info"
+            detail = "local paths configured"
+        else:
+            detail = "no local paths configured"
+    elif ctype in {"github", "git"}:
+        owner = str(cfg.get("owner") or "").strip()
+        repo = str(cfg.get("repo") or "").strip()
+        token = str(cfg.get("token") or "").strip()
+        if owner and repo and token:
+            ok, detail = _http_ok(
+                f"https://api.github.com/repos/{owner}/{repo}",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+        else:
+            detail = "missing owner/repo/token"
+    elif ctype == "bitbucket":
+        base = str(cfg.get("base_url") or cfg.get("baseUrl") or "https://api.bitbucket.org/2.0").rstrip("/")
+        workspace = str(cfg.get("workspace") or "").strip()
+        repo = str(cfg.get("repo_slug") or cfg.get("repo") or "").strip()
+        username = str(cfg.get("username") or "").strip()
+        app_password = str(cfg.get("app_password") or cfg.get("appPassword") or "").strip()
+        if workspace and repo and username and app_password:
+            ok, detail = _http_ok(
+                f"{base}/repositories/{workspace}/{repo}",
+                auth=(username, app_password),
+            )
+        else:
+            detail = "missing workspace/repo/credentials"
+    elif ctype == "azure_devops":
+        base = str(cfg.get("base_url") or cfg.get("baseUrl") or "https://dev.azure.com").rstrip("/")
+        org = str(cfg.get("organization") or cfg.get("org") or "").strip()
+        project = str(cfg.get("project") or "").strip()
+        repo = str(cfg.get("repository") or cfg.get("repo") or "").strip()
+        pat = str(cfg.get("pat") or cfg.get("token") or "").strip()
+        if org and project and repo and pat:
+            url = f"{base}/{org}/{project}/_apis/git/repositories/{repo}?api-version=7.0"
+            ok, detail = _http_ok(url, auth=("", pat))
+        else:
+            detail = "missing organization/project/repository/pat"
+    elif ctype == "confluence":
+        base = str(cfg.get("baseUrl") or "").rstrip("/")
+        email = str(cfg.get("email") or "").strip()
+        token = str(cfg.get("apiToken") or "").strip()
+        space_key = str(cfg.get("spaceKey") or "").strip()
+        if base and email and token:
+            url = f"{base}/wiki/rest/api/space/{space_key}" if space_key else f"{base}/wiki/rest/api/space?limit=1"
+            ok, detail = _http_ok(url, auth=(email, token))
+        else:
+            detail = "missing baseUrl/email/apiToken"
+    elif ctype == "jira":
+        base = str(cfg.get("baseUrl") or "").rstrip("/")
+        email = str(cfg.get("email") or "").strip()
+        token = str(cfg.get("apiToken") or "").strip()
+        if base and email and token:
+            ok, detail = _http_ok(f"{base}/rest/api/3/myself", auth=(email, token))
+        else:
+            detail = "missing baseUrl/email/apiToken"
+    else:
+        detail = "unsupported connector type"
+
+    if ok:
+        severity = "info"
+
+    return {
+        "id": str(connector.id),
+        "type": ctype,
+        "isEnabled": bool(connector.isEnabled),
+        "ok": bool(ok),
+        "severity": severity,
+        "detail": detail,
+        "latency_ms": int((time.perf_counter() - started) * 1000),
+        "updatedAt": connector.updatedAt.isoformat() if connector.updatedAt else None,
+    }
+
 @router.post("/admin/projects")
 async def create_project(req: CreateProject, user=Depends(current_user)):
     if not user.isGlobalAdmin:
@@ -431,6 +552,37 @@ async def update_project(project_id: str, req: UpdateProject, user=Depends(curre
     await p.save()
 
     return _serialize_project(p)
+
+
+@router.get("/admin/projects/{project_id}/feature-flags")
+async def get_project_feature_flags(project_id: str, user=Depends(current_user)):
+    if not user.isGlobalAdmin:
+        raise HTTPException(403, "Global admin required")
+    p = await Project.get(project_id)
+    if not p:
+        raise HTTPException(404, "Project not found")
+    flags = await load_project_feature_flags(project_id)
+    return {
+        "project_id": project_id,
+        "feature_flags": flags,
+        "defaults": dict(DEFAULT_FEATURE_FLAGS),
+    }
+
+
+@router.patch("/admin/projects/{project_id}/feature-flags")
+async def patch_project_feature_flags(project_id: str, req: UpdateFeatureFlagsReq, user=Depends(current_user)):
+    if not user.isGlobalAdmin:
+        raise HTTPException(403, "Global admin required")
+    p = await Project.get(project_id)
+    if not p:
+        raise HTTPException(404, "Project not found")
+    data = req.model_dump(exclude_unset=True)
+    flags = await update_project_feature_flags(project_id, data)
+    return {
+        "project_id": project_id,
+        "feature_flags": flags,
+        "defaults": dict(DEFAULT_FEATURE_FLAGS),
+    }
 
 
 @router.delete("/admin/projects/{project_id}")
@@ -520,6 +672,36 @@ async def list_project_connectors(project_id: str, user=Depends(current_user)):
         }
         for c in connectors
     ]
+
+
+@router.get("/admin/projects/{project_id}/connectors/health")
+async def project_connectors_health(project_id: str, user=Depends(current_user)):
+    if not user.isGlobalAdmin:
+        raise HTTPException(403, "Global admin required")
+    project = await Project.get(project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+    flags = await load_project_feature_flags(project_id)
+    if not bool(flags.get("enable_connector_health", True)):
+        return {
+            "project_id": project_id,
+            "enabled": False,
+            "total": 0,
+            "ok": 0,
+            "failed": 0,
+            "items": [],
+        }
+    connectors = await Connector.find(Connector.projectId == project_id).to_list()
+    items = [_connector_health(c) for c in connectors]
+    ok_count = sum(1 for row in items if bool(row.get("ok")))
+    return {
+        "project_id": project_id,
+        "enabled": True,
+        "total": len(items),
+        "ok": ok_count,
+        "failed": max(0, len(items) - ok_count),
+        "items": items,
+    }
 
 
 @router.put("/admin/projects/{project_id}/connectors/{connector_type}")

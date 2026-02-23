@@ -10,6 +10,8 @@ from ..rag.agent2 import LLMUpstreamError, answer_with_agent
 from ..rag.tool_runtime import ToolContext
 from ..services.llm_profiles import resolve_project_llm_config
 from ..services.custom_tools import build_runtime_for_project
+from ..services.audit_events import record_audit_event
+from ..services.feature_flags import project_feature_flags
 from ..services.hierarchical_memory import (
     build_hierarchical_context,
     derive_memory_summary,
@@ -71,6 +73,7 @@ class AskReq(BaseModel):
     llm_profile_id: str | None = None
     pending_question_id: str | None = None
     pending_answer: str | None = None
+    dry_run: bool | None = None
 
 
 async def _load_project_doc(project_id: str) -> dict[str, Any]:
@@ -98,6 +101,7 @@ async def _project_llm_defaults(
         "llm_model": llm.get("llm_model"),
         "llm_profile_id": llm.get("llm_profile_id"),
         "llm_profile_name": llm.get("llm_profile_name"),
+        "feature_flags": project_feature_flags(project),
         "tool_policy": _extract_tool_policy(project),
         "max_tool_calls": _extract_max_tool_calls(project),
         "grounding_policy": _extract_grounding_policy(project),
@@ -266,6 +270,8 @@ async def ask_agent(req: AskReq):
         override_profile_id=selected_profile_id,
         project_doc=project_doc,
     )
+    feature_flags = defaults.get("feature_flags") if isinstance(defaults.get("feature_flags"), dict) else {}
+    audit_events_enabled = bool(feature_flags.get("enable_audit_events", True))
     user_role = await _resolve_user_role(req.project_id, req.user)
     chat_policy = (chat_doc or {}).get("tool_policy") if isinstance(chat_doc, dict) else {}
     effective_tool_policy = _merge_tool_policies(
@@ -284,6 +290,12 @@ async def ask_agent(req: AskReq):
     approved_tools = _active_approved_tools(approval_rows, user=req.user)
     if approved_tools:
         effective_tool_policy["approved_tools"] = approved_tools
+    if bool(feature_flags.get("require_approval_for_write_tools")):
+        effective_tool_policy["require_approval_for_write_tools"] = True
+    if req.dry_run is not None:
+        effective_tool_policy["dry_run"] = bool(req.dry_run)
+    elif bool(feature_flags.get("dry_run_tools_default")):
+        effective_tool_policy["dry_run"] = True
     grounding_policy = defaults.get("grounding_policy") or {"require_sources": True, "min_sources": 1}
     memory_policy = defaults.get("memory_policy") or {}
     clarification_policy = defaults.get("clarification_policy") or dict(_DEFAULT_CLARIFICATION_POLICY)
@@ -398,6 +410,22 @@ async def ask_agent(req: AskReq):
             chat_id,
         )
         hierarchical_snapshot = {}
+
+    if audit_events_enabled:
+        await record_audit_event(
+            event="ask_agent.start",
+            project_id=req.project_id,
+            branch=req.branch,
+            user=req.user,
+            chat_id=chat_id,
+            details={
+                "role": user_role,
+                "llm_profile_id": selected_profile_id or defaults.get("llm_profile_id"),
+                "llm_provider": defaults.get("provider"),
+                "llm_model": defaults.get("llm_model"),
+                "dry_run": bool(effective_tool_policy.get("dry_run")),
+            },
+        )
 
     logger.info(
         "ask_agent.start project=%s branch=%s user=%s chat_id=%s role=%s profile_id=%s provider=%s model=%s pending=%s policy={read_only_only:%s allowed:%s blocked:%s approved:%s} clar={goal:%s asked:%s remaining:%s continue:%s destructive:%s disable:%s reason:%s}",
@@ -570,6 +598,21 @@ async def ask_agent(req: AskReq):
             and bool(fallback_profile_id)
             and fallback_profile_id != _as_text(active_llm.get("profile_id"))
         )
+        if audit_events_enabled:
+            await record_audit_event(
+                event="ask_agent.llm_upstream_error",
+                project_id=req.project_id,
+                branch=req.branch,
+                user=req.user,
+                chat_id=chat_id,
+                level="warning",
+                details={
+                    "message": detail[:500],
+                    "can_failover": can_failover,
+                    "active_profile_id": active_llm.get("profile_id"),
+                    "fallback_profile_id": fallback_profile_id,
+                },
+            )
 
         if can_failover:
             try:
@@ -695,6 +738,16 @@ async def ask_agent(req: AskReq):
             req.branch,
             req.user,
         )
+        if audit_events_enabled:
+            await record_audit_event(
+                event="ask_agent.internal_error",
+                project_id=req.project_id,
+                branch=req.branch,
+                user=req.user,
+                chat_id=chat_id,
+                level="error",
+                details={"message": "unexpected ask_agent exception"},
+            )
         answer = (
             "I hit an internal error while generating the answer. "
             "Please try again in a moment."
@@ -835,6 +888,23 @@ async def ask_agent(req: AskReq):
         awaiting_user_input,
         tool_error_details,
     )
+    if audit_events_enabled:
+        await record_audit_event(
+            event="ask_agent.finish",
+            project_id=req.project_id,
+            branch=req.branch,
+            user=req.user,
+            chat_id=chat_id,
+            level="info",
+            details={
+                "grounded": grounded_ok,
+                "sources": len(answer_sources),
+                "tool_calls": len(tool_events),
+                "tool_errors": tool_summary.get("errors"),
+                "pending_user_input": awaiting_user_input,
+                "dry_run": bool(effective_tool_policy.get("dry_run")),
+            },
+        )
 
     if tool_events:
         try:
