@@ -121,6 +121,7 @@ def _system_prompt(
         "- Do not browse/search the web or use external actions unless the user explicitly asks and confirms.\n"
         "- If external information/action is needed but not confirmed, ask first via request_user_input.\n"
         "- Start tool discovery with list_tools/search_tools/get_tool_details.\n"
+        "- If discovery says a tool is unavailable/blocked, do not claim the tool is missing; explain the blocked_reason and how to unblock it.\n"
         "- If the user asks you to perform a change/action (e.g. create/switch branch, commit, push/pull, write/update), you MUST execute the corresponding tool before final answer.\n"
         "- Never stop at planning language like 'I will now do X' without an actual tool call.\n"
         "- If key information is missing from the user, call request_user_input.\n"
@@ -204,6 +205,17 @@ def _required_action_tools(question: str) -> set[str]:
         required.add("git_pull")
     if "push" in q:
         required.add("git_push")
+
+    # Chat-task actions should always trigger task tools, not discovery-only answers.
+    if "chat task" in q or " task" in q:
+        if "create" in q or "add" in q or "new task" in q:
+            required.add("create_chat_task")
+        if "update task" in q or "edit task" in q or "change task" in q:
+            required.add("update_chat_task")
+        if "list task" in q or "show task" in q or "tasks" in q:
+            required.add("list_chat_tasks")
+        if "close task" in q or "complete task" in q or "done task" in q or "mark task" in q:
+            required.add("update_chat_task")
     return required
 
 
