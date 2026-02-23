@@ -193,12 +193,73 @@ export type ConnectorHealthItem = {
   updatedAt?: string | null
 }
 
+export type ConnectorHealthAlert = {
+  connector_id: string
+  type: string
+  severity: "high" | "medium" | "warning" | string
+  kind: string
+  message: string
+  consecutive_failures?: number
+  fail_rate_pct?: number
+  last_failed_at?: string | null
+}
+
 export type ConnectorHealthResponse = {
   project_id: string
+  enabled?: boolean
   total: number
   ok: number
   failed: number
   items: ConnectorHealthItem[]
+  alerts?: ConnectorHealthAlert[]
+  history?: {
+    checks?: number
+    latest_checked_at?: string | null
+  }
+}
+
+export type ConnectorHealthHistorySeriesPoint = {
+  ts: string
+  ok: boolean
+  latency_ms: number
+  severity?: string
+}
+
+export type ConnectorHealthHistorySeries = {
+  connector_id: string
+  type: string
+  checks: number
+  failures: number
+  fail_rate_pct: number
+  points: ConnectorHealthHistorySeriesPoint[]
+}
+
+export type ConnectorHealthHistoryResponse = {
+  project_id: string
+  enabled?: boolean
+  hours: number
+  checks: number
+  latest_checked_at?: string | null
+  series: ConnectorHealthHistorySeries[]
+  alerts: ConnectorHealthAlert[]
+}
+
+export type AuditEventItem = {
+  id?: string
+  event: string
+  level?: string
+  project_id: string
+  branch?: string | null
+  chat_id?: string | null
+  user?: string | null
+  request_id?: string | null
+  details?: Record<string, unknown>
+  created_at?: string | null
+}
+
+export type AuditEventsResponse = {
+  project_id: string
+  items: AuditEventItem[]
 }
 
 export const FALLBACK_OLLAMA_MODELS = ["llama3.2:3b", "llama3.1:8b", "mistral:7b", "qwen2.5:7b"]

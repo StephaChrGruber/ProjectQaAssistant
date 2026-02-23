@@ -1,5 +1,6 @@
 from datetime import datetime
 import time
+from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import requests
@@ -473,6 +474,137 @@ def _connector_health(connector: Connector) -> dict[str, object]:
         "updatedAt": connector.updatedAt.isoformat() if connector.updatedAt else None,
     }
 
+
+async def _persist_connector_health_snapshot(project_id: str, items: list[dict[str, object]]) -> None:
+    if not items:
+        return
+    now = datetime.utcnow()
+    docs: list[dict[str, object]] = []
+    for row in items:
+        docs.append(
+            {
+                "project_id": project_id,
+                "connector_id": str(row.get("id") or ""),
+                "type": str(row.get("type") or ""),
+                "ok": bool(row.get("ok")),
+                "severity": str(row.get("severity") or ""),
+                "detail": str(row.get("detail") or ""),
+                "latency_ms": int(row.get("latency_ms") or 0),
+                "checked_at": now,
+            }
+        )
+    try:
+        await get_db()["connector_health_events"].insert_many(docs, ordered=False)
+    except Exception:
+        # Health checks should stay resilient even if history insert fails.
+        return
+
+
+async def _build_connector_health_history(project_id: str, *, hours: int, limit: int = 1000) -> dict[str, object]:
+    safe_hours = max(1, min(int(hours or 24), 24 * 30))
+    safe_limit = max(10, min(int(limit or 1000), 5000))
+    since = datetime.utcnow() - timedelta(hours=safe_hours)
+    rows = await get_db()["connector_health_events"].find(
+        {"project_id": project_id, "checked_at": {"$gte": since}},
+        {"_id": 0},
+    ).sort("checked_at", -1).limit(safe_limit).to_list(length=safe_limit)
+
+    by_connector: dict[str, list[dict[str, object]]] = defaultdict(list)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cid = str(row.get("connector_id") or "")
+        if not cid:
+            continue
+        by_connector[cid].append(row)
+
+    series: list[dict[str, object]] = []
+    alerts: list[dict[str, object]] = []
+    for connector_id, items in by_connector.items():
+        sorted_items = sorted(
+            items,
+            key=lambda r: r.get("checked_at") if isinstance(r.get("checked_at"), datetime) else datetime.min,
+        )
+        connector_type = str(sorted_items[-1].get("type") or "") if sorted_items else ""
+        points: list[dict[str, object]] = []
+        fail_count = 0
+        consecutive_failures = 0
+        last_failed_at: str | None = None
+
+        for row in reversed(sorted_items):
+            ok = bool(row.get("ok"))
+            if not ok:
+                fail_count += 1
+            checked_at = row.get("checked_at")
+            ts = checked_at.isoformat() + "Z" if isinstance(checked_at, datetime) else ""
+            if (not ok) and not last_failed_at:
+                last_failed_at = ts or None
+            points.append(
+                {
+                    "ts": ts,
+                    "ok": ok,
+                    "latency_ms": int(row.get("latency_ms") or 0),
+                    "severity": str(row.get("severity") or ""),
+                }
+            )
+
+        for row in sorted(sorted_items, key=lambda r: r.get("checked_at") if isinstance(r.get("checked_at"), datetime) else datetime.min, reverse=True):
+            if bool(row.get("ok")):
+                break
+            consecutive_failures += 1
+
+        total = len(sorted_items)
+        fail_rate = round((fail_count / total) * 100, 2) if total else 0.0
+        series.append(
+            {
+                "connector_id": connector_id,
+                "type": connector_type,
+                "checks": total,
+                "failures": fail_count,
+                "fail_rate_pct": fail_rate,
+                "points": points[-80:],  # keep payload small
+            }
+        )
+
+        if total >= 3 and fail_count >= 1:
+            if consecutive_failures >= 3:
+                alerts.append(
+                    {
+                        "connector_id": connector_id,
+                        "type": connector_type,
+                        "severity": "high",
+                        "kind": "consecutive_failures",
+                        "message": f"{connector_type} has {consecutive_failures} consecutive failed checks.",
+                        "consecutive_failures": consecutive_failures,
+                        "fail_rate_pct": fail_rate,
+                        "last_failed_at": last_failed_at,
+                    }
+                )
+            elif fail_rate >= 50 and total >= 5:
+                alerts.append(
+                    {
+                        "connector_id": connector_id,
+                        "type": connector_type,
+                        "severity": "medium",
+                        "kind": "high_failure_rate",
+                        "message": f"{connector_type} failure rate is {fail_rate}% over last {total} checks.",
+                        "consecutive_failures": consecutive_failures,
+                        "fail_rate_pct": fail_rate,
+                        "last_failed_at": last_failed_at,
+                    }
+                )
+
+    latest_checked = rows[0].get("checked_at") if rows and isinstance(rows[0], dict) else None
+    latest_checked_at = latest_checked.isoformat() + "Z" if isinstance(latest_checked, datetime) else None
+    return {
+        "project_id": project_id,
+        "hours": safe_hours,
+        "checks": len(rows),
+        "latest_checked_at": latest_checked_at,
+        "series": sorted(series, key=lambda x: str(x.get("type") or "")),
+        "alerts": alerts,
+    }
+
 @router.post("/admin/projects")
 async def create_project(req: CreateProject, user=Depends(current_user)):
     if not user.isGlobalAdmin:
@@ -693,7 +825,9 @@ async def project_connectors_health(project_id: str, user=Depends(current_user))
         }
     connectors = await Connector.find(Connector.projectId == project_id).to_list()
     items = [_connector_health(c) for c in connectors]
+    await _persist_connector_health_snapshot(project_id, items)
     ok_count = sum(1 for row in items if bool(row.get("ok")))
+    history = await _build_connector_health_history(project_id, hours=72, limit=1200)
     return {
         "project_id": project_id,
         "enabled": True,
@@ -701,7 +835,35 @@ async def project_connectors_health(project_id: str, user=Depends(current_user))
         "ok": ok_count,
         "failed": max(0, len(items) - ok_count),
         "items": items,
+        "alerts": history.get("alerts") or [],
+        "history": {
+            "checks": history.get("checks") or 0,
+            "latest_checked_at": history.get("latest_checked_at"),
+        },
     }
+
+
+@router.get("/admin/projects/{project_id}/connectors/health/history")
+async def project_connectors_health_history(project_id: str, hours: int = 72, limit: int = 2000, user=Depends(current_user)):
+    if not user.isGlobalAdmin:
+        raise HTTPException(403, "Global admin required")
+    project = await Project.get(project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+    flags = await load_project_feature_flags(project_id)
+    if not bool(flags.get("enable_connector_health", True)):
+        return {
+            "project_id": project_id,
+            "enabled": False,
+            "hours": max(1, min(int(hours or 72), 24 * 30)),
+            "checks": 0,
+            "latest_checked_at": None,
+            "series": [],
+            "alerts": [],
+        }
+    history = await _build_connector_health_history(project_id, hours=hours, limit=limit)
+    history["enabled"] = True
+    return history
 
 
 @router.put("/admin/projects/{project_id}/connectors/{connector_type}")

@@ -44,6 +44,7 @@ import {
     type ConnectorDoc,
     type ConnectorsResponse,
     type ConnectorHealthResponse,
+    type ConnectorHealthHistoryResponse,
     type EvalRunResponse,
     type FeatureFlags,
     type FeatureFlagsResponse,
@@ -124,6 +125,7 @@ export default function ProjectSettingsPage() {
     })
     const [savingFeatureFlags, setSavingFeatureFlags] = useState(false)
     const [connectorHealth, setConnectorHealth] = useState<ConnectorHealthResponse | null>(null)
+    const [connectorHealthHistory, setConnectorHealthHistory] = useState<ConnectorHealthHistoryResponse | null>(null)
     const [loadingConnectorHealth, setLoadingConnectorHealth] = useState(false)
 
     const projectLabel = useMemo(
@@ -329,10 +331,14 @@ export default function ProjectSettingsPage() {
         if (!me?.isGlobalAdmin) return
         setLoadingConnectorHealth(true)
         try {
-            const out = await backendJson<ConnectorHealthResponse>(
-                `/api/admin/projects/${projectId}/connectors/health`
-            )
-            setConnectorHealth(out)
+            const [health, history] = await Promise.all([
+                backendJson<ConnectorHealthResponse>(`/api/admin/projects/${projectId}/connectors/health`),
+                backendJson<ConnectorHealthHistoryResponse>(
+                    `/api/admin/projects/${projectId}/connectors/health/history?hours=168&limit=2000`
+                ),
+            ])
+            setConnectorHealth(health)
+            setConnectorHealthHistory(history)
         } catch (err) {
             setError(errText(err))
         } finally {
@@ -766,6 +772,8 @@ export default function ProjectSettingsPage() {
 
                     {me?.isGlobalAdmin && (
                         <ProjectSettingsAdminPanel
+                            projectId={projectId}
+                            branch={branch}
                             editForm={editForm}
                             setEditForm={setEditForm}
                             isBrowserLocalRepoPath={isBrowserLocalRepoPath}
@@ -811,6 +819,7 @@ export default function ProjectSettingsPage() {
                             saveFeatureFlags={saveFeatureFlags}
                             savingFeatureFlags={savingFeatureFlags}
                             connectorHealth={connectorHealth}
+                            connectorHealthHistory={connectorHealthHistory}
                             loadingConnectorHealth={loadingConnectorHealth}
                             refreshConnectorHealth={refreshConnectorHealth}
                             DetailCardComponent={DetailCard}

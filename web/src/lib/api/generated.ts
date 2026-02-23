@@ -74,6 +74,24 @@ export interface paths {
         patch: operations["update_project_admin_projects__project_id__patch"];
         trace?: never;
     };
+    "/admin/projects/{project_id}/feature-flags": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Project Feature Flags */
+        get: operations["get_project_feature_flags_admin_projects__project_id__feature_flags_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Patch Project Feature Flags */
+        patch: operations["patch_project_feature_flags_admin_projects__project_id__feature_flags_patch"];
+        trace?: never;
+    };
     "/admin/projects/{project_id}/connectors": {
         parameters: {
             query?: never;
@@ -83,6 +101,40 @@ export interface paths {
         };
         /** List Project Connectors */
         get: operations["list_project_connectors_admin_projects__project_id__connectors_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/projects/{project_id}/connectors/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Project Connectors Health */
+        get: operations["project_connectors_health_admin_projects__project_id__connectors_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/projects/{project_id}/connectors/health/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Project Connectors Health History */
+        get: operations["project_connectors_health_history_admin_projects__project_id__connectors_health_history_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -535,6 +587,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/projects/{project_id}/audit-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Audit Events */
+        get: operations["list_audit_events_projects__project_id__audit_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/projects/{project_id}/tool-events/summary": {
         parameters: {
             query?: never;
@@ -702,7 +771,60 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
+        /** Patch Chat Memory */
+        patch: operations["patch_chat_memory_chats__chat_id__memory_patch"];
+        trace?: never;
+    };
+    "/chats/{chat_id}/memory/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reset Chat Memory */
+        post: operations["reset_chat_memory_chats__chat_id__memory_reset_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/chats/{chat_id}/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Chat Tasks */
+        get: operations["list_chat_tasks_chats__chat_id__tasks_get"];
+        put?: never;
+        /** Create Chat Task */
+        post: operations["create_chat_task_chats__chat_id__tasks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chats/{chat_id}/tasks/{task_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Patch Chat Task */
+        patch: operations["patch_chat_task_chats__chat_id__tasks__task_id__patch"];
         trace?: never;
     };
     "/chats/ensure-doc": {
@@ -1138,6 +1260,16 @@ export interface components {
              * @default false
              */
             read_only_only: boolean;
+            /**
+             * Dry Run
+             * @default false
+             */
+            dry_run: boolean;
+            /**
+             * Require Approval For Write Tools
+             * @default false
+             */
+            require_approval_for_write_tools: boolean;
             /** Timeout Overrides */
             timeout_overrides?: {
                 [key: string]: number;
@@ -1168,6 +1300,25 @@ export interface components {
             claimId?: string | null;
             /** Result */
             result?: unknown;
+        };
+        /** CreateChatTaskReq */
+        CreateChatTaskReq: {
+            /** Title */
+            title: string;
+            /**
+             * Details
+             * @default
+             */
+            details: string;
+            /** Assignee */
+            assignee?: string | null;
+            /** Due Date */
+            due_date?: string | null;
+            /**
+             * Status
+             * @default open
+             */
+            status: string;
         };
         /** CreateCustomToolReq */
         CreateCustomToolReq: {
@@ -1407,6 +1558,15 @@ export interface components {
             /** Hits */
             hits: components["schemas"]["KeywordHit"][];
         };
+        /** MemoryUpdateReq */
+        MemoryUpdateReq: {
+            /** Decisions */
+            decisions?: string[] | null;
+            /** Open Questions */
+            open_questions?: string[] | null;
+            /** Next Steps */
+            next_steps?: string[] | null;
+        };
         /** OpenFileRequest */
         OpenFileRequest: {
             /** Project Id */
@@ -1551,6 +1711,19 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** UpdateChatTaskReq */
+        UpdateChatTaskReq: {
+            /** Title */
+            title?: string | null;
+            /** Details */
+            details?: string | null;
+            /** Status */
+            status?: string | null;
+            /** Assignee */
+            assignee?: string | null;
+            /** Due Date */
+            due_date?: string | null;
+        };
         /** UpdateCustomToolReq */
         UpdateCustomToolReq: {
             /** Name */
@@ -1587,6 +1760,19 @@ export interface components {
             } | null;
             /** Tags */
             tags?: string[] | null;
+        };
+        /** UpdateFeatureFlagsReq */
+        UpdateFeatureFlagsReq: {
+            /** Enable Audit Events */
+            enable_audit_events?: boolean | null;
+            /** Enable Connector Health */
+            enable_connector_health?: boolean | null;
+            /** Enable Memory Controls */
+            enable_memory_controls?: boolean | null;
+            /** Dry Run Tools Default */
+            dry_run_tools_default?: boolean | null;
+            /** Require Approval For Write Tools */
+            require_approval_for_write_tools?: boolean | null;
         };
         /** UpdateLlmProfile */
         UpdateLlmProfile: {
@@ -1723,6 +1909,8 @@ export interface components {
             pending_question_id?: string | null;
             /** Pending Answer */
             pending_answer?: string | null;
+            /** Dry Run */
+            dry_run?: boolean | null;
         };
         /** AskReq */
         app__routes__qa__AskReq: {
@@ -1959,9 +2147,156 @@ export interface operations {
             };
         };
     };
+    get_project_feature_flags_admin_projects__project_id__feature_flags_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-dev-user"?: string | null;
+                "x-dev-admin"?: string | null;
+                authorization?: string;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_project_feature_flags_admin_projects__project_id__feature_flags_patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-dev-user"?: string | null;
+                "x-dev-admin"?: string | null;
+                authorization?: string;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateFeatureFlagsReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_project_connectors_admin_projects__project_id__connectors_get: {
         parameters: {
             query?: never;
+            header?: {
+                "x-dev-user"?: string | null;
+                "x-dev-admin"?: string | null;
+                authorization?: string;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    project_connectors_health_admin_projects__project_id__connectors_health_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-dev-user"?: string | null;
+                "x-dev-admin"?: string | null;
+                authorization?: string;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    project_connectors_health_history_admin_projects__project_id__connectors_health_history_get: {
+        parameters: {
+            query?: {
+                hours?: number;
+                limit?: number;
+            };
             header?: {
                 "x-dev-user"?: string | null;
                 "x-dev-admin"?: string | null;
@@ -2999,6 +3334,44 @@ export interface operations {
             };
         };
     };
+    list_audit_events_projects__project_id__audit_events_get: {
+        parameters: {
+            query?: {
+                branch?: string | null;
+                chat_id?: string | null;
+                event?: string | null;
+                limit?: number;
+            };
+            header?: {
+                "x-dev-user"?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     summarize_tool_events_projects__project_id__tool_events_summary_get: {
         parameters: {
             query?: {
@@ -3310,6 +3683,187 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_chat_memory_chats__chat_id__memory_patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-dev-user"?: string | null;
+            };
+            path: {
+                chat_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryUpdateReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reset_chat_memory_chats__chat_id__memory_reset_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-dev-user"?: string | null;
+            };
+            path: {
+                chat_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_chat_tasks_chats__chat_id__tasks_get: {
+        parameters: {
+            query?: {
+                status?: string | null;
+                limit?: number;
+            };
+            header?: {
+                "x-dev-user"?: string | null;
+            };
+            path: {
+                chat_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_chat_task_chats__chat_id__tasks_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-dev-user"?: string | null;
+            };
+            path: {
+                chat_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateChatTaskReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_chat_task_chats__chat_id__tasks__task_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-dev-user"?: string | null;
+            };
+            path: {
+                chat_id: string;
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateChatTaskReq"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

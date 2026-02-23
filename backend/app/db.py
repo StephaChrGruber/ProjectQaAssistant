@@ -39,6 +39,8 @@ async def init_db():
     await db["chat_tasks"].create_index([("status", 1), ("updated_at", -1)], name="chat_tasks_status_recent")
     await db["audit_events"].create_index([("project_id", 1), ("created_at", -1)], name="audit_project_recent")
     await db["audit_events"].create_index([("chat_id", 1), ("created_at", -1)], name="audit_chat_recent")
+    await db["connector_health_events"].create_index([("project_id", 1), ("checked_at", -1)], name="connector_health_project_recent")
+    await db["connector_health_events"].create_index([("project_id", 1), ("connector_id", 1), ("checked_at", -1)], name="connector_health_connector_recent")
 
 def get_client() -> AsyncIOMotorClient:
     global _client

@@ -6,10 +6,12 @@ import SourceConnectorsCard from "@/features/project-settings/admin/SourceConnec
 import ReliabilityDashboardCard from "@/features/project-settings/admin/ReliabilityDashboardCard"
 import EvaluationRunnerCard from "@/features/project-settings/admin/EvaluationRunnerCard"
 import FeatureFlagsCard from "@/features/project-settings/admin/FeatureFlagsCard"
+import AuditEventsCard from "@/features/project-settings/admin/AuditEventsCard"
 import {
     type AzureDevOpsForm,
     type BitbucketForm,
     type ConnectorHealthResponse,
+    type ConnectorHealthHistoryResponse,
     type ConfluenceForm,
     type EvalRunResponse,
     type FeatureFlags,
@@ -25,6 +27,8 @@ import {
 type LoadOptionsArgs = { openaiApiKey?: string; openaiBaseUrl?: string }
 
 type ProjectSettingsAdminPanelProps = {
+    projectId: string
+    branch: string
     editForm: ProjectEditForm
     setEditForm: Dispatch<SetStateAction<ProjectEditForm>>
     isBrowserLocalRepoPath: (path: string) => boolean
@@ -70,6 +74,7 @@ type ProjectSettingsAdminPanelProps = {
     saveFeatureFlags: () => Promise<void>
     savingFeatureFlags: boolean
     connectorHealth: ConnectorHealthResponse | null
+    connectorHealthHistory: ConnectorHealthHistoryResponse | null
     loadingConnectorHealth: boolean
     refreshConnectorHealth: () => Promise<void>
     DetailCardComponent: ComponentType<{ title: string; value: string }>
@@ -79,6 +84,8 @@ export default function ProjectSettingsAdminPanel(props: ProjectSettingsAdminPan
     const {
         editForm,
         setEditForm,
+        projectId,
+        branch,
         isBrowserLocalRepoPath,
         localRepoConfiguredInBrowser,
         setPathPickerOpen,
@@ -122,6 +129,7 @@ export default function ProjectSettingsAdminPanel(props: ProjectSettingsAdminPan
         saveFeatureFlags,
         savingFeatureFlags,
         connectorHealth,
+        connectorHealthHistory,
         loadingConnectorHealth,
         refreshConnectorHealth,
         DetailCardComponent,
@@ -192,9 +200,12 @@ export default function ProjectSettingsAdminPanel(props: ProjectSettingsAdminPan
                 onSave={saveFeatureFlags}
                 saving={savingFeatureFlags}
                 connectorHealth={connectorHealth}
+                connectorHealthHistory={connectorHealthHistory}
                 connectorHealthLoading={loadingConnectorHealth}
                 onRefreshConnectorHealth={refreshConnectorHealth}
             />
+
+            <AuditEventsCard projectId={projectId} branch={branch} />
         </>
     )
 }

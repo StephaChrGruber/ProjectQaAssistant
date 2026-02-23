@@ -146,6 +146,8 @@ export type ChatToolPolicy = {
   allowed_tools?: string[]
   blocked_tools?: string[]
   read_only_only?: boolean
+  dry_run?: boolean
+  require_approval_for_write_tools?: boolean
 }
 
 export type ChatToolPolicyResponse = {

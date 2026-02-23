@@ -14,6 +14,7 @@ import {
 } from "@mui/material"
 import type {
     ConnectorHealthResponse,
+    ConnectorHealthHistoryResponse,
     FeatureFlags,
 } from "@/features/project-settings/form-model"
 
@@ -23,6 +24,7 @@ type FeatureFlagsCardProps = {
     onSave: () => Promise<void>
     saving: boolean
     connectorHealth: ConnectorHealthResponse | null
+    connectorHealthHistory: ConnectorHealthHistoryResponse | null
     connectorHealthLoading: boolean
     onRefreshConnectorHealth: () => Promise<void>
 }
@@ -34,6 +36,7 @@ export default function FeatureFlagsCard(props: FeatureFlagsCardProps) {
         onSave,
         saving,
         connectorHealth,
+        connectorHealthHistory,
         connectorHealthLoading,
         onRefreshConnectorHealth,
     } = props
@@ -106,6 +109,12 @@ export default function FeatureFlagsCard(props: FeatureFlagsCardProps) {
                         <Typography variant="caption" color="text.secondary">
                             {connectorHealth.ok}/{connectorHealth.total} healthy
                         </Typography>
+                        {(connectorHealth.alerts || []).length ? (
+                            <Alert severity="warning">
+                                {(connectorHealth.alerts || []).length} connector alert(s):{" "}
+                                {(connectorHealth.alerts || []).map((a) => a.message).join(" | ")}
+                            </Alert>
+                        ) : null}
                         {connectorHealth.items.map((row) => (
                             <Box
                                 key={row.id}
@@ -141,6 +150,35 @@ export default function FeatureFlagsCard(props: FeatureFlagsCardProps) {
                 ) : (
                     <Alert severity="info">No connector health data loaded yet.</Alert>
                 )}
+
+                {connectorHealthHistory && connectorHealthHistory.series.length ? (
+                    <Stack spacing={0.8}>
+                        <Typography variant="subtitle2" color="text.secondary">
+                            Trend (last {connectorHealthHistory.hours}h)
+                        </Typography>
+                        {connectorHealthHistory.series.map((entry) => {
+                            const recent = entry.points.slice(-12)
+                            const glyphs = recent
+                                .map((p) => (p.ok ? "●" : "○"))
+                                .join("")
+                            return (
+                                <Box key={entry.connector_id} sx={{ border: "1px solid", borderColor: "divider", borderRadius: 1, px: 1, py: 0.8 }}>
+                                    <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                                            {entry.type}
+                                        </Typography>
+                                        <Typography variant="caption" color={entry.fail_rate_pct >= 50 ? "error.main" : "text.secondary"}>
+                                            fail-rate {entry.fail_rate_pct}%
+                                        </Typography>
+                                    </Stack>
+                                    <Typography variant="caption" sx={{ fontFamily: "monospace", letterSpacing: "0.09em" }}>
+                                        {glyphs || "-"}
+                                    </Typography>
+                                </Box>
+                            )
+                        })}
+                    </Stack>
+                ) : null}
             </Stack>
         </Paper>
     )

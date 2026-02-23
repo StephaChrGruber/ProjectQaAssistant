@@ -125,6 +125,8 @@ export default function ProjectChatPage() {
     const [chatToolPolicy, setChatToolPolicy] = useState<ChatToolPolicy | null>(null)
     const [toolEnabledSet, setToolEnabledSet] = useState<Set<string>>(new Set())
     const [toolReadOnlyOnly, setToolReadOnlyOnly] = useState(false)
+    const [toolDryRun, setToolDryRun] = useState(false)
+    const [requireApprovalForWriteTools, setRequireApprovalForWriteTools] = useState(false)
     const [approvedTools, setApprovedTools] = useState<Set<string>>(new Set())
     const [approvalBusyTool, setApprovalBusyTool] = useState<string | null>(null)
     const [llmProfiles, setLlmProfiles] = useState<LlmProfileDoc[]>([])
@@ -134,6 +136,7 @@ export default function ProjectChatPage() {
     const [chatMemory, setChatMemory] = useState<ChatMemorySummary | null>(null)
     const [sessionMemoryOpen, setSessionMemoryOpen] = useState(true)
     const [resettingMemory, setResettingMemory] = useState(false)
+    const [savingMemory, setSavingMemory] = useState(false)
     const [pendingUserQuestion, setPendingUserQuestion] = useState<PendingUserQuestion | null>(null)
     const [pendingAnswerInput, setPendingAnswerInput] = useState("")
 
@@ -289,6 +292,31 @@ export default function ProjectChatPage() {
         }
     }, [userId])
 
+    const saveChatMemory = useCallback(async (next: ChatMemorySummary) => {
+        const chatId = selectedChatIdRef.current
+        if (!chatId) return
+        setSavingMemory(true)
+        setError(null)
+        try {
+            const out = await backendJson<{ memory_summary?: ChatMemorySummary }>(
+                `/api/chats/${encodeURIComponent(chatId)}/memory?user=${encodeURIComponent(userId)}`,
+                {
+                    method: "PATCH",
+                    body: JSON.stringify({
+                        decisions: next.decisions || [],
+                        open_questions: next.open_questions || [],
+                        next_steps: next.next_steps || [],
+                    }),
+                }
+            )
+            setChatMemory((out.memory_summary as ChatMemorySummary) || next)
+        } catch (err) {
+            setError(errText(err))
+        } finally {
+            setSavingMemory(false)
+        }
+    }, [userId])
+
     const loadChats = useCallback(
         async (activeBranch: string, preferredChatId?: string | null) => {
             setLoadingChats(true)
@@ -370,6 +398,8 @@ export default function ProjectChatPage() {
                 setChatToolPolicy(policy)
                 setToolEnabledSet(enabled)
                 setToolReadOnlyOnly(Boolean(policy.read_only_only))
+                setToolDryRun(Boolean(policy.dry_run))
+                setRequireApprovalForWriteTools(Boolean(policy.require_approval_for_write_tools))
                 setApprovedTools(approved)
             } catch (err) {
                 setToolsError(errText(err))
@@ -402,7 +432,7 @@ export default function ProjectChatPage() {
         await loadChatTasks(chatId)
     }, [loadChatTasks])
 
-    const createChatTask = useCallback(async (input: { title: string; details: string }) => {
+    const createChatTask = useCallback(async (input: { title: string; details: string; assignee: string; due_date: string }) => {
         const chatId = selectedChatIdRef.current
         if (!chatId) return
         setTasksSaving(true)
@@ -413,6 +443,8 @@ export default function ProjectChatPage() {
                 body: JSON.stringify({
                     title: input.title,
                     details: input.details,
+                    assignee: input.assignee || null,
+                    due_date: input.due_date || null,
                 }),
             })
             await loadChatTasks(chatId)
@@ -423,7 +455,10 @@ export default function ProjectChatPage() {
         }
     }, [loadChatTasks, userId])
 
-    const updateChatTaskStatus = useCallback(async (taskId: string, status: string) => {
+    const updateChatTask = useCallback(async (
+        taskId: string,
+        patch: { title?: string; details?: string; assignee?: string | null; due_date?: string | null; status?: string }
+    ) => {
         const chatId = selectedChatIdRef.current
         if (!chatId) return
         setTasksSaving(true)
@@ -433,7 +468,7 @@ export default function ProjectChatPage() {
                 `/api/chats/${encodeURIComponent(chatId)}/tasks/${encodeURIComponent(taskId)}?user=${encodeURIComponent(userId)}`,
                 {
                     method: "PATCH",
-                    body: JSON.stringify({ status }),
+                    body: JSON.stringify(patch),
                 }
             )
             await loadChatTasks(chatId)
@@ -676,6 +711,8 @@ export default function ProjectChatPage() {
                 allowed_tools: enabled,
                 blocked_tools: blocked,
                 read_only_only: toolReadOnlyOnly,
+                dry_run: toolDryRun,
+                require_approval_for_write_tools: requireApprovalForWriteTools,
             }
             const out = await backendJson<ChatToolPolicyResponse>(
                 `/api/chats/${encodeURIComponent(selectedChatId)}/tool-policy`,
@@ -691,7 +728,7 @@ export default function ProjectChatPage() {
         } finally {
             setToolsSaving(false)
         }
-    }, [selectedChatId, toolCatalog, toolEnabledSet, toolReadOnlyOnly])
+    }, [requireApprovalForWriteTools, selectedChatId, toolCatalog, toolDryRun, toolEnabledSet, toolReadOnlyOnly])
 
     const setToolApproval = useCallback(
         async (toolName: string, approve: boolean) => {
@@ -1215,6 +1252,8 @@ export default function ProjectChatPage() {
                         onClose={() => setSessionMemoryOpen(false)}
                         onReset={() => void resetChatMemory()}
                         resetting={resettingMemory}
+                        onSave={saveChatMemory}
+                        saving={savingMemory}
                     />
                 )}
 
@@ -1256,6 +1295,8 @@ export default function ProjectChatPage() {
                     toolsError={toolsError}
                     toolsSaving={toolsSaving}
                     toolReadOnlyOnly={toolReadOnlyOnly}
+                    toolDryRun={toolDryRun}
+                    requireApprovalForWriteTools={requireApprovalForWriteTools}
                     toolCatalog={toolCatalog}
                     toolEnabledSet={toolEnabledSet}
                     approvedTools={approvedTools}
@@ -1263,6 +1304,8 @@ export default function ProjectChatPage() {
                     onClose={() => setToolsOpen(false)}
                     onErrorClose={() => setToolsError(null)}
                     onToggleReadOnlyOnly={setToolReadOnlyOnly}
+                    onToggleDryRun={setToolDryRun}
+                    onToggleRequireApprovalForWriteTools={setRequireApprovalForWriteTools}
                     onToggleToolEnabled={toggleToolEnabled}
                     onSetToolApproval={setToolApproval}
                     onSave={saveChatToolPolicy}
@@ -1281,7 +1324,7 @@ export default function ProjectChatPage() {
                         }
                     }}
                     onCreate={createChatTask}
-                    onUpdateStatus={updateChatTaskStatus}
+                    onUpdateTask={updateChatTask}
                 />
 
                 <DocumentationDialog

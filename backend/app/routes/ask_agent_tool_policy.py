@@ -42,6 +42,10 @@ def extract_tool_policy(project: dict) -> dict:
         policy["blocked_tools"] = blocked
     if bool(raw.get("read_only_only")):
         policy["read_only_only"] = True
+    if bool(raw.get("dry_run")):
+        policy["dry_run"] = True
+    if bool(raw.get("require_approval_for_write_tools")):
+        policy["require_approval_for_write_tools"] = True
 
     for key in ("timeout_overrides", "rate_limit_overrides", "retry_overrides", "cache_ttl_overrides"):
         value = raw.get(key)
@@ -193,6 +197,10 @@ def merge_tool_policies(base_policy: dict, chat_policy: dict) -> dict:
 
     out["strict_allowlist"] = strict_allowlist
     out["read_only_only"] = bool(base.get("read_only_only") or chat.get("read_only_only"))
+    out["dry_run"] = bool(base.get("dry_run") or chat.get("dry_run"))
+    out["require_approval_for_write_tools"] = bool(
+        base.get("require_approval_for_write_tools") or chat.get("require_approval_for_write_tools")
+    )
 
     for key in ("timeout_overrides", "rate_limit_overrides", "retry_overrides", "cache_ttl_overrides"):
         merged: dict[str, int] = {}

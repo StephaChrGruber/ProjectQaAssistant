@@ -31,6 +31,8 @@ class ChatToolPolicyReq(BaseModel):
     blocked_tools: list[str] = Field(default_factory=list)
     strict_allowlist: bool = False
     read_only_only: bool = False
+    dry_run: bool = False
+    require_approval_for_write_tools: bool = False
     timeout_overrides: dict[str, int] = Field(default_factory=dict)
     rate_limit_overrides: dict[str, int] = Field(default_factory=dict)
     retry_overrides: dict[str, int] = Field(default_factory=dict)
@@ -119,6 +121,8 @@ def _clean_policy(req: ChatToolPolicyReq) -> dict[str, Any]:
         "blocked_tools": blocked_tools,
         "strict_allowlist": strict_allowlist,
         "read_only_only": bool(req.read_only_only),
+        "dry_run": bool(req.dry_run),
+        "require_approval_for_write_tools": bool(req.require_approval_for_write_tools),
         "timeout_overrides": clean_int_map(req.timeout_overrides, 1, 3600),
         "rate_limit_overrides": clean_int_map(req.rate_limit_overrides, 1, 6000),
         "retry_overrides": clean_int_map(req.retry_overrides, 0, 5),

@@ -30,6 +30,8 @@ type ChatToolsDialogProps = {
     toolsError: string | null
     toolsSaving: boolean
     toolReadOnlyOnly: boolean
+    toolDryRun: boolean
+    requireApprovalForWriteTools: boolean
     toolCatalog: ToolCatalogItem[]
     toolEnabledSet: Set<string>
     approvedTools: Set<string>
@@ -37,6 +39,8 @@ type ChatToolsDialogProps = {
     onClose: () => void
     onErrorClose: () => void
     onToggleReadOnlyOnly: (next: boolean) => void
+    onToggleDryRun: (next: boolean) => void
+    onToggleRequireApprovalForWriteTools: (next: boolean) => void
     onToggleToolEnabled: (toolName: string) => void
     onSetToolApproval: (toolName: string, approve: boolean) => void | Promise<void>
     onSave: () => void | Promise<void>
@@ -49,6 +53,8 @@ export function ChatToolsDialog({
     toolsError,
     toolsSaving,
     toolReadOnlyOnly,
+    toolDryRun,
+    requireApprovalForWriteTools,
     toolCatalog,
     toolEnabledSet,
     approvedTools,
@@ -56,6 +62,8 @@ export function ChatToolsDialog({
     onClose,
     onErrorClose,
     onToggleReadOnlyOnly,
+    onToggleDryRun,
+    onToggleRequireApprovalForWriteTools,
     onToggleToolEnabled,
     onSetToolApproval,
     onSave,
@@ -89,6 +97,19 @@ export function ChatToolsDialog({
                     <FormControlLabel
                         control={<Switch checked={toolReadOnlyOnly} onChange={(e) => onToggleReadOnlyOnly(e.target.checked)} />}
                         label="Read-only mode (disable all write/mutating tools)"
+                    />
+                    <FormControlLabel
+                        control={<Switch checked={toolDryRun} onChange={(e) => onToggleDryRun(e.target.checked)} />}
+                        label="Dry-run mode (simulate write tools without executing them)"
+                    />
+                    <FormControlLabel
+                        control={
+                            <Switch
+                                checked={requireApprovalForWriteTools}
+                                onChange={(e) => onToggleRequireApprovalForWriteTools(e.target.checked)}
+                            />
+                        }
+                        label="Require explicit approval for all write tools"
                     />
                     <Divider />
                     <List dense>
