@@ -52,18 +52,35 @@ export function ChatMessagesPane({
     return (
         <Box
             ref={scrollRef}
-            sx={{ minHeight: 0, flex: 1, overflowY: "auto", px: { xs: 1.25, md: 4 }, py: { xs: 1.6, md: 2.5 } }}
+            sx={{ minHeight: 0, flex: 1, overflowY: "auto", px: { xs: 1.1, md: 3.2 }, py: { xs: 1.25, md: 2.1 } }}
         >
-            <Stack spacing={1.5} sx={{ maxWidth: 980, mx: "auto" }}>
+            <Stack spacing={1.4} sx={{ maxWidth: 1060, mx: "auto" }}>
                 {booting && (
-                    <Paper variant="outlined" sx={{ p: 2, display: "flex", alignItems: "center", gap: 1.2 }}>
+                    <Paper
+                        variant="outlined"
+                        sx={{
+                            p: 2,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 1.2,
+                            borderRadius: 2,
+                            bgcolor: "rgba(15,23,42,0.52)",
+                        }}
+                    >
                         <CircularProgress size={18} />
                         <Typography variant="body2">Loading workspace...</Typography>
                     </Paper>
                 )}
 
                 {!booting && !loadingMessages && messages.length === 0 && (
-                    <Paper variant="outlined" sx={{ p: 2 }}>
+                    <Paper
+                        variant="outlined"
+                        sx={{
+                            p: 2.2,
+                            borderRadius: 2,
+                            background: "linear-gradient(150deg, rgba(15,23,42,0.62), rgba(15,23,42,0.42))",
+                        }}
+                    >
                         <Typography variant="body2" color="text.secondary">
                             Start with a question about this project. The assistant can use GitHub/Bitbucket/Azure DevOps,
                             local repository, Confluence, and Jira context.
@@ -83,14 +100,21 @@ export function ChatMessagesPane({
                         <Box key={messageKey} sx={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start" }}>
                             <Paper
                                 variant={isUser ? "elevation" : "outlined"}
-                                elevation={isUser ? 3 : 0}
+                                elevation={isUser ? 2 : 0}
                                 sx={{
-                                    maxWidth: { xs: "96%", sm: "92%" },
+                                    maxWidth: { xs: "97%", sm: "92%" },
                                     px: { xs: 1.5, sm: 2 },
                                     py: { xs: 1.1, sm: 1.4 },
-                                    borderRadius: 3,
-                                    bgcolor: isUser ? "primary.main" : "background.paper",
-                                    color: isUser ? "primary.contrastText" : "text.primary",
+                                    borderRadius: 2.4,
+                                    border: "1px solid",
+                                    borderColor: isUser ? "rgba(103,232,249,0.42)" : "divider",
+                                    bgcolor: isUser ? "transparent" : "rgba(15,23,42,0.45)",
+                                    background: isUser
+                                        ? "linear-gradient(135deg, rgba(34,211,238,0.95) 0%, rgba(52,211,153,0.9) 100%)"
+                                        : "linear-gradient(160deg, rgba(15,23,42,0.68), rgba(15,23,42,0.45))",
+                                    color: isUser ? "#04231c" : "text.primary",
+                                    boxShadow: isUser ? "0 10px 20px rgba(15,23,42,0.3)" : "none",
+                                    animation: "page-rise 220ms ease-out both",
                                 }}
                             >
                                 <Stack spacing={1}>
@@ -184,7 +208,7 @@ export function ChatMessagesPane({
                                                     "& code": {
                                                         fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
                                                         fontSize: "0.82em",
-                                                        bgcolor: isUser ? "rgba(255,255,255,0.2)" : "action.hover",
+                                                        bgcolor: isUser ? "rgba(255,255,255,0.32)" : "rgba(148,163,184,0.16)",
                                                         px: 0.5,
                                                         borderRadius: 0.6,
                                                     },
@@ -193,7 +217,7 @@ export function ChatMessagesPane({
                                                         overflowX: "auto",
                                                         borderRadius: 1.2,
                                                         p: 1.1,
-                                                        bgcolor: isUser ? "rgba(0,0,0,0.22)" : "rgba(2,6,23,0.06)",
+                                                        bgcolor: isUser ? "rgba(0,0,0,0.22)" : "rgba(2,6,23,0.3)",
                                                     },
                                                     "& pre code": {
                                                         display: "block",
@@ -242,7 +266,7 @@ export function ChatMessagesPane({
                                                 mt: 0.4,
                                                 pt: 0.9,
                                                 borderTop: "1px solid",
-                                                borderColor: "divider",
+                                                borderColor: isUser ? "rgba(8,47,73,0.26)" : "divider",
                                             }}
                                         >
                                             <Typography
@@ -282,7 +306,7 @@ export function ChatMessagesPane({
                                                                         textTransform: "none",
                                                                         px: 0,
                                                                         minHeight: "auto",
-                                                                        fontSize: 12,
+                                                                        fontSize: 12.25,
                                                                         lineHeight: 1.35,
                                                                     }}
                                                                 >
@@ -371,7 +395,7 @@ export function ChatMessagesPane({
                                                                 px: 0,
                                                                 minHeight: "auto",
                                                                 mt: 0.2,
-                                                                fontSize: 12,
+                                                                fontSize: 12.25,
                                                                 lineHeight: 1.35,
                                                             }}
                                                         >
@@ -392,7 +416,18 @@ export function ChatMessagesPane({
 
                 {(sending || loadingMessages) && (
                     <Box sx={{ display: "flex", justifyContent: "flex-start" }}>
-                        <Paper variant="outlined" sx={{ px: 1.6, py: 1, display: "flex", alignItems: "center", gap: 1 }}>
+                        <Paper
+                            variant="outlined"
+                            sx={{
+                                px: 1.6,
+                                py: 1,
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 1,
+                                borderRadius: 2,
+                                bgcolor: "rgba(15,23,42,0.55)",
+                            }}
+                        >
                             <CircularProgress size={16} />
                             <Typography variant="body2" color="text.secondary">
                                 Thinking...

@@ -10,6 +10,7 @@ import {
     AppBar,
     Box,
     Button,
+    Chip,
     Divider,
     Drawer,
     FormControl,
@@ -61,7 +62,7 @@ type Props = {
     children: React.ReactNode
 }
 
-const DRAWER_WIDTH = 380
+const DRAWER_WIDTH = 392
 
 function formatTime(iso?: string): string {
     if (!iso) return ""
@@ -131,32 +132,58 @@ export function ProjectDrawerLayout(props: Props) {
 
     const drawerContent = (
         <Box sx={{ display: "flex", height: "100%", flexDirection: "column" }}>
-            <Box sx={{ px: 2.5, py: 2.5 }}>
-                <Typography
-                    variant="overline"
+            <Box sx={{ px: 2.25, pt: 2.1, pb: 1.8 }}>
+                <Box
                     sx={{
-                        color: "primary.light",
-                        letterSpacing: "0.12em",
-                        fontWeight: 700,
+                        border: "1px solid",
+                        borderColor: "divider",
+                        borderRadius: 2,
+                        p: 1.6,
+                        background: "linear-gradient(160deg, rgba(15,23,42,0.86), rgba(15,23,42,0.42))",
                     }}
                 >
-                    Project QA
-                </Typography>
-                <Typography
-                    variant="h6"
-                    noWrap
-                    sx={{ mt: 1, fontWeight: 700, lineHeight: 1.25 }}
-                >
-                    {projectLabel}
-                </Typography>
-                <Typography variant="caption" color="text.secondary" noWrap>
-                    {projectId}
-                </Typography>
+                    <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                        <Typography
+                            variant="overline"
+                            sx={{
+                                color: "secondary.light",
+                                letterSpacing: "0.13em",
+                                fontWeight: 700,
+                                lineHeight: 1,
+                            }}
+                        >
+                            Project QA
+                        </Typography>
+                        <Chip
+                            size="small"
+                            label={branch || "branch"}
+                            variant="outlined"
+                            sx={{
+                                height: 22,
+                                fontSize: 11,
+                                color: "secondary.light",
+                                borderColor: "rgba(34,211,238,0.35)",
+                                bgcolor: "rgba(8,47,73,0.26)",
+                            }}
+                        />
+                    </Stack>
+
+                    <Typography
+                        variant="h6"
+                        noWrap
+                        sx={{ mt: 1, fontWeight: 700, lineHeight: 1.2 }}
+                    >
+                        {projectLabel}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" noWrap sx={{ display: "block", mt: 0.15 }}>
+                        {projectId}
+                    </Typography>
+                </Box>
             </Box>
 
             <Divider />
 
-            <Box sx={{ px: 2.5, py: 2 }}>
+            <Box sx={{ px: 2.25, py: 1.8 }}>
                 <FormControl fullWidth size="small">
                     <InputLabel id="branch-select-label">Branch</InputLabel>
                     <Select
@@ -193,23 +220,35 @@ export function ProjectDrawerLayout(props: Props) {
 
             <Divider />
 
-            <Box sx={{ minHeight: 0, flex: 1, overflowY: "auto", px: 1.25, py: 1.25 }}>
-                <Typography
-                    variant="overline"
-                    sx={{ px: 1.25, color: "text.secondary", letterSpacing: "0.11em" }}
-                >
-                    Conversations
-                </Typography>
+            <Box sx={{ minHeight: 0, flex: 1, overflowY: "auto", px: 1.4, py: 1.2 }}>
+                <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ px: 0.9, mb: 0.4 }}>
+                    <Typography
+                        variant="overline"
+                        sx={{ color: "text.secondary", letterSpacing: "0.11em" }}
+                    >
+                        Conversations
+                    </Typography>
+                    <Chip
+                        size="small"
+                        label={uniqueChats.length}
+                        sx={{
+                            height: 20,
+                            fontSize: 11,
+                            bgcolor: "rgba(148,163,184,0.14)",
+                            color: "text.secondary",
+                        }}
+                    />
+                </Stack>
 
                 <List dense sx={{ pt: 0.5 }}>
                     {loadingChats && (
-                        <ListItemButton disabled sx={{ borderRadius: 2 }}>
+                        <ListItemButton disabled sx={{ borderRadius: 2, py: 1 }}>
                             <ListItemText primary="Loading chats..." />
                         </ListItemButton>
                     )}
 
                     {!loadingChats && uniqueChats.length === 0 && (
-                        <ListItemButton disabled sx={{ borderRadius: 2 }}>
+                        <ListItemButton disabled sx={{ borderRadius: 2, py: 1 }}>
                             <ListItemText primary="No chats for this branch" />
                         </ListItemButton>
                     )}
@@ -226,8 +265,11 @@ export function ProjectDrawerLayout(props: Props) {
                                 }}
                                 sx={{
                                     mb: 0.5,
-                                    borderRadius: 2,
+                                    borderRadius: 2.2,
                                     alignItems: "flex-start",
+                                    border: "1px solid",
+                                    borderColor: selected ? "rgba(34,211,238,0.38)" : "rgba(148,163,184,0.15)",
+                                    bgcolor: selected ? "rgba(14,116,144,0.16)" : "rgba(15,23,42,0.28)",
                                 }}
                             >
                                 <ListItemIcon sx={{ minWidth: 34, mt: 0.1 }}>
@@ -243,7 +285,7 @@ export function ProjectDrawerLayout(props: Props) {
                                     }}
                                     secondaryTypographyProps={{
                                         noWrap: true,
-                                        fontSize: 11,
+                                        fontSize: 11.5,
                                     }}
                                 />
                             </ListItemButton>
@@ -254,7 +296,7 @@ export function ProjectDrawerLayout(props: Props) {
 
             <Divider />
 
-            <Box sx={{ px: 2, py: 1.5 }}>
+            <Box sx={{ px: 1.65, py: 1.35 }}>
                 <Typography variant="caption" color="text.secondary" noWrap sx={{ px: 1, display: "block", pb: 1 }}>
                     {userLabel}
                 </Typography>
@@ -299,7 +341,7 @@ export function ProjectDrawerLayout(props: Props) {
                     position: "fixed",
                     inset: 0,
                     zIndex: -20,
-                    backgroundColor: "#05050a",
+                    backgroundColor: "background.default",
                 }}
             />
             <Box
@@ -308,7 +350,7 @@ export function ProjectDrawerLayout(props: Props) {
                     inset: 0,
                     zIndex: -10,
                     background:
-                        "radial-gradient(1000px 500px at 5% 0%, rgba(0,193,255,0.22), transparent 60%), radial-gradient(800px 420px at 95% 4%, rgba(0,255,166,0.14), transparent 55%), linear-gradient(180deg, #090e1a 0%, #05050a 100%)",
+                        "radial-gradient(1100px 640px at 0% 0%, rgba(34,211,238,0.14), transparent 60%), radial-gradient(900px 420px at 100% 0%, rgba(52,211,153,0.12), transparent 58%), linear-gradient(180deg, rgba(8,13,26,0.7) 0%, rgba(5,7,15,0.92) 100%)",
                 }}
             />
 
@@ -323,8 +365,7 @@ export function ProjectDrawerLayout(props: Props) {
                         "& .MuiDrawer-paper": {
                             width: { xs: "min(92vw, 380px)", md: DRAWER_WIDTH },
                             boxSizing: "border-box",
-                            backgroundColor: "rgba(15, 20, 34, 0.88)",
-                            borderRightColor: "rgba(255,255,255,0.14)",
+                            borderRightColor: "rgba(148,163,184,0.28)",
                         },
                     }}
                 >
@@ -339,8 +380,8 @@ export function ProjectDrawerLayout(props: Props) {
                         color="transparent"
                         elevation={0}
                         sx={{
-                            borderBottom: "1px solid rgba(255,255,255,0.1)",
-                            backgroundColor: "rgba(10, 12, 22, 0.68)",
+                            borderBottom: "1px solid rgba(148,163,184,0.2)",
+                            backgroundColor: "rgba(7, 11, 22, 0.72)",
                         }}
                     >
                         <Toolbar sx={{ minHeight: 62 }}>

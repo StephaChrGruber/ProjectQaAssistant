@@ -23,6 +23,8 @@ body {
         linear-gradient(180deg, var(--app-bg-soft) 0%, var(--app-bg) 55%);
     font-family: "Space Grotesk", "Sora", "Avenir Next", "Segoe UI", sans-serif;
     letter-spacing: 0.005em;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
 }
 
 * {
@@ -31,13 +33,15 @@ body {
 }
 
 *::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+    width: 9px;
+    height: 9px;
 }
 
 *::-webkit-scrollbar-thumb {
-    background: rgba(148, 163, 184, 0.3);
+    background: rgba(148, 163, 184, 0.34);
     border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
 }
 
 @keyframes page-rise {

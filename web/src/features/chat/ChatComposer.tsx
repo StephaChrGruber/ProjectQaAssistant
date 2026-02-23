@@ -1,6 +1,6 @@
 "use client"
 
-import { Button, Paper, Stack, TextField, Typography } from "@mui/material"
+import { Button, Chip, Paper, Stack, TextField, Typography } from "@mui/material"
 import SendRounded from "@mui/icons-material/SendRounded"
 import ClearAllRounded from "@mui/icons-material/ClearAllRounded"
 import type { PendingUserQuestion } from "@/features/chat/types"
@@ -37,14 +37,23 @@ export function ChatComposer({
             sx={{
                 borderTop: "1px solid",
                 borderColor: "divider",
-                px: { xs: 1.25, md: 3 },
-                pt: { xs: 1.25, md: 1.8 },
+                backgroundColor: "rgba(7, 12, 24, 0.72)",
+                backdropFilter: "blur(12px)",
+                px: { xs: 1.1, md: 3 },
+                pt: { xs: 1, md: 1.3 },
                 pb: "calc(10px + env(safe-area-inset-bottom, 0px))",
             }}
         >
-            <Stack sx={{ maxWidth: 980, mx: "auto" }} spacing={1.2}>
+            <Stack sx={{ maxWidth: 1060, mx: "auto" }} spacing={1}>
                 {pendingUserQuestion && (
-                    <Paper variant="outlined" sx={{ p: 1.2, bgcolor: "background.default" }}>
+                    <Paper
+                        variant="outlined"
+                        sx={{
+                            p: 1.2,
+                            borderRadius: 2,
+                            bgcolor: "rgba(15,23,42,0.62)",
+                        }}
+                    >
                         <Stack spacing={1}>
                             <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.08em" }}>
                                 ASSISTANT NEEDS INPUT
@@ -95,54 +104,78 @@ export function ChatComposer({
                     </Paper>
                 )}
 
-                <TextField
-                    value={input}
-                    onChange={(e) => onInputChange(e.target.value)}
-                    onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey) {
-                            e.preventDefault()
-                            onSend()
-                        }
+                <Paper
+                    variant="outlined"
+                    sx={{
+                        p: 1.1,
+                        borderRadius: 2,
+                        background: "linear-gradient(155deg, rgba(15,23,42,0.74), rgba(15,23,42,0.48))",
                     }}
-                    multiline
-                    minRows={1}
-                    maxRows={6}
-                    fullWidth
-                    placeholder={
-                        pendingUserQuestion
-                            ? "Reply to the pending assistant question (Enter to send)"
-                            : "Ask a project question (Enter to send, Shift+Enter for newline)"
-                    }
-                    disabled={!hasSelectedChat || sending}
-                    InputProps={{
-                        sx: {
-                            fontSize: { xs: 14, sm: 15 },
-                        },
-                    }}
-                />
+                >
+                    <Stack spacing={0.9}>
+                        <Stack direction="row" justifyContent="space-between" alignItems="center" useFlexGap flexWrap="wrap" spacing={0.7}>
+                            <Chip
+                                size="small"
+                                label={pendingUserQuestion ? "Pending Clarification" : "Assistant Ready"}
+                                color={pendingUserQuestion ? "secondary" : "primary"}
+                                variant="outlined"
+                                sx={{ fontSize: 11 }}
+                            />
+                            <Typography variant="caption" color="text.secondary">
+                                Enter to send · Shift+Enter newline
+                            </Typography>
+                        </Stack>
 
-                <Stack direction="row" spacing={1} justifyContent="flex-end">
-                    <Button
-                        variant="outlined"
-                        startIcon={<ClearAllRounded />}
-                        onClick={onClear}
-                        disabled={!hasSelectedChat || sending}
-                        sx={{ flex: { xs: 1, sm: "0 0 auto" } }}
-                    >
-                        Clear
-                    </Button>
-                    <Button
-                        variant="contained"
-                        endIcon={<SendRounded />}
-                        onClick={onSend}
-                        disabled={sending || !input.trim() || !hasSelectedChat}
-                        sx={{ flex: { xs: 1, sm: "0 0 auto" } }}
-                    >
-                        Send
-                    </Button>
-                </Stack>
+                        <TextField
+                            value={input}
+                            onChange={(e) => onInputChange(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === "Enter" && !e.shiftKey) {
+                                    e.preventDefault()
+                                    onSend()
+                                }
+                            }}
+                            multiline
+                            minRows={2}
+                            maxRows={8}
+                            fullWidth
+                            placeholder={
+                                pendingUserQuestion
+                                    ? "Reply to the pending assistant question (Enter to send)"
+                                    : "Ask a project question (Enter to send, Shift+Enter for newline)"
+                            }
+                            disabled={!hasSelectedChat || sending}
+                            InputProps={{
+                                sx: {
+                                    fontSize: { xs: 14, sm: 15 },
+                                    borderRadius: 1.5,
+                                },
+                            }}
+                        />
+
+                        <Stack direction="row" spacing={1} justifyContent="flex-end">
+                            <Button
+                                variant="outlined"
+                                startIcon={<ClearAllRounded />}
+                                onClick={onClear}
+                                disabled={!hasSelectedChat || sending}
+                                sx={{ flex: { xs: 1, sm: "0 0 auto" } }}
+                            >
+                                Clear
+                            </Button>
+                            <Button
+                                variant="contained"
+                                endIcon={<SendRounded />}
+                                onClick={onSend}
+                                disabled={sending || !input.trim() || !hasSelectedChat}
+                                sx={{ flex: { xs: 1, sm: "0 0 auto" } }}
+                            >
+                                Send
+                            </Button>
+                        </Stack>
+                    </Stack>
+                </Paper>
             </Stack>
         </Paper>
     )
 }
-
