@@ -115,7 +115,9 @@ export function ChatToolsDialog({
                     <List dense>
                         {toolCatalog.map((tool) => {
                             const enabled = toolEnabledSet.has(tool.name)
-                            const requiresApproval = Boolean(tool.require_approval) && !Boolean(tool.read_only)
+                            const requiresApproval =
+                                !Boolean(tool.read_only) &&
+                                (Boolean(tool.require_approval) || Boolean(requireApprovalForWriteTools))
                             const isApproved = approvedTools.has(tool.name)
                             return (
                                 <ListItemButton

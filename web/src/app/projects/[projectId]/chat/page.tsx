@@ -1237,7 +1237,11 @@ export default function ProjectChatPage() {
                     </Box>
                 )}
                 {!!lastToolEvents?.length && !toolEventsDismissed && (
-                    <ChatToolEventsBanner events={lastToolEvents} onDismiss={() => setToolEventsDismissed(true)} />
+                    <ChatToolEventsBanner
+                        events={lastToolEvents}
+                        onDismiss={() => setToolEventsDismissed(true)}
+                        onOpenTools={() => void openToolDialog()}
+                    />
                 )}
                 {docsNotice && !docsOpen && (
                     <Box sx={{ px: { xs: 1.5, md: 3 }, pt: 1.25 }}>
