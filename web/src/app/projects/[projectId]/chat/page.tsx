@@ -5,44 +5,18 @@ import { useParams, useRouter, useSearchParams } from "next/navigation"
 import {
     Alert,
     Box,
-    Button,
-    Chip,
-    CircularProgress,
     Collapse,
-    Dialog,
-    DialogActions,
-    DialogContent,
-    DialogTitle,
-    Divider,
-    FormControl,
-    FormControlLabel,
-    IconButton,
-    InputLabel,
     List,
     ListItemButton,
-    ListItemIcon,
     ListItemText,
-    MenuItem,
     Paper,
-    Select,
     Stack,
-    Switch,
-    TextField,
     Typography,
 } from "@mui/material"
-import SendRounded from "@mui/icons-material/SendRounded"
-import ClearAllRounded from "@mui/icons-material/ClearAllRounded"
-import DescriptionRounded from "@mui/icons-material/DescriptionRounded"
-import AutoFixHighRounded from "@mui/icons-material/AutoFixHighRounded"
-import CloseRounded from "@mui/icons-material/CloseRounded"
 import FolderRounded from "@mui/icons-material/FolderRounded"
 import DescriptionOutlined from "@mui/icons-material/DescriptionOutlined"
 import ExpandMoreRounded from "@mui/icons-material/ExpandMoreRounded"
 import ChevronRightRounded from "@mui/icons-material/ChevronRightRounded"
-import BuildRounded from "@mui/icons-material/BuildRounded"
-import CheckCircleRounded from "@mui/icons-material/CheckCircleRounded"
-import VisibilityOffRounded from "@mui/icons-material/VisibilityOffRounded"
-import VisibilityRounded from "@mui/icons-material/VisibilityRounded"
 import { backendJson } from "@/lib/backend"
 import { ProjectDrawerLayout, type DrawerChat, type DrawerUser } from "@/components/ProjectDrawerLayout"
 import { buildChatPath, saveLastChat } from "@/lib/last-chat"
@@ -58,10 +32,14 @@ import {
     restoreLocalRepoSession,
     writeLocalDocumentationFiles,
 } from "@/lib/local-repo-bridge"
-import { executeLocalToolJob } from "@/lib/local-custom-tool-runner"
 import { ChatMessagesPane } from "@/features/chat/ChatMessagesPane"
 import { ChatToolsDialog } from "@/features/chat/ChatToolsDialog"
 import { DocumentationDialog } from "@/features/chat/DocumentationDialog"
+import { ChatHeaderBar } from "@/features/chat/ChatHeaderBar"
+import { ChatToolEventsBanner } from "@/features/chat/ChatToolEventsBanner"
+import { ChatSessionMemoryPanel } from "@/features/chat/ChatSessionMemoryPanel"
+import { ChatComposer } from "@/features/chat/ChatComposer"
+import { useLocalToolJobWorker } from "@/features/local-tools/useLocalToolJobWorker"
 import type {
     AskAgentResponse,
     BranchesResponse,
@@ -79,7 +57,6 @@ import type {
     DocumentationListResponse,
     GenerateDocsResponse,
     LlmProfileDoc,
-    LocalToolClaimResponse,
     MeResponse,
     PendingUserQuestion,
     ProjectDoc,
@@ -96,8 +73,6 @@ import {
     isDocumentationPath,
     makeChatId,
 } from "@/features/chat/utils"
-import ReactMarkdown from "react-markdown"
-import remarkGfm from "remark-gfm"
 
 export default function ProjectChatPage() {
     const { projectId } = useParams<{ projectId: string }>()
@@ -166,6 +141,12 @@ export default function ProjectChatPage() {
         () => llmProfiles.find((p) => p.id === selectedLlmProfileId) || null,
         [llmProfiles, selectedLlmProfileId]
     )
+    const llmSummary = useMemo(() => {
+        if (selectedLlmProfile) {
+            return `${selectedLlmProfile.name} (${selectedLlmProfile.provider.toUpperCase()} · ${selectedLlmProfile.model})`
+        }
+        return `${(project?.llm_provider || "default LLM").toUpperCase()}${project?.llm_model ? ` · ${project.llm_model}` : ""}`
+    }, [project?.llm_model, project?.llm_provider, selectedLlmProfile])
     const memoryHasItems = useMemo(() => {
         const d = chatMemory?.decisions || []
         const q = chatMemory?.open_questions || []
@@ -384,55 +365,18 @@ export default function ProjectChatPage() {
         }
     }, [])
 
-    useEffect(() => {
-        let stopped = false
-        let inFlight = false
-        const claimId = `webchat-${projectId}-${Math.random().toString(36).slice(2, 10)}`
+    const buildLocalToolClaimPayload = useCallback(
+        () => ({
+            projectId,
+            user: userId,
+        }),
+        [projectId, userId]
+    )
 
-        async function tick() {
-            if (stopped || inFlight) return
-            inFlight = true
-            try {
-                const claim = await backendJson<LocalToolClaimResponse>("/api/local-tools/jobs/claim", {
-                    method: "POST",
-                    body: JSON.stringify({
-                        projectId,
-                        claimId,
-                        user: userId,
-                    }),
-                })
-                const job = claim.job
-                if (!job?.id) return
-
-                try {
-                    const result = await executeLocalToolJob(job)
-                    await backendJson(`/api/local-tools/jobs/${encodeURIComponent(job.id)}/complete`, {
-                        method: "POST",
-                        body: JSON.stringify({ claimId, result, user: userId }),
-                    })
-                } catch (err) {
-                    await backendJson(`/api/local-tools/jobs/${encodeURIComponent(job.id)}/fail`, {
-                        method: "POST",
-                        body: JSON.stringify({ claimId, error: errText(err), user: userId }),
-                    })
-                }
-            } catch {
-                // Silent background worker: avoid noisy UI when no jobs are pending.
-            } finally {
-                inFlight = false
-            }
-        }
-
-        const timer = window.setInterval(() => {
-            void tick()
-        }, 900)
-        void tick()
-
-        return () => {
-            stopped = true
-            window.clearInterval(timer)
-        }
-    }, [projectId, userId])
+    useLocalToolJobWorker({
+        claimIdPrefix: `webchat-${projectId}`,
+        buildClaimPayload: buildLocalToolClaimPayload,
+    })
 
     const saveChatLlmProfile = useCallback(async (chatId: string, llmProfileId: string) => {
         setSavingLlmProfile(true)
@@ -1125,92 +1069,30 @@ export default function ProjectChatPage() {
             activeSection="chat"
         >
             <Stack sx={{ minHeight: 0, flex: 1 }}>
-                <Paper
-                    square
-                    elevation={0}
-                    sx={{
-                        borderBottom: "1px solid",
-                        borderColor: "divider",
-                        px: { xs: 1.5, md: 3 },
-                        py: { xs: 1.25, md: 1.8 },
+                <ChatHeaderBar
+                    projectLabel={projectLabel}
+                    branch={branch}
+                    llmSummary={llmSummary}
+                    selectedLlmProfileId={selectedLlmProfileId}
+                    llmProfiles={llmProfiles}
+                    savingLlmProfile={savingLlmProfile}
+                    selectedChatId={selectedChatId}
+                    enabledToolCount={enabledToolCount}
+                    docsGenerating={docsGenerating}
+                    booting={booting}
+                    memoryHasItems={memoryHasItems}
+                    sessionMemoryOpen={sessionMemoryOpen}
+                    onChangeLlmProfile={(next) => {
+                        setSelectedLlmProfileId(next)
+                        if (selectedChatId) {
+                            void saveChatLlmProfile(selectedChatId, next)
+                        }
                     }}
-                >
-                    <Typography variant="overline" color="text.secondary" sx={{ letterSpacing: "0.15em" }}>
-                        RAG Conversation
-                    </Typography>
-                    <Typography variant="h6" sx={{ mt: 0.2, fontWeight: 700, fontSize: { xs: "1.02rem", sm: "1.2rem" } }}>
-                        {projectLabel}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                        Branch: {branch} ·{" "}
-                        {selectedLlmProfile
-                            ? `${selectedLlmProfile.name} (${selectedLlmProfile.provider.toUpperCase()} · ${selectedLlmProfile.model})`
-                            : `${(project?.llm_provider || "default LLM").toUpperCase()}${project?.llm_model ? ` · ${project.llm_model}` : ""}`}
-                    </Typography>
-                    <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1 }}>
-                        <FormControl size="small" sx={{ minWidth: { xs: "100%", sm: 360 } }}>
-                            <InputLabel id="chat-llm-profile-label">Chat LLM Profile</InputLabel>
-                            <Select
-                                labelId="chat-llm-profile-label"
-                                label="Chat LLM Profile"
-                                value={selectedLlmProfileId}
-                                onChange={(e) => {
-                                    const next = e.target.value
-                                    setSelectedLlmProfileId(next)
-                                    if (selectedChatId) {
-                                        void saveChatLlmProfile(selectedChatId, next)
-                                    }
-                                }}
-                                disabled={savingLlmProfile || !selectedChatId}
-                            >
-                                <MenuItem value="">Project default</MenuItem>
-                                {llmProfiles.map((profile) => (
-                                    <MenuItem key={profile.id} value={profile.id}>
-                                        {profile.name} · {profile.provider.toUpperCase()} · {profile.model}
-                                    </MenuItem>
-                                ))}
-                            </Select>
-                        </FormControl>
-                    </Stack>
-                    <Stack direction="row" spacing={1} sx={{ mt: 1.2 }}>
-                        <Button
-                            size="small"
-                            variant="outlined"
-                            startIcon={<BuildRounded />}
-                            onClick={() => void openToolDialog()}
-                            disabled={!selectedChatId}
-                        >
-                            Tools ({enabledToolCount})
-                        </Button>
-                        <Button
-                            size="small"
-                            variant="outlined"
-                            startIcon={<DescriptionRounded />}
-                            onClick={openDocumentationViewer}
-                        >
-                            Open Docs
-                        </Button>
-                        <Button
-                            size="small"
-                            variant="contained"
-                            startIcon={<AutoFixHighRounded />}
-                            onClick={() => void generateDocumentation()}
-                            disabled={docsGenerating || booting}
-                        >
-                            {docsGenerating ? "Generating..." : "Generate Docs"}
-                        </Button>
-                        {memoryHasItems && (
-                            <Button
-                                size="small"
-                                variant="outlined"
-                                startIcon={sessionMemoryOpen ? <VisibilityOffRounded /> : <VisibilityRounded />}
-                                onClick={() => setSessionMemoryOpen((v) => !v)}
-                            >
-                                {sessionMemoryOpen ? "Hide Memory" : "Show Memory"}
-                            </Button>
-                        )}
-                    </Stack>
-                </Paper>
+                    onOpenTools={() => void openToolDialog()}
+                    onOpenDocs={openDocumentationViewer}
+                    onGenerateDocs={() => void generateDocumentation()}
+                    onToggleSessionMemory={() => setSessionMemoryOpen((v) => !v)}
+                />
 
                 {error && (
                     <Box sx={{ px: { xs: 1.5, md: 3 }, pt: 1.25 }}>
@@ -1220,29 +1102,7 @@ export default function ProjectChatPage() {
                     </Box>
                 )}
                 {!!lastToolEvents?.length && !toolEventsDismissed && (
-                    <Box sx={{ px: { xs: 1.5, md: 3 }, pt: 1.25 }}>
-                        <Paper variant="outlined" sx={{ p: 1.2 }}>
-                            <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.08em" }}>
-                                    TOOL EXECUTION
-                                </Typography>
-                                <IconButton size="small" onClick={() => setToolEventsDismissed(true)}>
-                                    <CloseRounded fontSize="small" />
-                                </IconButton>
-                            </Stack>
-                            <Stack spacing={0.45} sx={{ mt: 0.8 }}>
-                                {lastToolEvents.map((ev, idx) => (
-                                    <Typography key={`${ev.tool}-${idx}`} variant="body2" color={ev.ok ? "success.main" : "warning.main"}>
-                                        {ev.ok ? "OK" : "ERR"} · {ev.tool} · {ev.duration_ms} ms
-                                        {ev.cached ? " · cached" : ""}
-                                        {ev.attempts && ev.attempts > 1 ? ` · attempts:${ev.attempts}` : ""}
-                                        {ev.error?.code ? ` · ${ev.error.code}` : ""}
-                                        {ev.error?.message ? ` · ${ev.error.message}` : ""}
-                                    </Typography>
-                                ))}
-                            </Stack>
-                        </Paper>
-                    </Box>
+                    <ChatToolEventsBanner events={lastToolEvents} onDismiss={() => setToolEventsDismissed(true)} />
                 )}
                 {docsNotice && !docsOpen && (
                     <Box sx={{ px: { xs: 1.5, md: 3 }, pt: 1.25 }}>
@@ -1252,57 +1112,10 @@ export default function ProjectChatPage() {
                     </Box>
                 )}
                 {memoryHasItems && sessionMemoryOpen && (
-                    <Box sx={{ px: { xs: 1.5, md: 3 }, pt: 1.25 }}>
-                        <Paper variant="outlined" sx={{ p: { xs: 1.2, md: 1.5 }, maxWidth: 980, mx: "auto" }}>
-                            <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                <Typography variant="overline" color="primary" sx={{ letterSpacing: "0.12em" }}>
-                                    Session Memory
-                                </Typography>
-                                <IconButton size="small" onClick={() => setSessionMemoryOpen(false)}>
-                                    <CloseRounded fontSize="small" />
-                                </IconButton>
-                            </Stack>
-                            <Box
-                                sx={{
-                                    mt: 0.8,
-                                    display: "grid",
-                                    gap: 1.2,
-                                    gridTemplateColumns: { xs: "1fr", md: "1fr 1fr 1fr" },
-                                }}
-                            >
-                                <Box>
-                                    <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.08em" }}>
-                                        Decisions
-                                    </Typography>
-                                    {(chatMemory?.decisions || []).slice(0, 5).map((item, idx) => (
-                                        <Typography key={`mem-d-${idx}`} variant="body2" sx={{ mt: 0.4 }}>
-                                            - {item}
-                                        </Typography>
-                                    ))}
-                                </Box>
-                                <Box>
-                                    <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.08em" }}>
-                                        Open Questions
-                                    </Typography>
-                                    {(chatMemory?.open_questions || []).slice(0, 5).map((item, idx) => (
-                                        <Typography key={`mem-q-${idx}`} variant="body2" sx={{ mt: 0.4 }}>
-                                            - {item}
-                                        </Typography>
-                                    ))}
-                                </Box>
-                                <Box>
-                                    <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.08em" }}>
-                                        Next Steps
-                                    </Typography>
-                                    {(chatMemory?.next_steps || []).slice(0, 5).map((item, idx) => (
-                                        <Typography key={`mem-n-${idx}`} variant="body2" sx={{ mt: 0.4 }}>
-                                            - {item}
-                                        </Typography>
-                                    ))}
-                                </Box>
-                            </Box>
-                        </Paper>
-                    </Box>
+                    <ChatSessionMemoryPanel
+                        chatMemory={chatMemory}
+                        onClose={() => setSessionMemoryOpen(false)}
+                    />
                 )}
 
                 <ChatMessagesPane
@@ -1316,137 +1129,25 @@ export default function ProjectChatPage() {
                     scrollRef={scrollRef}
                 />
 
-                <Paper
-                    square
-                    elevation={0}
-                    sx={{
-                        borderTop: "1px solid",
-                        borderColor: "divider",
-                        px: { xs: 1.25, md: 3 },
-                        pt: { xs: 1.25, md: 1.8 },
-                        pb: "calc(10px + env(safe-area-inset-bottom, 0px))",
-                    }}
-                >
-                    <Stack sx={{ maxWidth: 980, mx: "auto" }} spacing={1.2}>
-                        {pendingUserQuestion && (
-                            <Paper variant="outlined" sx={{ p: 1.2, bgcolor: "background.default" }}>
-                                <Stack spacing={1}>
-                                    <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.08em" }}>
-                                        ASSISTANT NEEDS INPUT
-                                    </Typography>
-                                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                                        {pendingUserQuestion.question}
-                                    </Typography>
-                                    {pendingUserQuestion.answer_mode === "single_choice" ? (
-                                        <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap">
-                                            {(pendingUserQuestion.options || []).map((option, idx) => (
-                                                <Button
-                                                    key={`${option}-${idx}`}
-                                                    size="small"
-                                                    variant="outlined"
-                                                    onClick={() =>
-                                                        void send({
-                                                            question: option,
-                                                            pendingAnswer: option,
-                                                            pendingQuestionId: pendingUserQuestion.id,
-                                                            clearComposer: false,
-                                                        })
-                                                    }
-                                                    disabled={sending || !selectedChatId}
-                                                >
-                                                    {option}
-                                                </Button>
-                                            ))}
-                                        </Stack>
-                                    ) : (
-                                        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-                                            <TextField
-                                                size="small"
-                                                value={pendingAnswerInput}
-                                                onChange={(e) => setPendingAnswerInput(e.target.value)}
-                                                placeholder="Type your answer for the assistant"
-                                                fullWidth
-                                                disabled={sending || !selectedChatId}
-                                                onKeyDown={(e) => {
-                                                    if (e.key === "Enter" && !e.shiftKey) {
-                                                        e.preventDefault()
-                                                        void send({
-                                                            question: pendingAnswerInput,
-                                                            pendingAnswer: pendingAnswerInput,
-                                                            pendingQuestionId: pendingUserQuestion.id,
-                                                            clearComposer: false,
-                                                        })
-                                                    }
-                                                }}
-                                            />
-                                            <Button
-                                                variant="contained"
-                                                onClick={() =>
-                                                    void send({
-                                                        question: pendingAnswerInput,
-                                                        pendingAnswer: pendingAnswerInput,
-                                                        pendingQuestionId: pendingUserQuestion.id,
-                                                        clearComposer: false,
-                                                    })
-                                                }
-                                                disabled={sending || !pendingAnswerInput.trim() || !selectedChatId}
-                                            >
-                                                Submit Answer
-                                            </Button>
-                                        </Stack>
-                                    )}
-                                </Stack>
-                            </Paper>
-                        )}
-
-                        <TextField
-                            value={input}
-                            onChange={(e) => setInput(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === "Enter" && !e.shiftKey) {
-                                    e.preventDefault()
-                                    void send()
-                                }
-                            }}
-                            multiline
-                            minRows={1}
-                            maxRows={6}
-                            fullWidth
-                            placeholder={
-                                pendingUserQuestion
-                                    ? "Reply to the pending assistant question (Enter to send)"
-                                    : "Ask a project question (Enter to send, Shift+Enter for newline)"
-                            }
-                            disabled={!selectedChatId || sending}
-                            InputProps={{
-                                sx: {
-                                    fontSize: { xs: 14, sm: 15 },
-                                },
-                            }}
-                        />
-
-                        <Stack direction="row" spacing={1} justifyContent="flex-end">
-                            <Button
-                                variant="outlined"
-                                startIcon={<ClearAllRounded />}
-                                onClick={() => void clearChat()}
-                                disabled={!selectedChatId || sending}
-                                sx={{ flex: { xs: 1, sm: "0 0 auto" } }}
-                            >
-                                Clear
-                            </Button>
-                            <Button
-                                variant="contained"
-                                endIcon={<SendRounded />}
-                                onClick={() => void send()}
-                                disabled={sending || !input.trim() || !selectedChatId}
-                                sx={{ flex: { xs: 1, sm: "0 0 auto" } }}
-                            >
-                                Send
-                            </Button>
-                        </Stack>
-                    </Stack>
-                </Paper>
+                <ChatComposer
+                    pendingUserQuestion={pendingUserQuestion}
+                    pendingAnswerInput={pendingAnswerInput}
+                    input={input}
+                    sending={sending}
+                    hasSelectedChat={Boolean(selectedChatId)}
+                    onInputChange={setInput}
+                    onPendingAnswerInputChange={setPendingAnswerInput}
+                    onSend={() => void send()}
+                    onClear={() => void clearChat()}
+                    onSubmitPendingAnswer={(answer, pendingQuestionId) =>
+                        void send({
+                            question: answer,
+                            pendingAnswer: answer,
+                            pendingQuestionId,
+                            clearComposer: false,
+                        })
+                    }
+                />
 
                 <ChatToolsDialog
                     open={toolsOpen}
