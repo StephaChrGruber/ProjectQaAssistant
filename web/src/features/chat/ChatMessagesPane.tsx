@@ -1,32 +1,32 @@
 "use client"
 
-import type { RefObject } from "react"
+import type { RefObject, UIEvent } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import dynamic from "next/dynamic"
 import { Box, Button, CircularProgress, Collapse, Paper, Stack, Typography } from "@mui/material"
 import ExpandMoreRounded from "@mui/icons-material/ExpandMoreRounded"
 import ChevronRightRounded from "@mui/icons-material/ChevronRightRounded"
-import ReactMarkdown from "react-markdown"
-import remarkGfm from "remark-gfm"
-import {
-    Bar,
-    BarChart,
-    CartesianGrid,
-    Legend,
-    Line,
-    LineChart,
-    ResponsiveContainer,
-    Tooltip,
-    XAxis,
-    YAxis,
-} from "recharts"
-import { normalizeLanguage, tokenColor, tokenizeCode } from "@/features/chat/code-highlighting"
 import type { ChatAnswerSource, ChatMessage } from "@/features/chat/types"
 import {
     SOURCE_PREVIEW_LIMIT,
     isDocumentationPath,
-    parseChartSpec,
     sourceDisplayText,
     splitChartBlocks,
 } from "@/features/chat/utils"
+
+const LazyMarkdown = dynamic(
+    () => import("@/features/chat/ChatMarkdownContent").then((m) => m.ChatMarkdownContent),
+    { ssr: false }
+)
+
+const LazyChart = dynamic(
+    () => import("@/features/chat/ChatChartBlock").then((m) => m.ChatChartBlock),
+    { ssr: false }
+)
+
+const VIRTUALIZE_THRESHOLD = 100
+const ESTIMATED_ROW_HEIGHT = 280
+const OVERSCAN_ROWS = 6
 
 type ChatMessagesPaneProps = {
     booting: boolean
@@ -39,6 +39,14 @@ type ChatMessagesPaneProps = {
     scrollRef: RefObject<HTMLDivElement | null>
 }
 
+function computeWindow(scrollTop: number, viewportHeight: number, total: number): { start: number; end: number } {
+    const firstVisible = Math.max(0, Math.floor(scrollTop / ESTIMATED_ROW_HEIGHT))
+    const visibleCount = Math.max(1, Math.ceil(viewportHeight / ESTIMATED_ROW_HEIGHT))
+    const start = Math.max(0, firstVisible - OVERSCAN_ROWS)
+    const end = Math.min(total, firstVisible + visibleCount + OVERSCAN_ROWS)
+    return { start, end }
+}
+
 export function ChatMessagesPane({
     booting,
     loadingMessages,
@@ -49,9 +57,63 @@ export function ChatMessagesPane({
     onSourceClick,
     scrollRef,
 }: ChatMessagesPaneProps) {
+    const shouldVirtualize = messages.length > VIRTUALIZE_THRESHOLD
+    const [windowStart, setWindowStart] = useState(0)
+    const [windowEnd, setWindowEnd] = useState(messages.length)
+
+    const recomputeWindow = useCallback(
+        (scrollTop: number, viewportHeight: number) => {
+            if (!shouldVirtualize) {
+                setWindowStart(0)
+                setWindowEnd(messages.length)
+                return
+            }
+            const next = computeWindow(scrollTop, viewportHeight, messages.length)
+            setWindowStart((prev) => (prev === next.start ? prev : next.start))
+            setWindowEnd((prev) => (prev === next.end ? prev : next.end))
+        },
+        [messages.length, shouldVirtualize]
+    )
+
+    useEffect(() => {
+        if (!shouldVirtualize) {
+            setWindowStart(0)
+            setWindowEnd(messages.length)
+            return
+        }
+        const el = scrollRef.current
+        if (!el) {
+            setWindowStart(0)
+            setWindowEnd(Math.min(messages.length, 24))
+            return
+        }
+        recomputeWindow(el.scrollTop, el.clientHeight)
+    }, [messages.length, recomputeWindow, scrollRef, shouldVirtualize])
+
+    const handleScroll = useCallback(
+        (event: UIEvent<HTMLDivElement>) => {
+            if (!shouldVirtualize) return
+            const el = event.currentTarget
+            recomputeWindow(el.scrollTop, el.clientHeight)
+        },
+        [recomputeWindow, shouldVirtualize]
+    )
+
+    const renderStart = shouldVirtualize ? windowStart : 0
+    const renderEnd = shouldVirtualize ? windowEnd : messages.length
+
+    const visibleMessages = useMemo(
+        () => messages.slice(renderStart, renderEnd),
+        [messages, renderEnd, renderStart]
+    )
+
+    const topSpacerHeight = shouldVirtualize ? renderStart * ESTIMATED_ROW_HEIGHT : 0
+    const bottomSpacerHeight = shouldVirtualize ? Math.max(0, (messages.length - renderEnd) * ESTIMATED_ROW_HEIGHT) : 0
+
     return (
         <Box
             ref={scrollRef}
+            onScroll={handleScroll}
             sx={{ minHeight: 0, flex: 1, overflowY: "auto", px: { xs: 1.1, md: 3.2 }, py: { xs: 1.25, md: 2.1 } }}
         >
             <Stack spacing={1.4} sx={{ maxWidth: 1060, mx: "auto" }}>
@@ -88,7 +150,10 @@ export function ChatMessagesPane({
                     </Paper>
                 )}
 
-                {messages.map((m, idx) => {
+                {topSpacerHeight > 0 && <Box sx={{ height: topSpacerHeight }} />}
+
+                {visibleMessages.map((m, localIdx) => {
+                    const idx = renderStart + localIdx
                     const isUser = m.role === "user"
                     const sources = !isUser && m.role === "assistant" ? (m.meta?.sources || []) : []
                     const messageKey = `${m.ts || "na"}-${idx}`
@@ -118,147 +183,13 @@ export function ChatMessagesPane({
                                 }}
                             >
                                 <Stack spacing={1}>
-                                    {splitChartBlocks(m.content || "").map((part, i) => {
-                                        if (part.type === "chart") {
-                                            const spec = parseChartSpec(part.value)
-                                            return (
-                                                <Paper key={i} variant="outlined" sx={{ p: 1.2, bgcolor: "rgba(0,0,0,0.16)" }}>
-                                                    <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.12em" }}>
-                                                        CHART BLOCK
-                                                    </Typography>
-                                                    {spec ? (
-                                                        <Box sx={{ mt: 1.1, width: "100%", minWidth: 280 }}>
-                                                            {spec.title && (
-                                                                <Typography variant="subtitle2" sx={{ mb: 0.8 }}>
-                                                                    {spec.title}
-                                                                </Typography>
-                                                            )}
-                                                            <ResponsiveContainer width="100%" height={spec.height || 280}>
-                                                                {spec.type === "bar" ? (
-                                                                    <BarChart data={spec.data}>
-                                                                        <CartesianGrid strokeDasharray="3 3" />
-                                                                        <XAxis dataKey={spec.xKey} />
-                                                                        <YAxis />
-                                                                        <Tooltip />
-                                                                        <Legend />
-                                                                        {spec.series.map((s, sidx) => (
-                                                                            <Bar
-                                                                                key={s.key}
-                                                                                dataKey={s.key}
-                                                                                name={s.label || s.key}
-                                                                                fill={s.color || ["#0088FE", "#00C49F", "#FFBB28", "#FF8042"][sidx % 4]}
-                                                                            />
-                                                                        ))}
-                                                                    </BarChart>
-                                                                ) : (
-                                                                    <LineChart data={spec.data}>
-                                                                        <CartesianGrid strokeDasharray="3 3" />
-                                                                        <XAxis dataKey={spec.xKey} />
-                                                                        <YAxis />
-                                                                        <Tooltip />
-                                                                        <Legend />
-                                                                        {spec.series.map((s, sidx) => (
-                                                                            <Line
-                                                                                key={s.key}
-                                                                                type="monotone"
-                                                                                dataKey={s.key}
-                                                                                name={s.label || s.key}
-                                                                                stroke={s.color || ["#0088FE", "#00C49F", "#FFBB28", "#FF8042"][sidx % 4]}
-                                                                                strokeWidth={2}
-                                                                                dot={false}
-                                                                            />
-                                                                        ))}
-                                                                    </LineChart>
-                                                                )}
-                                                            </ResponsiveContainer>
-                                                        </Box>
-                                                    ) : (
-                                                        <Box
-                                                            component="pre"
-                                                            sx={{
-                                                                mt: 0.8,
-                                                                mb: 0,
-                                                                overflowX: "auto",
-                                                                whiteSpace: "pre",
-                                                                fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                                                                fontSize: 12,
-                                                            }}
-                                                        >
-                                                            {part.value}
-                                                        </Box>
-                                                    )}
-                                                </Paper>
-                                            )
-                                        }
-
-                                        return (
-                                            <Box
-                                                key={i}
-                                                sx={{
-                                                    "& p": { my: 0.7, lineHeight: 1.55 },
-                                                    "& ul, & ol": { my: 0.7, pl: 2.5 },
-                                                    "& li": { my: 0.3 },
-                                                    "& a": { color: "inherit", textDecoration: "underline" },
-                                                    "& img": {
-                                                        maxWidth: "100%",
-                                                        borderRadius: 1.5,
-                                                        display: "block",
-                                                        my: 1,
-                                                    },
-                                                    "& code": {
-                                                        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                                                        fontSize: "0.82em",
-                                                        bgcolor: isUser ? "rgba(255,255,255,0.32)" : "rgba(148,163,184,0.16)",
-                                                        px: 0.5,
-                                                        borderRadius: 0.6,
-                                                    },
-                                                    "& pre": {
-                                                        my: 1,
-                                                        overflowX: "auto",
-                                                        borderRadius: 1.2,
-                                                        p: 1.1,
-                                                        bgcolor: isUser ? "rgba(0,0,0,0.22)" : "rgba(2,6,23,0.3)",
-                                                    },
-                                                    "& pre code": {
-                                                        display: "block",
-                                                        whiteSpace: "pre",
-                                                    },
-                                                }}
-                                            >
-                                                <ReactMarkdown
-                                                    remarkPlugins={[remarkGfm]}
-                                                    components={{
-                                                        code(props: any) {
-                                                            const { inline, className, children, ...rest } = props
-                                                            const content = String(children ?? "")
-                                                            if (inline) {
-                                                                return (
-                                                                    <code className={className} {...rest}>
-                                                                        {children}
-                                                                    </code>
-                                                                )
-                                                            }
-
-                                                            const match = /language-([a-zA-Z0-9_-]+)/.exec(className || "")
-                                                            const language = normalizeLanguage(match?.[1] || "")
-                                                            const tokens = tokenizeCode(content.replace(/\n$/, ""), language)
-                                                            return (
-                                                                <code className={className} {...rest}>
-                                                                    {tokens.map((t, tidx) => (
-                                                                        <span key={tidx} style={{ color: tokenColor(t.kind, isUser) }}>
-                                                                            {t.text}
-                                                                        </span>
-                                                                    ))}
-                                                                </code>
-                                                            )
-                                                        },
-                                                    }}
-                                                >
-                                                    {part.value}
-                                                </ReactMarkdown>
-                                            </Box>
+                                    {splitChartBlocks(m.content || "").map((part, i) =>
+                                        part.type === "chart" ? (
+                                            <LazyChart key={`${messageKey}-part-${i}`} value={part.value} />
+                                        ) : (
+                                            <LazyMarkdown key={`${messageKey}-part-${i}`} value={part.value} isUser={isUser} />
                                         )
-                                    })}
+                                    )}
 
                                     {!isUser && m.role === "assistant" && (
                                         <Box
@@ -266,7 +197,7 @@ export function ChatMessagesPane({
                                                 mt: 0.4,
                                                 pt: 0.9,
                                                 borderTop: "1px solid",
-                                                borderColor: isUser ? "rgba(8,47,73,0.26)" : "divider",
+                                                borderColor: "divider",
                                             }}
                                         >
                                             <Typography
@@ -413,6 +344,8 @@ export function ChatMessagesPane({
                         </Box>
                     )
                 })}
+
+                {bottomSpacerHeight > 0 && <Box sx={{ height: bottomSpacerHeight }} />}
 
                 {(sending || loadingMessages) && (
                     <Box sx={{ display: "flex", justifyContent: "flex-start" }}>

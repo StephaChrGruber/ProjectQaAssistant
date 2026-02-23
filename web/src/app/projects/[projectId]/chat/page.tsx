@@ -2,6 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useParams, useRouter, useSearchParams } from "next/navigation"
+import dynamic from "next/dynamic"
 import {
     Alert,
     Box,
@@ -33,12 +34,8 @@ import {
     writeLocalDocumentationFiles,
 } from "@/lib/local-repo-bridge"
 import { ChatMessagesPane } from "@/features/chat/ChatMessagesPane"
-import { ChatToolsDialog } from "@/features/chat/ChatToolsDialog"
-import { ChatTasksDialog } from "@/features/chat/ChatTasksDialog"
-import { DocumentationDialog } from "@/features/chat/DocumentationDialog"
 import { ChatHeaderBar } from "@/features/chat/ChatHeaderBar"
 import { ChatToolEventsBanner } from "@/features/chat/ChatToolEventsBanner"
-import { ChatSessionMemoryPanel } from "@/features/chat/ChatSessionMemoryPanel"
 import { ChatComposer } from "@/features/chat/ChatComposer"
 import { useLocalToolJobWorker } from "@/features/local-tools/useLocalToolJobWorker"
 import type {
@@ -78,6 +75,26 @@ import {
     isDocumentationPath,
     makeChatId,
 } from "@/features/chat/utils"
+
+const ChatToolsDialog = dynamic(
+    () => import("@/features/chat/ChatToolsDialog").then((m) => m.ChatToolsDialog),
+    { ssr: false }
+)
+
+const ChatTasksDialog = dynamic(
+    () => import("@/features/chat/ChatTasksDialog").then((m) => m.ChatTasksDialog),
+    { ssr: false }
+)
+
+const DocumentationDialog = dynamic(
+    () => import("@/features/chat/DocumentationDialog").then((m) => m.DocumentationDialog),
+    { ssr: false }
+)
+
+const ChatSessionMemoryPanel = dynamic(
+    () => import("@/features/chat/ChatSessionMemoryPanel").then((m) => m.ChatSessionMemoryPanel),
+    { ssr: false }
+)
 
 export default function ProjectChatPage() {
     const { projectId } = useParams<{ projectId: string }>()
@@ -383,6 +400,40 @@ export default function ProjectChatPage() {
             }
         },
         [ensureChat, projectId, projectLabel, userId]
+    )
+
+    const touchChatLocally = useCallback(
+        (chatId: string, previewText: string) => {
+            const nowIso = new Date().toISOString()
+            const preview = previewText.trim().slice(0, 120)
+            setChats((prev) => {
+                const next = [...(prev || [])]
+                const idx = next.findIndex((c) => c.chat_id === chatId)
+                if (idx >= 0) {
+                    const current = next[idx]
+                    const updated: DrawerChat = {
+                        ...current,
+                        branch: current.branch || branch,
+                        updated_at: nowIso,
+                    }
+                    if (!(current.title || "").trim() && preview) {
+                        updated.title = preview
+                    }
+                    next.splice(idx, 1)
+                    next.unshift(updated)
+                    return dedupeChatsById(next)
+                }
+                next.unshift({
+                    chat_id: chatId,
+                    title: preview || `${projectLabel} / ${branch}`,
+                    branch,
+                    updated_at: nowIso,
+                    created_at: nowIso,
+                })
+                return dedupeChatsById(next)
+            })
+        },
+        [branch, projectLabel]
     )
 
     const loadChatToolConfig = useCallback(
@@ -847,13 +898,15 @@ export default function ProjectChatPage() {
             const optimisticUserText = pendingAnswer || q
             if (!optimisticUserText || sending || !selectedChatId) return
 
+            const userTs = new Date().toISOString()
             setSending(true)
             setError(null)
             setLastToolEvents([])
             if (opts?.clearComposer !== false) {
                 setInput("")
             }
-            setMessages((prev) => [...prev, { role: "user", content: optimisticUserText, ts: new Date().toISOString() }])
+            setMessages((prev) => [...prev, { role: "user", content: optimisticUserText, ts: userTs }])
+            touchChatLocally(selectedChatId, optimisticUserText)
 
             try {
                 let effectiveQuestion = q || pendingAnswer
@@ -893,6 +946,7 @@ export default function ProjectChatPage() {
                 })
 
                 if (res.answer?.trim()) {
+                    const assistantText = String(res.answer || "").trim()
                     setMessages((prev) => [
                         ...prev,
                         {
@@ -902,6 +956,7 @@ export default function ProjectChatPage() {
                             meta: { sources: res.sources || [], grounded: res.grounded ?? undefined },
                         },
                     ])
+                    touchChatLocally(selectedChatId, assistantText || optimisticUserText)
                 }
                 setLastToolEvents(res.tool_events || [])
                 setChatMemory((res.memory_summary as ChatMemorySummary) || null)
@@ -910,9 +965,6 @@ export default function ProjectChatPage() {
                 if (activePending) {
                     setPendingAnswerInput("")
                 }
-
-                await Promise.all([loadMessages(selectedChatId), loadChatMemoryState(selectedChatId)])
-                await loadChats(branch, selectedChatId)
             } catch (err) {
                 setError(errText(err))
             } finally {
@@ -922,9 +974,6 @@ export default function ProjectChatPage() {
         [
             branch,
             input,
-            loadChatMemoryState,
-            loadChats,
-            loadMessages,
             maybeAutoGenerateDocsFromQuestion,
             pendingUserQuestion,
             project?.repo_path,
@@ -932,6 +981,7 @@ export default function ProjectChatPage() {
             selectedChatId,
             selectedLlmProfileId,
             sending,
+            touchChatLocally,
             userId,
         ]
     )
