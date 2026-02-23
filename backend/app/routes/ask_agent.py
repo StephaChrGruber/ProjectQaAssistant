@@ -36,6 +36,7 @@ from .ask_agent_clarification import (
 )
 from .ask_agent_policy import (
     extract_clarification_policy as _extract_clarification_policy,
+    route_intent as _route_intent,
     extract_grounding_policy as _extract_grounding_policy,
     extract_llm_routing as _extract_llm_routing,
     extract_memory_policy as _extract_memory_policy,
@@ -50,6 +51,7 @@ from .ask_agent_sources import (
 from .ask_agent_tool_policy import (
     active_approved_tools as _active_approved_tools,
     apply_role_tool_policy as _apply_role_tool_policy,
+    as_tool_name_list as _as_tool_name_list,
     extract_max_tool_calls as _extract_max_tool_calls,
     extract_tool_policy as _extract_tool_policy,
     merge_tool_policies as _merge_tool_policies,
@@ -58,6 +60,13 @@ from .ask_agent_tool_policy import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+_DEFAULT_CLARIFICATION_POLICY = {
+    "enabled": True,
+    "budget_per_goal": 3,
+    "continue_forces_progress": True,
+    "allow_repeat_on_conflict": True,
+}
 
 class AskReq(BaseModel):
     project_id: str
