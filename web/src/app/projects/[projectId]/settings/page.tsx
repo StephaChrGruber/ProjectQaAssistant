@@ -1,12 +1,25 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { ReactNode, useCallback, useEffect, useMemo, useState } from "react"
 import { useParams, useRouter, useSearchParams } from "next/navigation"
 import {
     Alert,
     Box,
+    List,
+    ListItemButton,
+    ListItemIcon,
+    ListItemText,
+    Paper,
     Stack,
+    Typography,
 } from "@mui/material"
+import DashboardRounded from "@mui/icons-material/DashboardRounded"
+import TuneRounded from "@mui/icons-material/TuneRounded"
+import HubRounded from "@mui/icons-material/HubRounded"
+import QueryStatsRounded from "@mui/icons-material/QueryStatsRounded"
+import ScienceRounded from "@mui/icons-material/ScienceRounded"
+import SecurityRounded from "@mui/icons-material/SecurityRounded"
+import HistoryRounded from "@mui/icons-material/HistoryRounded"
 import { backendJson } from "@/lib/backend"
 import {
     ProjectDrawerLayout,
@@ -17,7 +30,7 @@ import {
 import { buildChatPath, saveLastChat } from "@/lib/last-chat"
 import PathPickerDialog from "@/components/PathPickerDialog"
 import DetailCard from "@/features/project-settings/DetailCard"
-import ProjectSettingsAdminPanel from "@/features/project-settings/ProjectSettingsAdminPanel"
+import ProjectSettingsAdminPanel, { type AdminPanelSection } from "@/features/project-settings/ProjectSettingsAdminPanel"
 import { ProjectSettingsOverviewCards } from "@/features/project-settings/ProjectSettingsOverviewCards"
 import { hasLocalRepoSnapshot, isBrowserLocalRepoPath } from "@/lib/local-repo-bridge"
 import {
@@ -63,6 +76,25 @@ import {
     type ProjectEditForm,
     type QaMetricsResponse,
 } from "@/features/project-settings/form-model"
+
+type EmbeddedSettingsSection = "overview" | Exclude<AdminPanelSection, "all">
+
+type EmbeddedSectionDef = {
+    id: EmbeddedSettingsSection
+    label: string
+    icon: ReactNode
+    adminOnly?: boolean
+}
+
+const EMBEDDED_SETTINGS_SECTIONS: EmbeddedSectionDef[] = [
+    { id: "overview", label: "Overview", icon: <DashboardRounded fontSize="small" /> },
+    { id: "project", label: "Project + LLM", icon: <TuneRounded fontSize="small" />, adminOnly: true },
+    { id: "connectors", label: "Connectors", icon: <HubRounded fontSize="small" />, adminOnly: true },
+    { id: "reliability", label: "Reliability", icon: <QueryStatsRounded fontSize="small" />, adminOnly: true },
+    { id: "evaluation", label: "Evaluations", icon: <ScienceRounded fontSize="small" />, adminOnly: true },
+    { id: "feature_flags", label: "Runtime Flags", icon: <SecurityRounded fontSize="small" />, adminOnly: true },
+    { id: "audit", label: "Audit", icon: <HistoryRounded fontSize="small" />, adminOnly: true },
+]
 
 export default function ProjectSettingsPage() {
     const { projectId } = useParams<{ projectId: string }>()
@@ -133,6 +165,7 @@ export default function ProjectSettingsPage() {
     const [connectorHealth, setConnectorHealth] = useState<ConnectorHealthResponse | null>(null)
     const [connectorHealthHistory, setConnectorHealthHistory] = useState<ConnectorHealthHistoryResponse | null>(null)
     const [loadingConnectorHealth, setLoadingConnectorHealth] = useState(false)
+    const [embeddedSection, setEmbeddedSection] = useState<EmbeddedSettingsSection>("overview")
 
     const projectLabel = useMemo(
         () => project?.name || project?.key || projectId,
@@ -144,11 +177,32 @@ export default function ProjectSettingsPage() {
         [editForm.repo_path, projectId]
     )
     const embedded = searchParams.get("embedded") === "1"
+    const requestedEmbeddedSection = (searchParams.get("section") || "").trim() as EmbeddedSettingsSection
 
     const providerOptions = useMemo(
         () => resolveProviderOptions(llmOptions, DEFAULT_PROVIDER_OPTIONS),
         [llmOptions]
     )
+
+    const embeddedSections = useMemo(
+        () => EMBEDDED_SETTINGS_SECTIONS.filter((section) => !section.adminOnly || Boolean(me?.isGlobalAdmin)),
+        [me?.isGlobalAdmin]
+    )
+
+    useEffect(() => {
+        if (!embedded) return
+        if (
+            requestedEmbeddedSection &&
+            embeddedSections.some((section) => section.id === requestedEmbeddedSection)
+        ) {
+            setEmbeddedSection(requestedEmbeddedSection)
+            return
+        }
+        setEmbeddedSection((prev) => {
+            if (embeddedSections.some((section) => section.id === prev)) return prev
+            return embeddedSections[0]?.id || "overview"
+        })
+    }, [embedded, embeddedSections, requestedEmbeddedSection])
 
     const defaultBaseUrlForProvider = useCallback(
         (provider: string) =>
@@ -764,73 +818,185 @@ export default function ProjectSettingsPage() {
 
     const settingsBody = (
         <Box sx={{ minHeight: 0, flex: 1, overflowY: "auto", px: { xs: 1.1, md: 2 }, py: { xs: 1, md: 1.4 } }}>
-            <Stack spacing={1.25} sx={{ maxWidth: 980, mx: "auto" }}>
-                <ProjectSettingsOverviewCards
-                    projectId={projectId}
-                    project={project}
-                    projectLabel={projectLabel}
-                    isGlobalAdmin={Boolean(me?.isGlobalAdmin)}
-                />
+            {embedded ? (
+                <Box
+                    sx={{
+                        maxWidth: 1220,
+                        mx: "auto",
+                        display: "grid",
+                        gap: 1.15,
+                        gridTemplateColumns: { xs: "1fr", md: "220px minmax(0, 1fr)" },
+                        alignItems: "start",
+                    }}
+                >
+                    <Paper
+                        variant="outlined"
+                        sx={{
+                            p: 0.55,
+                            borderRadius: 1.5,
+                            position: { md: "sticky" },
+                            top: 0,
+                        }}
+                    >
+                        <Typography variant="caption" color="text.secondary" sx={{ px: 1, py: 0.6, display: "block" }}>
+                            Settings Sections
+                        </Typography>
+                        <List dense sx={{ pt: 0.2 }}>
+                            {embeddedSections.map((section) => (
+                                <ListItemButton
+                                    key={section.id}
+                                    selected={embeddedSection === section.id}
+                                    onClick={() => setEmbeddedSection(section.id)}
+                                    sx={{ borderRadius: 1.25, mb: 0.2 }}
+                                >
+                                    <ListItemIcon sx={{ minWidth: 30 }}>{section.icon}</ListItemIcon>
+                                    <ListItemText primary={section.label} />
+                                </ListItemButton>
+                            ))}
+                        </List>
+                    </Paper>
 
-                {error && <Alert severity="error">{error}</Alert>}
-                {notice && <Alert severity="success">{notice}</Alert>}
+                    <Stack spacing={1.25} sx={{ minWidth: 0 }}>
+                        {error && <Alert severity="error">{error}</Alert>}
+                        {notice && <Alert severity="success">{notice}</Alert>}
 
-                {me?.isGlobalAdmin && (
-                    <ProjectSettingsAdminPanel
+                        {embeddedSection === "overview" && (
+                            <ProjectSettingsOverviewCards
+                                projectId={projectId}
+                                project={project}
+                                projectLabel={projectLabel}
+                                isGlobalAdmin={Boolean(me?.isGlobalAdmin)}
+                            />
+                        )}
+
+                        {me?.isGlobalAdmin && embeddedSection !== "overview" && (
+                            <ProjectSettingsAdminPanel
+                                section={embeddedSection}
+                                projectId={projectId}
+                                branch={branch}
+                                editForm={editForm}
+                                setEditForm={setEditForm}
+                                isBrowserLocalRepoPath={isBrowserLocalRepoPath}
+                                localRepoConfiguredInBrowser={localRepoConfiguredInBrowser}
+                                setPathPickerOpen={setPathPickerOpen}
+                                llmProfiles={llmProfiles}
+                                providerOptions={providerOptions}
+                                applyProviderChange={applyProviderChange}
+                                editModelOptions={editModelOptions}
+                                onSaveProjectSettings={onSaveProjectSettings}
+                                savingProject={savingProject}
+                                savingConnector={savingConnector}
+                                ingesting={ingesting}
+                                loadLlmOptions={loadLlmOptions}
+                                loadingLlmOptions={loadingLlmOptions}
+                                llmOptionsError={llmOptionsError}
+                                gitForm={gitForm}
+                                setGitForm={setGitForm}
+                                bitbucketForm={bitbucketForm}
+                                setBitbucketForm={setBitbucketForm}
+                                azureDevOpsForm={azureDevOpsForm}
+                                setAzureDevOpsForm={setAzureDevOpsForm}
+                                localConnectorForm={localConnectorForm}
+                                setLocalConnectorForm={setLocalConnectorForm}
+                                confluenceForm={confluenceForm}
+                                setConfluenceForm={setConfluenceForm}
+                                jiraForm={jiraForm}
+                                setJiraForm={setJiraForm}
+                                saveConnector={saveConnector}
+                                runIngest={runIngest}
+                                runningIncrementalIngest={runningIncrementalIngest}
+                                runIncrementalIngest={runIncrementalIngest}
+                                loadQaMetrics={loadQaMetrics}
+                                loadingQaMetrics={loadingQaMetrics}
+                                qaMetrics={qaMetrics}
+                                evaluationQuestions={evaluationQuestions}
+                                setEvaluationQuestions={setEvaluationQuestions}
+                                runEvaluations={runEvaluations}
+                                runningEvaluations={runningEvaluations}
+                                latestEvalRun={latestEvalRun}
+                                featureFlags={featureFlags}
+                                setFeatureFlags={setFeatureFlags}
+                                saveFeatureFlags={saveFeatureFlags}
+                                savingFeatureFlags={savingFeatureFlags}
+                                connectorHealth={connectorHealth}
+                                connectorHealthHistory={connectorHealthHistory}
+                                loadingConnectorHealth={loadingConnectorHealth}
+                                refreshConnectorHealth={refreshConnectorHealth}
+                                DetailCardComponent={DetailCard}
+                            />
+                        )}
+                    </Stack>
+                </Box>
+            ) : (
+                <Stack spacing={1.25} sx={{ maxWidth: 980, mx: "auto" }}>
+                    <ProjectSettingsOverviewCards
                         projectId={projectId}
-                        branch={branch}
-                        editForm={editForm}
-                        setEditForm={setEditForm}
-                        isBrowserLocalRepoPath={isBrowserLocalRepoPath}
-                        localRepoConfiguredInBrowser={localRepoConfiguredInBrowser}
-                        setPathPickerOpen={setPathPickerOpen}
-                        llmProfiles={llmProfiles}
-                        providerOptions={providerOptions}
-                        applyProviderChange={applyProviderChange}
-                        editModelOptions={editModelOptions}
-                        onSaveProjectSettings={onSaveProjectSettings}
-                        savingProject={savingProject}
-                        savingConnector={savingConnector}
-                        ingesting={ingesting}
-                        loadLlmOptions={loadLlmOptions}
-                        loadingLlmOptions={loadingLlmOptions}
-                        llmOptionsError={llmOptionsError}
-                        gitForm={gitForm}
-                        setGitForm={setGitForm}
-                        bitbucketForm={bitbucketForm}
-                        setBitbucketForm={setBitbucketForm}
-                        azureDevOpsForm={azureDevOpsForm}
-                        setAzureDevOpsForm={setAzureDevOpsForm}
-                        localConnectorForm={localConnectorForm}
-                        setLocalConnectorForm={setLocalConnectorForm}
-                        confluenceForm={confluenceForm}
-                        setConfluenceForm={setConfluenceForm}
-                        jiraForm={jiraForm}
-                        setJiraForm={setJiraForm}
-                        saveConnector={saveConnector}
-                        runIngest={runIngest}
-                        runningIncrementalIngest={runningIncrementalIngest}
-                        runIncrementalIngest={runIncrementalIngest}
-                        loadQaMetrics={loadQaMetrics}
-                        loadingQaMetrics={loadingQaMetrics}
-                        qaMetrics={qaMetrics}
-                        evaluationQuestions={evaluationQuestions}
-                        setEvaluationQuestions={setEvaluationQuestions}
-                        runEvaluations={runEvaluations}
-                        runningEvaluations={runningEvaluations}
-                        latestEvalRun={latestEvalRun}
-                        featureFlags={featureFlags}
-                        setFeatureFlags={setFeatureFlags}
-                        saveFeatureFlags={saveFeatureFlags}
-                        savingFeatureFlags={savingFeatureFlags}
-                        connectorHealth={connectorHealth}
-                        connectorHealthHistory={connectorHealthHistory}
-                        loadingConnectorHealth={loadingConnectorHealth}
-                        refreshConnectorHealth={refreshConnectorHealth}
-                        DetailCardComponent={DetailCard}
+                        project={project}
+                        projectLabel={projectLabel}
+                        isGlobalAdmin={Boolean(me?.isGlobalAdmin)}
                     />
-                )}
-            </Stack>
+
+                    {error && <Alert severity="error">{error}</Alert>}
+                    {notice && <Alert severity="success">{notice}</Alert>}
+
+                    {me?.isGlobalAdmin && (
+                        <ProjectSettingsAdminPanel
+                            section="all"
+                            projectId={projectId}
+                            branch={branch}
+                            editForm={editForm}
+                            setEditForm={setEditForm}
+                            isBrowserLocalRepoPath={isBrowserLocalRepoPath}
+                            localRepoConfiguredInBrowser={localRepoConfiguredInBrowser}
+                            setPathPickerOpen={setPathPickerOpen}
+                            llmProfiles={llmProfiles}
+                            providerOptions={providerOptions}
+                            applyProviderChange={applyProviderChange}
+                            editModelOptions={editModelOptions}
+                            onSaveProjectSettings={onSaveProjectSettings}
+                            savingProject={savingProject}
+                            savingConnector={savingConnector}
+                            ingesting={ingesting}
+                            loadLlmOptions={loadLlmOptions}
+                            loadingLlmOptions={loadingLlmOptions}
+                            llmOptionsError={llmOptionsError}
+                            gitForm={gitForm}
+                            setGitForm={setGitForm}
+                            bitbucketForm={bitbucketForm}
+                            setBitbucketForm={setBitbucketForm}
+                            azureDevOpsForm={azureDevOpsForm}
+                            setAzureDevOpsForm={setAzureDevOpsForm}
+                            localConnectorForm={localConnectorForm}
+                            setLocalConnectorForm={setLocalConnectorForm}
+                            confluenceForm={confluenceForm}
+                            setConfluenceForm={setConfluenceForm}
+                            jiraForm={jiraForm}
+                            setJiraForm={setJiraForm}
+                            saveConnector={saveConnector}
+                            runIngest={runIngest}
+                            runningIncrementalIngest={runningIncrementalIngest}
+                            runIncrementalIngest={runIncrementalIngest}
+                            loadQaMetrics={loadQaMetrics}
+                            loadingQaMetrics={loadingQaMetrics}
+                            qaMetrics={qaMetrics}
+                            evaluationQuestions={evaluationQuestions}
+                            setEvaluationQuestions={setEvaluationQuestions}
+                            runEvaluations={runEvaluations}
+                            runningEvaluations={runningEvaluations}
+                            latestEvalRun={latestEvalRun}
+                            featureFlags={featureFlags}
+                            setFeatureFlags={setFeatureFlags}
+                            saveFeatureFlags={saveFeatureFlags}
+                            savingFeatureFlags={savingFeatureFlags}
+                            connectorHealth={connectorHealth}
+                            connectorHealthHistory={connectorHealthHistory}
+                            loadingConnectorHealth={loadingConnectorHealth}
+                            refreshConnectorHealth={refreshConnectorHealth}
+                            DetailCardComponent={DetailCard}
+                        />
+                    )}
+                </Stack>
+            )}
 
             <PathPickerDialog
                 open={pathPickerOpen}

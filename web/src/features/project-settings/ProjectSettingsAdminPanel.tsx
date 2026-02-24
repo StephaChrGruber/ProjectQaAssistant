@@ -26,6 +26,15 @@ import {
 
 type LoadOptionsArgs = { openaiApiKey?: string; openaiBaseUrl?: string }
 
+export type AdminPanelSection =
+    | "all"
+    | "project"
+    | "connectors"
+    | "reliability"
+    | "evaluation"
+    | "feature_flags"
+    | "audit"
+
 type ProjectSettingsAdminPanelProps = {
     projectId: string
     branch: string
@@ -78,6 +87,7 @@ type ProjectSettingsAdminPanelProps = {
     loadingConnectorHealth: boolean
     refreshConnectorHealth: () => Promise<void>
     DetailCardComponent: ComponentType<{ title: string; value: string }>
+    section?: AdminPanelSection
 }
 
 export default function ProjectSettingsAdminPanel(props: ProjectSettingsAdminPanelProps) {
@@ -133,79 +143,92 @@ export default function ProjectSettingsAdminPanel(props: ProjectSettingsAdminPan
         loadingConnectorHealth,
         refreshConnectorHealth,
         DetailCardComponent,
+        section = "all",
     } = props
+
+    const show = (name: Exclude<AdminPanelSection, "all">) => section === "all" || section === name
 
     return (
         <>
-            <ProjectSettingsFormCard
-                editForm={editForm}
-                setEditForm={setEditForm}
-                isBrowserLocalRepoPath={isBrowserLocalRepoPath}
-                localRepoConfiguredInBrowser={localRepoConfiguredInBrowser}
-                setPathPickerOpen={setPathPickerOpen}
-                llmProfiles={llmProfiles}
-                providerOptions={providerOptions}
-                applyProviderChange={applyProviderChange}
-                editModelOptions={editModelOptions}
-                onSaveProjectSettings={onSaveProjectSettings}
-                savingProject={savingProject}
-                savingConnector={savingConnector}
-                ingesting={ingesting}
-                loadLlmOptions={loadLlmOptions}
-                loadingLlmOptions={loadingLlmOptions}
-                llmOptionsError={llmOptionsError}
-            />
+            {show("project") && (
+                <ProjectSettingsFormCard
+                    editForm={editForm}
+                    setEditForm={setEditForm}
+                    isBrowserLocalRepoPath={isBrowserLocalRepoPath}
+                    localRepoConfiguredInBrowser={localRepoConfiguredInBrowser}
+                    setPathPickerOpen={setPathPickerOpen}
+                    llmProfiles={llmProfiles}
+                    providerOptions={providerOptions}
+                    applyProviderChange={applyProviderChange}
+                    editModelOptions={editModelOptions}
+                    onSaveProjectSettings={onSaveProjectSettings}
+                    savingProject={savingProject}
+                    savingConnector={savingConnector}
+                    ingesting={ingesting}
+                    loadLlmOptions={loadLlmOptions}
+                    loadingLlmOptions={loadingLlmOptions}
+                    llmOptionsError={llmOptionsError}
+                />
+            )}
 
-            <SourceConnectorsCard
-                gitForm={gitForm}
-                setGitForm={setGitForm}
-                bitbucketForm={bitbucketForm}
-                setBitbucketForm={setBitbucketForm}
-                azureDevOpsForm={azureDevOpsForm}
-                setAzureDevOpsForm={setAzureDevOpsForm}
-                localConnectorForm={localConnectorForm}
-                setLocalConnectorForm={setLocalConnectorForm}
-                confluenceForm={confluenceForm}
-                setConfluenceForm={setConfluenceForm}
-                jiraForm={jiraForm}
-                setJiraForm={setJiraForm}
-                saveConnector={saveConnector}
-                runIngest={runIngest}
-                runIncrementalIngest={runIncrementalIngest}
-                savingProject={savingProject}
-                savingConnector={savingConnector}
-                ingesting={ingesting}
-                runningIncrementalIngest={runningIncrementalIngest}
-            />
+            {show("connectors") && (
+                <SourceConnectorsCard
+                    gitForm={gitForm}
+                    setGitForm={setGitForm}
+                    bitbucketForm={bitbucketForm}
+                    setBitbucketForm={setBitbucketForm}
+                    azureDevOpsForm={azureDevOpsForm}
+                    setAzureDevOpsForm={setAzureDevOpsForm}
+                    localConnectorForm={localConnectorForm}
+                    setLocalConnectorForm={setLocalConnectorForm}
+                    confluenceForm={confluenceForm}
+                    setConfluenceForm={setConfluenceForm}
+                    jiraForm={jiraForm}
+                    setJiraForm={setJiraForm}
+                    saveConnector={saveConnector}
+                    runIngest={runIngest}
+                    runIncrementalIngest={runIncrementalIngest}
+                    savingProject={savingProject}
+                    savingConnector={savingConnector}
+                    ingesting={ingesting}
+                    runningIncrementalIngest={runningIncrementalIngest}
+                />
+            )}
 
-            <ReliabilityDashboardCard
-                qaMetrics={qaMetrics}
-                loadQaMetrics={loadQaMetrics}
-                loadingQaMetrics={loadingQaMetrics}
-                DetailCardComponent={DetailCardComponent}
-            />
+            {show("reliability") && (
+                <ReliabilityDashboardCard
+                    qaMetrics={qaMetrics}
+                    loadQaMetrics={loadQaMetrics}
+                    loadingQaMetrics={loadingQaMetrics}
+                    DetailCardComponent={DetailCardComponent}
+                />
+            )}
 
-            <EvaluationRunnerCard
-                evaluationQuestions={evaluationQuestions}
-                setEvaluationQuestions={setEvaluationQuestions}
-                runEvaluations={runEvaluations}
-                runningEvaluations={runningEvaluations}
-                latestEvalRun={latestEvalRun}
-                DetailCardComponent={DetailCardComponent}
-            />
+            {show("evaluation") && (
+                <EvaluationRunnerCard
+                    evaluationQuestions={evaluationQuestions}
+                    setEvaluationQuestions={setEvaluationQuestions}
+                    runEvaluations={runEvaluations}
+                    runningEvaluations={runningEvaluations}
+                    latestEvalRun={latestEvalRun}
+                    DetailCardComponent={DetailCardComponent}
+                />
+            )}
 
-            <FeatureFlagsCard
-                featureFlags={featureFlags}
-                onChange={setFeatureFlags}
-                onSave={saveFeatureFlags}
-                saving={savingFeatureFlags}
-                connectorHealth={connectorHealth}
-                connectorHealthHistory={connectorHealthHistory}
-                connectorHealthLoading={loadingConnectorHealth}
-                onRefreshConnectorHealth={refreshConnectorHealth}
-            />
+            {show("feature_flags") && (
+                <FeatureFlagsCard
+                    featureFlags={featureFlags}
+                    onChange={setFeatureFlags}
+                    onSave={saveFeatureFlags}
+                    saving={savingFeatureFlags}
+                    connectorHealth={connectorHealth}
+                    connectorHealthHistory={connectorHealthHistory}
+                    connectorHealthLoading={loadingConnectorHealth}
+                    onRefreshConnectorHealth={refreshConnectorHealth}
+                />
+            )}
 
-            <AuditEventsCard projectId={projectId} branch={branch} />
+            {show("audit") && <AuditEventsCard projectId={projectId} branch={branch} />}
         </>
     )
 }
