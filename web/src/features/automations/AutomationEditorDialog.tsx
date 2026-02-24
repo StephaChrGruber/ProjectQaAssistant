@@ -28,6 +28,7 @@ type SavePayload = {
   conditions: Record<string, unknown>
   action: Record<string, unknown>
   cooldown_sec: number
+  run_access: "member_runnable" | "admin_only"
   tags: string[]
 }
 
@@ -106,6 +107,7 @@ export default function AutomationEditorDialog(props: Props) {
   const [actionType, setActionType] = useState("create_chat_task")
   const [actionParamsText, setActionParamsText] = useState("{}")
   const [cooldownSec, setCooldownSec] = useState(0)
+  const [runAccess, setRunAccess] = useState<"member_runnable" | "admin_only">("member_runnable")
   const [tagsText, setTagsText] = useState("")
   const [validationError, setValidationError] = useState<string | null>(null)
 
@@ -137,6 +139,8 @@ export default function AutomationEditorDialog(props: Props) {
     setActionType(actionTypeSeed)
     setActionParamsText(prettyJson((action.params as Record<string, unknown>) || defaultActionParams(actionTypeSeed)))
     setCooldownSec(Number(seed?.cooldown_sec || 0))
+    const seededRunAccess = String((seed as AutomationDoc | null)?.run_access || "member_runnable")
+    setRunAccess(seededRunAccess === "admin_only" ? "admin_only" : "member_runnable")
     setTagsText(Array.isArray(seed?.tags) ? seed?.tags.join(", ") : "")
     setValidationError(null)
   }, [open, seed])
@@ -191,6 +195,7 @@ export default function AutomationEditorDialog(props: Props) {
       conditions,
       action: { type: actionType, params: actionParams },
       cooldown_sec: Math.max(0, Math.min(Number(cooldownSec || 0), 24 * 3600)),
+      run_access: runAccess,
       tags,
     })
   }
@@ -321,6 +326,21 @@ export default function AutomationEditorDialog(props: Props) {
               onChange={(e) => setCooldownSec(Number(e.target.value || 0))}
               fullWidth
             />
+            <FormControl fullWidth size="small">
+              <InputLabel id="automation-run-access">Run Access</InputLabel>
+              <Select
+                labelId="automation-run-access"
+                label="Run Access"
+                value={runAccess}
+                onChange={(e) => {
+                  const next = String(e.target.value) as "member_runnable" | "admin_only"
+                  setRunAccess(next === "admin_only" ? "admin_only" : "member_runnable")
+                }}
+              >
+                <MenuItem value="member_runnable">Member runnable</MenuItem>
+                <MenuItem value="admin_only">Admin only</MenuItem>
+              </Select>
+            </FormControl>
             <TextField
               label="Tags (CSV)"
               size="small"
@@ -354,4 +374,3 @@ export default function AutomationEditorDialog(props: Props) {
     </Dialog>
   )
 }
-

@@ -3225,6 +3225,7 @@ async def create_automation(req: CreateAutomationRequest, ctx: Any | None = None
         conditions=req.conditions if isinstance(req.conditions, dict) else {},
         action=req.action if isinstance(req.action, dict) else {},
         cooldown_sec=int(req.cooldown_sec or 0),
+        run_access=str(req.run_access or "member_runnable"),
         tags=req.tags if isinstance(req.tags, list) else [],
     )
     logger.info(
@@ -3249,7 +3250,7 @@ async def list_automations(req: ListAutomationsRequest) -> ListAutomationsRespon
 async def update_automation(req: UpdateAutomationRequest, ctx: Any | None = None) -> UpdateAutomationResponse:
     user_id = _ctx_field(ctx, "user_id") or "agent@system"
     patch: dict[str, Any] = {}
-    for key in ("name", "description", "enabled", "trigger", "conditions", "action", "cooldown_sec", "tags"):
+    for key in ("name", "description", "enabled", "trigger", "conditions", "action", "cooldown_sec", "run_access", "tags"):
         value = getattr(req, key, None)
         if value is None:
             continue
@@ -3291,6 +3292,8 @@ async def run_automation(req: RunAutomationRequest, ctx: Any | None = None) -> R
             triggered_by="manual",
             event_type="manual",
             event_payload=payload,
+            user_id=str(payload.get("user_id") or ""),
+            dry_run=bool(req.dry_run),
         )
     except ValueError as err:
         raise RuntimeError(str(err))

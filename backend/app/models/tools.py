@@ -576,6 +576,7 @@ class CreateAutomationRequest(BaseModel):
     conditions: Dict[str, Any] = Field(default_factory=dict)
     action: Dict[str, Any]
     cooldown_sec: int = 0
+    run_access: Literal["member_runnable", "admin_only"] = "member_runnable"
     tags: List[str] = Field(default_factory=list)
 
 
@@ -605,6 +606,7 @@ class UpdateAutomationRequest(BaseModel):
     conditions: Optional[Dict[str, Any]] = None
     action: Optional[Dict[str, Any]] = None
     cooldown_sec: Optional[int] = None
+    run_access: Optional[Literal["member_runnable", "admin_only"]] = None
     tags: Optional[List[str]] = None
 
 
@@ -628,6 +630,7 @@ class RunAutomationRequest(BaseModel):
     project_id: str
     automation_id: str = Field(alias="id")
     payload: Dict[str, Any] = Field(default_factory=dict)
+    dry_run: bool = False
 
 
 class RunAutomationResponse(BaseModel):

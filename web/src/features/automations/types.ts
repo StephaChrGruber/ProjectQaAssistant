@@ -25,6 +25,7 @@ export type AutomationDoc = {
   conditions?: Record<string, unknown>
   action: AutomationAction
   cooldown_sec?: number
+  run_access?: "member_runnable" | "admin_only" | string
   tags?: string[]
   next_run_at?: string | null
   last_run_at?: string | null
@@ -41,7 +42,7 @@ export type AutomationRunDoc = {
   project_id: string
   triggered_by: string
   event_type: string
-  status: string
+  status: "succeeded" | "failed" | "dry_run" | string
   error?: string
   result?: Record<string, unknown>
   event_payload?: Record<string, unknown>
@@ -58,6 +59,7 @@ export type AutomationTemplate = {
   conditions?: Record<string, unknown>
   action: AutomationAction
   cooldown_sec?: number
+  run_access?: "member_runnable" | "admin_only" | string
   tags?: string[]
 }
 
@@ -95,4 +97,3 @@ export function prettyJson(value: unknown): string {
     return "{}"
   }
 }
-

@@ -7,6 +7,9 @@ import {
   Box,
   Button,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
   Divider,
   FormControlLabel,
   List,
@@ -15,6 +18,7 @@ import {
   Paper,
   Stack,
   Switch,
+  TextField,
   Tooltip,
   Typography,
 } from "@mui/material"
@@ -23,6 +27,7 @@ import PlayArrowRounded from "@mui/icons-material/PlayArrowRounded"
 import EditRounded from "@mui/icons-material/EditRounded"
 import DeleteRounded from "@mui/icons-material/DeleteRounded"
 import TipsAndUpdatesRounded from "@mui/icons-material/TipsAndUpdatesRounded"
+import ScienceRounded from "@mui/icons-material/ScienceRounded"
 import { backendJson } from "@/lib/backend"
 import { buildChatPath, saveLastChat } from "@/lib/last-chat"
 import {
@@ -32,8 +37,10 @@ import {
   type DrawerUser,
 } from "@/components/ProjectDrawerLayout"
 import AutomationEditorDialog from "@/features/automations/AutomationEditorDialog"
+import AutomationRunsTimeline from "@/features/automations/AutomationRunsTimeline"
 import {
   automationErrText,
+  prettyJson,
   type AutomationDoc,
   type AutomationRunDoc,
   type AutomationTemplate,
@@ -86,6 +93,10 @@ export default function ProjectAutomationsPage() {
   const [editorMode, setEditorMode] = useState<"create" | "edit">("create")
   const [editingAutomation, setEditingAutomation] = useState<AutomationDoc | null>(null)
   const [seedTemplate, setSeedTemplate] = useState<AutomationTemplate | null>(null)
+  const [simulateOpen, setSimulateOpen] = useState(false)
+  const [simulateTarget, setSimulateTarget] = useState<AutomationDoc | null>(null)
+  const [simulatePayloadText, setSimulatePayloadText] = useState("")
+  const [simulateResult, setSimulateResult] = useState("")
 
   const projectLabel = useMemo(
     () => project?.name || project?.key || projectId,
@@ -206,6 +217,26 @@ export default function ProjectAutomationsPage() {
     setEditorOpen(true)
   }, [])
 
+  const openSimulation = useCallback(
+    (item: AutomationDoc) => {
+      setSimulateTarget(item)
+      setSimulatePayloadText(
+        prettyJson({
+          project_id: projectId,
+          chat_id: selectedChatId,
+          branch,
+          user_id: userId,
+          question: "Sample simulation question",
+          tool_errors: 0,
+          failed_connectors: 0,
+        })
+      )
+      setSimulateResult("")
+      setSimulateOpen(true)
+    },
+    [branch, projectId, selectedChatId, userId]
+  )
+
   const saveAutomation = useCallback(
     async (payload: {
       name: string
@@ -215,6 +246,7 @@ export default function ProjectAutomationsPage() {
       conditions: Record<string, unknown>
       action: Record<string, unknown>
       cooldown_sec: number
+      run_access: "member_runnable" | "admin_only"
       tags: string[]
     }) => {
       setSaving(true)
@@ -245,22 +277,37 @@ export default function ProjectAutomationsPage() {
   )
 
   const runAutomationNow = useCallback(
-    async (automationId: string) => {
+    async (
+      automationId: string,
+      options?: {
+        dryRun?: boolean
+        payload?: Record<string, unknown>
+      }
+    ) => {
       setSaving(true)
       setError(null)
       try {
-        await backendJson(`/api/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(automationId)}/run`, {
-          method: "POST",
-          body: JSON.stringify({
-            payload: {
-              project_id: projectId,
-              chat_id: selectedChatId,
-              branch,
-              user_id: userId,
-            },
-          }),
-        })
-        setNotice("Automation run started.")
+        const payload = {
+          project_id: projectId,
+          chat_id: selectedChatId,
+          branch,
+          user_id: userId,
+          ...(options?.payload || {}),
+        }
+        const out = await backendJson<{ run?: AutomationRunDoc }>(
+          `/api/projects/${encodeURIComponent(projectId)}/automations/${encodeURIComponent(automationId)}/run`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              dry_run: Boolean(options?.dryRun),
+              payload,
+            }),
+          }
+        )
+        setNotice(options?.dryRun ? "Automation simulation completed." : "Automation run started.")
+        if (options?.dryRun && out?.run) {
+          setSimulateResult(prettyJson(out.run))
+        }
         await loadAutomations()
       } catch (err) {
         setError(automationErrText(err))
@@ -310,6 +357,23 @@ export default function ProjectAutomationsPage() {
     },
     [projectId]
   )
+
+  const runSimulation = useCallback(async () => {
+    if (!simulateTarget?.id) return
+    let payload: Record<string, unknown> = {}
+    try {
+      const parsed = JSON.parse(simulatePayloadText || "{}")
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        setError("Simulation payload must be a JSON object.")
+        return
+      }
+      payload = parsed as Record<string, unknown>
+    } catch {
+      setError("Simulation payload JSON is invalid.")
+      return
+    }
+    await runAutomationNow(simulateTarget.id, { dryRun: true, payload })
+  }, [runAutomationNow, simulatePayloadText, simulateTarget?.id])
 
   const onSelectChat = useCallback(
     (chat: DrawerChat, fromProjectId: string) => {
@@ -434,6 +498,11 @@ export default function ProjectAutomationsPage() {
                           <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
                             <Chip size="small" label={`trigger:${item.trigger?.type || "-"}`} variant="outlined" />
                             <Chip size="small" label={`action:${item.action?.type || "-"}`} variant="outlined" />
+                            <Chip
+                              size="small"
+                              label={item.run_access === "admin_only" ? "admin only" : "member runnable"}
+                              variant="outlined"
+                            />
                             {item.last_status ? (
                               <Chip
                                 size="small"
@@ -465,6 +534,15 @@ export default function ProjectAutomationsPage() {
                               disabled={saving}
                             >
                               Run
+                            </Button>
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              startIcon={<ScienceRounded />}
+                              onClick={() => openSimulation(item)}
+                              disabled={saving}
+                            >
+                              Simulate
                             </Button>
                             <Button
                               size="small"
@@ -518,7 +596,7 @@ export default function ProjectAutomationsPage() {
                         >
                           <ListItemText
                             primary={tpl.name}
-                            secondary={`${tpl.trigger?.type || "-"} → ${tpl.action?.type || "-"}`}
+                            secondary={`${tpl.trigger?.type || "-"} → ${tpl.action?.type || "-"} · ${tpl.run_access === "admin_only" ? "admin only" : "member runnable"}`}
                             primaryTypographyProps={{ fontSize: 13, fontWeight: 600 }}
                             secondaryTypographyProps={{ fontSize: 11 }}
                           />
@@ -542,6 +620,8 @@ export default function ProjectAutomationsPage() {
                     </Typography>
                     <Chip size="small" label={runs.length} />
                   </Stack>
+                  <Divider />
+                  <AutomationRunsTimeline runs={runs} />
                   <Divider />
                   <List dense sx={{ py: 0, maxHeight: 360, overflowY: "auto" }}>
                     {runs.map((row) => (
@@ -577,7 +657,58 @@ export default function ProjectAutomationsPage() {
         onClose={() => setEditorOpen(false)}
         onSave={saveAutomation}
       />
+
+      <Dialog open={simulateOpen} onClose={() => setSimulateOpen(false)} fullWidth maxWidth="md">
+        <DialogContent sx={{ pt: 2 }}>
+          <Stack spacing={1}>
+            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+              Dry-run Simulation
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Automation: {simulateTarget?.name || "-"}
+            </Typography>
+            <TextField
+              label="Sample Event Payload (JSON)"
+              value={simulatePayloadText}
+              onChange={(e) => setSimulatePayloadText(e.target.value)}
+              fullWidth
+              multiline
+              minRows={10}
+              sx={{
+                "& .MuiInputBase-input": {
+                  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                  fontSize: 12.5,
+                },
+              }}
+            />
+            <TextField
+              label="Simulation Result"
+              value={simulateResult}
+              fullWidth
+              multiline
+              minRows={8}
+              InputProps={{ readOnly: true }}
+              sx={{
+                "& .MuiInputBase-input": {
+                  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                  fontSize: 12.5,
+                },
+              }}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSimulateOpen(false)}>Close</Button>
+          <Button
+            variant="contained"
+            startIcon={<ScienceRounded />}
+            onClick={() => void runSimulation()}
+            disabled={saving || !simulateTarget?.id}
+          >
+            {saving ? "Running..." : "Run Dry-Run"}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </ProjectDrawerLayout>
   )
 }
-

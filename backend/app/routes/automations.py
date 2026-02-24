@@ -33,6 +33,7 @@ class CreateAutomationReq(BaseModel):
     conditions: dict[str, Any] = Field(default_factory=dict)
     action: dict[str, Any]
     cooldown_sec: int = 0
+    run_access: str = "member_runnable"
     tags: list[str] = Field(default_factory=list)
 
 
@@ -44,12 +45,14 @@ class UpdateAutomationReq(BaseModel):
     conditions: dict[str, Any] | None = None
     action: dict[str, Any] | None = None
     cooldown_sec: int | None = None
+    run_access: str | None = None
     tags: list[str] | None = None
 
 
 class RunAutomationReq(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     reason: str | None = None
+    dry_run: bool = False
 
 
 class DispatchEventReq(BaseModel):
@@ -122,6 +125,7 @@ async def post_project_automation(
             conditions=req.conditions,
             action=req.action,
             cooldown_sec=req.cooldown_sec,
+            run_access=req.run_access,
             tags=req.tags,
         )
     except ValueError as err:
@@ -204,7 +208,11 @@ async def run_project_automation(
             triggered_by="manual",
             event_type="manual",
             event_payload=payload,
+            user_id=user,
+            dry_run=bool(req.dry_run),
         )
+    except PermissionError as err:
+        raise HTTPException(status_code=403, detail=str(err))
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err))
     except KeyError:
@@ -251,4 +259,3 @@ async def post_project_automation_dispatch(
         len(runs),
     )
     return {"project_id": project_id, "event_type": str(req.event_type or "").strip(), "runs": runs}
-

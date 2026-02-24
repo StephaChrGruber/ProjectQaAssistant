@@ -34,6 +34,7 @@ AUTOMATION_TRIGGER_TYPES = {
     "schedule",
     "manual",
 }
+AUTOMATION_RUN_ACCESS_TYPES = {"member_runnable", "admin_only"}
 
 AUTOMATION_TEMPLATES: list[dict[str, Any]] = [
     {
@@ -52,6 +53,7 @@ AUTOMATION_TEMPLATES: list[dict[str, Any]] = [
             },
         },
         "cooldown_sec": 120,
+        "run_access": "member_runnable",
         "tags": ["reliability", "ops"],
     },
     {
@@ -62,6 +64,7 @@ AUTOMATION_TEMPLATES: list[dict[str, Any]] = [
         "conditions": {},
         "action": {"type": "generate_documentation", "params": {"branch": "main"}},
         "cooldown_sec": 0,
+        "run_access": "admin_only",
         "tags": ["documentation"],
     },
     {
@@ -72,6 +75,7 @@ AUTOMATION_TEMPLATES: list[dict[str, Any]] = [
         "conditions": {},
         "action": {"type": "run_incremental_ingestion", "params": {}},
         "cooldown_sec": 0,
+        "run_access": "admin_only",
         "tags": ["ingestion"],
     },
     {
@@ -89,6 +93,7 @@ AUTOMATION_TEMPLATES: list[dict[str, Any]] = [
             },
         },
         "cooldown_sec": 300,
+        "run_access": "member_runnable",
         "tags": ["connectors", "ops"],
     },
     {
@@ -107,6 +112,7 @@ AUTOMATION_TEMPLATES: list[dict[str, Any]] = [
             },
         },
         "cooldown_sec": 300,
+        "run_access": "member_runnable",
         "tags": ["ux", "reliability"],
     },
     {
@@ -124,6 +130,7 @@ AUTOMATION_TEMPLATES: list[dict[str, Any]] = [
             },
         },
         "cooldown_sec": 0,
+        "run_access": "member_runnable",
         "tags": ["documentation", "communication"],
     },
     {
@@ -141,6 +148,7 @@ AUTOMATION_TEMPLATES: list[dict[str, Any]] = [
             },
         },
         "cooldown_sec": 120,
+        "run_access": "member_runnable",
         "tags": ["triage"],
     },
     {
@@ -157,6 +165,7 @@ AUTOMATION_TEMPLATES: list[dict[str, Any]] = [
             },
         },
         "cooldown_sec": 0,
+        "run_access": "member_runnable",
         "tags": ["productivity"],
     },
     {
@@ -167,6 +176,7 @@ AUTOMATION_TEMPLATES: list[dict[str, Any]] = [
         "conditions": {"failed_connectors_min": 1},
         "action": {"type": "run_incremental_ingestion", "params": {}},
         "cooldown_sec": 900,
+        "run_access": "admin_only",
         "tags": ["ingestion", "connectors"],
     },
     {
@@ -177,6 +187,7 @@ AUTOMATION_TEMPLATES: list[dict[str, Any]] = [
         "conditions": {},
         "action": {"type": "generate_documentation", "params": {"branch": "main"}},
         "cooldown_sec": 0,
+        "run_access": "admin_only",
         "tags": ["manual", "documentation"],
     },
 ]
@@ -206,6 +217,7 @@ def _serialize_automation(doc: dict[str, Any]) -> dict[str, Any]:
         "conditions": doc.get("conditions") if isinstance(doc.get("conditions"), dict) else {},
         "action": doc.get("action") if isinstance(doc.get("action"), dict) else {},
         "cooldown_sec": int(doc.get("cooldown_sec") or 0),
+        "run_access": str(doc.get("run_access") or "member_runnable"),
         "tags": [str(x).strip() for x in (doc.get("tags") or []) if str(x).strip()],
         "last_run_at": _iso(doc.get("last_run_at")) if isinstance(doc.get("last_run_at"), datetime) else doc.get("last_run_at"),
         "last_status": str(doc.get("last_status") or ""),
@@ -292,6 +304,13 @@ def _normalize_conditions(raw: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
+def _normalize_run_access(raw: str | None) -> str:
+    value = str(raw or "member_runnable").strip().lower() or "member_runnable"
+    if value not in AUTOMATION_RUN_ACCESS_TYPES:
+        raise ValueError(f"Invalid run_access: {value}")
+    return value
+
+
 def _coerce_tags(raw: Any) -> list[str]:
     if not isinstance(raw, list):
         return []
@@ -313,6 +332,50 @@ def _next_scheduled_run(trigger: dict[str, Any], *, base: datetime | None = None
         return None
     interval = max(1, min(int(trigger.get("interval_minutes") or 60), 24 * 30))
     return (base or _now()) + timedelta(minutes=interval)
+
+
+async def _resolve_project_role(project_id: str, user_id: str) -> str:
+    uid = str(user_id or "").strip()
+    if not uid:
+        return "viewer"
+
+    db = get_db()
+    project_ids: list[str] = []
+    seen_project_ids: set[str] = set()
+    for value in [project_id]:
+        v = str(value or "").strip()
+        if not v or v in seen_project_ids:
+            continue
+        seen_project_ids.add(v)
+        project_ids.append(v)
+
+    if project_id and not ObjectId.is_valid(project_id):
+        by_key = await db["projects"].find_one({"key": project_id}, {"_id": 1})
+        if isinstance(by_key, dict) and by_key.get("_id") is not None:
+            resolved = str(by_key.get("_id"))
+            if resolved not in seen_project_ids:
+                seen_project_ids.add(resolved)
+                project_ids.append(resolved)
+
+    user_doc = await db["users"].find_one({"email": uid}, {"_id": 1, "isGlobalAdmin": 1})
+    if not user_doc and ObjectId.is_valid(uid):
+        user_doc = await db["users"].find_one({"_id": ObjectId(uid)}, {"_id": 1, "isGlobalAdmin": 1, "email": 1})
+    if isinstance(user_doc, dict) and bool(user_doc.get("isGlobalAdmin")):
+        return "admin"
+
+    user_candidates: list[str] = [uid]
+    if isinstance(user_doc, dict) and user_doc.get("_id") is not None:
+        user_candidates.append(str(user_doc.get("_id")))
+
+    membership = await db["memberships"].find_one(
+        {"projectId": {"$in": project_ids}, "userId": {"$in": user_candidates}},
+        {"role": 1},
+    )
+    if isinstance(membership, dict):
+        role = str(membership.get("role") or "").strip().lower()
+        if role in {"admin", "member", "viewer"}:
+            return role
+    return "viewer"
 
 
 def _pick_payload_text(payload: dict[str, Any]) -> str:
@@ -389,7 +452,12 @@ def _trigger_matches(trigger: dict[str, Any], *, triggered_by: str, event_type: 
 
 
 async def list_automation_templates() -> list[dict[str, Any]]:
-    return [dict(item) for item in AUTOMATION_TEMPLATES]
+    out: list[dict[str, Any]] = []
+    for item in AUTOMATION_TEMPLATES:
+        row = dict(item)
+        row["run_access"] = _normalize_run_access(str(row.get("run_access") or "member_runnable"))
+        out.append(row)
+    return out
 
 
 async def list_automations(
@@ -429,6 +497,7 @@ async def create_automation(
     conditions: dict[str, Any] | None = None,
     action: dict[str, Any] | None = None,
     cooldown_sec: int = 0,
+    run_access: str = "member_runnable",
     tags: list[str] | None = None,
 ) -> dict[str, Any]:
     clean_name = str(name or "").strip()
@@ -437,6 +506,7 @@ async def create_automation(
     normalized_trigger = _normalize_trigger(trigger)
     normalized_action = _normalize_action(action)
     normalized_conditions = _normalize_conditions(conditions)
+    normalized_run_access = _normalize_run_access(run_access)
     safe_cooldown = max(0, min(int(cooldown_sec or 0), 24 * 3600))
     safe_tags = _coerce_tags(tags or [])
     now = _now()
@@ -449,6 +519,7 @@ async def create_automation(
         "conditions": normalized_conditions,
         "action": normalized_action,
         "cooldown_sec": safe_cooldown,
+        "run_access": normalized_run_access,
         "tags": safe_tags,
         "run_count": 0,
         "last_status": "",
@@ -512,6 +583,8 @@ async def update_automation(
         next_doc["action"] = _normalize_action(patch.get("action") if isinstance(patch.get("action"), dict) else None)
     if "cooldown_sec" in patch:
         next_doc["cooldown_sec"] = max(0, min(int(patch.get("cooldown_sec") or 0), 24 * 3600))
+    if "run_access" in patch:
+        next_doc["run_access"] = _normalize_run_access(str(patch.get("run_access") or "member_runnable"))
     if "tags" in patch:
         next_doc["tags"] = _coerce_tags(patch.get("tags") if isinstance(patch.get("tags"), list) else [])
 
@@ -791,6 +864,8 @@ async def run_automation(
     triggered_by: str,
     event_type: str = "manual",
     event_payload: dict[str, Any] | None = None,
+    user_id: str | None = None,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     query: dict[str, Any] = {"project_id": project_id}
     if ObjectId.is_valid(automation_id):
@@ -803,6 +878,7 @@ async def run_automation(
 
     payload = dict(event_payload or {})
     payload.setdefault("project_id", project_id)
+    payload.setdefault("user_id", str(user_id or "").strip())
 
     trigger = doc.get("trigger") if isinstance(doc.get("trigger"), dict) else {}
     force_manual = triggered_by == "manual"
@@ -811,29 +887,54 @@ async def run_automation(
     if not force_manual and not _conditions_match(doc.get("conditions") if isinstance(doc.get("conditions"), dict) else {}, payload):
         raise RuntimeError("Automation conditions did not match the event payload")
 
+    run_access = _normalize_run_access(str(doc.get("run_access") or "member_runnable"))
+    if force_manual:
+        role = await _resolve_project_role(project_id, str(payload.get("user_id") or ""))
+        if run_access == "admin_only" and role != "admin":
+            raise PermissionError("Automation is admin-only and cannot be run by this user")
+        if run_access == "member_runnable" and role not in {"admin", "member"}:
+            raise PermissionError("Only project members can run this automation")
+
     cooldown_sec = max(0, int(doc.get("cooldown_sec") or 0))
     last_run_at = doc.get("last_run_at")
     now = _now()
-    if cooldown_sec > 0 and isinstance(last_run_at, datetime):
+    if not dry_run and cooldown_sec > 0 and isinstance(last_run_at, datetime):
         next_allowed = last_run_at + timedelta(seconds=cooldown_sec)
         if now < next_allowed:
             raise RuntimeError("Automation cooldown active")
 
-    status = "succeeded"
+    status = "dry_run" if dry_run else "succeeded"
     error = ""
     result: dict[str, Any] = {}
     started_at = now
-    try:
-        result = await _execute_action(
-            project_id=project_id,
-            action=doc.get("action") if isinstance(doc.get("action"), dict) else {},
-            payload=payload,
-            started_at=started_at,
+    action_doc = doc.get("action") if isinstance(doc.get("action"), dict) else {}
+    if dry_run:
+        rendered_params = _render_template(
+            action_doc.get("params") if isinstance(action_doc.get("params"), dict) else {},
+            payload,
         )
-    except Exception as err:
-        status = "failed"
-        error = str(err)
-        result = {}
+        result = {
+            "dry_run": True,
+            "run_access": run_access,
+            "action_type": str(action_doc.get("type") or ""),
+            "rendered_action": {"type": str(action_doc.get("type") or ""), "params": rendered_params},
+            "conditions_match": _conditions_match(
+                doc.get("conditions") if isinstance(doc.get("conditions"), dict) else {},
+                payload,
+            ),
+        }
+    else:
+        try:
+            result = await _execute_action(
+                project_id=project_id,
+                action=action_doc,
+                payload=payload,
+                started_at=started_at,
+            )
+        except Exception as err:
+            status = "failed"
+            error = str(err)
+            result = {}
 
     finished_at = _now()
     run_row = await _store_run(
@@ -848,16 +949,17 @@ async def run_automation(
         started_at=started_at,
         finished_at=finished_at,
     )
-    update_doc: dict[str, Any] = {
-        "last_run_at": finished_at,
-        "last_status": status,
-        "last_error": error,
-        "updated_at": finished_at,
-        "run_count": int(doc.get("run_count") or 0) + 1,
-    }
-    if str(trigger.get("type") or "") == "schedule" and bool(doc.get("enabled")):
-        update_doc["next_run_at"] = _next_scheduled_run(trigger, base=finished_at)
-    await get_db()["automations"].update_one({"_id": doc["_id"]}, {"$set": update_doc})
+    if not dry_run:
+        update_doc: dict[str, Any] = {
+            "last_run_at": finished_at,
+            "last_status": status,
+            "last_error": error,
+            "updated_at": finished_at,
+            "run_count": int(doc.get("run_count") or 0) + 1,
+        }
+        if str(trigger.get("type") or "") == "schedule" and bool(doc.get("enabled")):
+            update_doc["next_run_at"] = _next_scheduled_run(trigger, base=finished_at)
+        await get_db()["automations"].update_one({"_id": doc["_id"]}, {"$set": update_doc})
     logger.info(
         "automations.run project=%s automation_id=%s status=%s event=%s triggered_by=%s",
         project_id,
@@ -935,7 +1037,7 @@ async def run_due_scheduled_automations(*, limit: int = 20) -> int:
                 project_id,
                 automation_id,
                 triggered_by="schedule",
-                event_type="manual",
+                event_type="schedule",
                 event_payload={"project_id": project_id},
             )
             ran += 1
