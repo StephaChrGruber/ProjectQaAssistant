@@ -165,7 +165,7 @@ export default function ProjectChatPage() {
     const [expandedSourceMessages, setExpandedSourceMessages] = useState<Record<string, boolean>>({})
     const [chatMemory, setChatMemory] = useState<ChatMemorySummary | null>(null)
     const [chatTaskState, setChatTaskState] = useState<ChatTaskState | null>(null)
-    const [sessionMemoryOpen, setSessionMemoryOpen] = useState(true)
+    const [sessionMemoryOpen, setSessionMemoryOpen] = useState(false)
     const [resettingMemory, setResettingMemory] = useState(false)
     const [savingMemory, setSavingMemory] = useState(false)
     const [pendingUserQuestion, setPendingUserQuestion] = useState<PendingUserQuestion | null>(null)

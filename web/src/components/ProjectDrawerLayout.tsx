@@ -66,7 +66,7 @@ type Props = {
     children: React.ReactNode
 }
 
-const DRAWER_WIDTH = 392
+const DRAWER_WIDTH = 320
 
 function formatTime(iso?: string): string {
     if (!iso) return ""
@@ -161,7 +161,7 @@ export function ProjectDrawerLayout(props: Props) {
         const selected = chat.chat_id === selectedChatId
         const primary = chatLabel(chat) || fallbackChatLabel
         return (
-            <ListItemButton
+                <ListItemButton
                 key={`${groupProjectId}::${chat.chat_id}`}
                 selected={selected}
                 onClick={() => {
@@ -169,13 +169,13 @@ export function ProjectDrawerLayout(props: Props) {
                     if (!desktop) setMobileOpen(false)
                 }}
                 sx={{
-                    mb: 0.45,
-                    borderRadius: 2.2,
+                    mb: 0.35,
+                    borderRadius: 1.8,
                     alignItems: "flex-start",
                     border: "1px solid",
                     borderColor: selected ? "rgba(34,211,238,0.38)" : "rgba(148,163,184,0.15)",
                     bgcolor: selected ? "rgba(14,116,144,0.16)" : "rgba(15,23,42,0.28)",
-                    ml: 0.5,
+                    ml: 0.35,
                 }}
             >
                 <ListItemIcon sx={{ minWidth: 34, mt: 0.1 }}>
@@ -187,11 +187,11 @@ export function ProjectDrawerLayout(props: Props) {
                     primaryTypographyProps={{
                         noWrap: true,
                         fontWeight: selected ? 600 : 500,
-                        fontSize: 13.5,
+                        fontSize: 13,
                     }}
                     secondaryTypographyProps={{
                         noWrap: true,
-                        fontSize: 11.5,
+                        fontSize: 11,
                     }}
                 />
             </ListItemButton>
@@ -213,10 +213,11 @@ export function ProjectDrawerLayout(props: Props) {
 
     const drawerContent = (
         <Box sx={{ display: "flex", height: "100%", flexDirection: "column" }}>
-            <Box sx={{ px: 2.25, py: 1.5 }}>
+            <Box sx={{ px: 1.6, py: 1.1 }}>
                 <Button
                     fullWidth
                     variant="contained"
+                    size="small"
                     startIcon={<AddRounded />}
                     onClick={() => {
                         onNewChat()
@@ -229,8 +230,8 @@ export function ProjectDrawerLayout(props: Props) {
 
             <Divider />
 
-            <Box sx={{ minHeight: 0, flex: 1, overflowY: "auto", px: 1.4, py: 1.2 }}>
-                <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ px: 0.9, mb: 0.4 }}>
+            <Box sx={{ minHeight: 0, flex: 1, overflowY: "auto", px: 1, py: 0.9 }}>
+                <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ px: 0.7, mb: 0.2 }}>
                     <Typography
                         variant="overline"
                         sx={{ color: "text.secondary", letterSpacing: "0.11em" }}
@@ -249,7 +250,7 @@ export function ProjectDrawerLayout(props: Props) {
                     />
                 </Stack>
 
-                <List dense sx={{ pt: 0.5 }}>
+                <List dense sx={{ pt: 0.25 }}>
                     {loadingChats && (
                         <ListItemButton disabled sx={{ borderRadius: 2, py: 1 }}>
                             <ListItemText primary="Loading chats..." />
@@ -266,12 +267,12 @@ export function ProjectDrawerLayout(props: Props) {
                         const expanded = expandedGroups[group.projectId] ?? true
                         const inThisProject = group.projectId === projectId
                         return (
-                            <Box key={group.projectId} sx={{ mb: 0.8 }}>
+                            <Box key={group.projectId} sx={{ mb: 0.6 }}>
                                 <ListItemButton
                                     onClick={() => toggleGroup(group.projectId)}
                                     sx={{
-                                        borderRadius: 2,
-                                        mb: 0.35,
+                                        borderRadius: 1.7,
+                                        mb: 0.25,
                                         border: "1px solid",
                                         borderColor: inThisProject ? "rgba(34,211,238,0.3)" : "rgba(148,163,184,0.16)",
                                         bgcolor: inThisProject ? "rgba(8,47,73,0.28)" : "rgba(15,23,42,0.2)",
@@ -281,8 +282,8 @@ export function ProjectDrawerLayout(props: Props) {
                                     <ListItemText
                                         primary={group.projectLabel}
                                         secondary={inThisProject ? "Current project" : undefined}
-                                        primaryTypographyProps={{ noWrap: true, fontWeight: 650, fontSize: 13.2 }}
-                                        secondaryTypographyProps={{ noWrap: true, fontSize: 11.2 }}
+                                        primaryTypographyProps={{ noWrap: true, fontWeight: 650, fontSize: 12.8 }}
+                                        secondaryTypographyProps={{ noWrap: true, fontSize: 10.8 }}
                                         sx={{ ml: 0.6 }}
                                     />
                                     <Chip
@@ -301,7 +302,7 @@ export function ProjectDrawerLayout(props: Props) {
                                         {group.chats.length ? (
                                             group.chats.map((chat) => renderChatItem(chat, group.projectId))
                                         ) : (
-                                            <ListItemButton disabled sx={{ borderRadius: 2, py: 0.8, ml: 0.5 }}>
+                                            <ListItemButton disabled sx={{ borderRadius: 1.7, py: 0.65, ml: 0.35 }}>
                                                 <ListItemText primary="No conversations" />
                                             </ListItemButton>
                                         )}
@@ -315,7 +316,7 @@ export function ProjectDrawerLayout(props: Props) {
 
             <Divider />
 
-            <Box sx={{ px: 1.65, py: 1.35 }}>
+            <Box sx={{ px: 1.15, py: 1 }}>
                 <Typography variant="caption" color="text.secondary" noWrap sx={{ px: 1, display: "block", pb: 1 }}>
                     {userLabel}
                 </Typography>
@@ -328,7 +329,7 @@ export function ProjectDrawerLayout(props: Props) {
                                 if (!desktop) setMobileOpen(false)
                             }}
                             selected={activeSection === "settings"}
-                            sx={{ borderRadius: 2 }}
+                            sx={{ borderRadius: 1.7 }}
                         >
                             <ListItemIcon sx={{ minWidth: 34 }}>
                                 <SettingsRounded fontSize="small" />
@@ -340,7 +341,7 @@ export function ProjectDrawerLayout(props: Props) {
                             component={Link}
                             href={`/projects/${projectId}/settings`}
                             selected={activeSection === "settings"}
-                            sx={{ borderRadius: 2 }}
+                            sx={{ borderRadius: 1.7 }}
                         >
                             <ListItemIcon sx={{ minWidth: 34 }}>
                                 <SettingsRounded fontSize="small" />
@@ -350,7 +351,7 @@ export function ProjectDrawerLayout(props: Props) {
                     )}
 
                     {user?.isGlobalAdmin && (
-                        <ListItemButton component={Link} href="/admin" sx={{ borderRadius: 2 }}>
+                        <ListItemButton component={Link} href="/admin" sx={{ borderRadius: 1.7 }}>
                             <ListItemIcon sx={{ minWidth: 34 }}>
                                 <AdminPanelSettingsRounded fontSize="small" />
                             </ListItemIcon>
@@ -358,7 +359,7 @@ export function ProjectDrawerLayout(props: Props) {
                         </ListItemButton>
                     )}
 
-                    <ListItemButton component={Link} href="/projects" sx={{ borderRadius: 2 }}>
+                    <ListItemButton component={Link} href="/projects" sx={{ borderRadius: 1.7 }}>
                         <ListItemIcon sx={{ minWidth: 34 }}>
                             <FolderRounded fontSize="small" />
                         </ListItemIcon>
@@ -398,7 +399,7 @@ export function ProjectDrawerLayout(props: Props) {
                     sx={{
                         display: "block",
                         "& .MuiDrawer-paper": {
-                            width: { xs: "min(92vw, 380px)", md: DRAWER_WIDTH },
+                            width: { xs: "min(90vw, 340px)", md: DRAWER_WIDTH },
                             boxSizing: "border-box",
                             borderRightColor: "rgba(148,163,184,0.28)",
                         },
@@ -419,7 +420,7 @@ export function ProjectDrawerLayout(props: Props) {
                             backgroundColor: "rgba(7, 11, 22, 0.72)",
                         }}
                     >
-                        <Toolbar sx={{ minHeight: 62 }}>
+                        <Toolbar sx={{ minHeight: 52 }}>
                             <IconButton
                                 color="inherit"
                                 edge="start"
@@ -431,11 +432,8 @@ export function ProjectDrawerLayout(props: Props) {
                             </IconButton>
 
                             <Stack sx={{ minWidth: 0, ml: "auto", textAlign: "right" }}>
-                                <Typography noWrap variant="subtitle2" sx={{ fontWeight: 700 }}>
+                                <Typography noWrap variant="subtitle2" sx={{ fontWeight: 700, fontSize: 13.5 }}>
                                     {projectLabel}
-                                </Typography>
-                                <Typography noWrap variant="caption" color="text.secondary">
-                                    {branch}
                                 </Typography>
                             </Stack>
                         </Toolbar>

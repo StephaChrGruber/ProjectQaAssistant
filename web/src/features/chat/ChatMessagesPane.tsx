@@ -8,7 +8,6 @@ import ExpandMoreRounded from "@mui/icons-material/ExpandMoreRounded"
 import ChevronRightRounded from "@mui/icons-material/ChevronRightRounded"
 import type { ChatAnswerSource, ChatMessage } from "@/features/chat/types"
 import {
-    SOURCE_PREVIEW_LIMIT,
     isDocumentationPath,
     sourceDisplayText,
     splitChartBlocks,
@@ -114,18 +113,18 @@ export function ChatMessagesPane({
         <Box
             ref={scrollRef}
             onScroll={handleScroll}
-            sx={{ minHeight: 0, flex: 1, overflowY: "auto", px: { xs: 1.1, md: 3.2 }, py: { xs: 1.25, md: 2.1 } }}
+            sx={{ minHeight: 0, flex: 1, overflowY: "auto", px: { xs: 0.9, md: 2.1 }, py: { xs: 0.8, md: 1.15 } }}
         >
-            <Stack spacing={1.4} sx={{ maxWidth: 1060, mx: "auto" }}>
+            <Stack spacing={1} sx={{ maxWidth: 1060, mx: "auto" }}>
                 {booting && (
                     <Paper
                         variant="outlined"
                         sx={{
-                            p: 2,
+                            p: 1.2,
                             display: "flex",
                             alignItems: "center",
                             gap: 1.2,
-                            borderRadius: 2,
+                            borderRadius: 1.6,
                             bgcolor: "rgba(15,23,42,0.52)",
                         }}
                     >
@@ -138,8 +137,8 @@ export function ChatMessagesPane({
                     <Paper
                         variant="outlined"
                         sx={{
-                            p: 2.2,
-                            borderRadius: 2,
+                            p: 1.4,
+                            borderRadius: 1.6,
                             background: "linear-gradient(150deg, rgba(15,23,42,0.62), rgba(15,23,42,0.42))",
                         }}
                     >
@@ -158,9 +157,6 @@ export function ChatMessagesPane({
                     const sources = !isUser && m.role === "assistant" ? (m.meta?.sources || []) : []
                     const messageKey = `${m.ts || "na"}-${idx}`
                     const sourceExpanded = Boolean(expandedSourceMessages[messageKey])
-                    const hasManySources = sources.length > SOURCE_PREVIEW_LIMIT
-                    const previewSources = hasManySources ? sources.slice(0, SOURCE_PREVIEW_LIMIT) : sources
-                    const hiddenSources = hasManySources ? sources.slice(SOURCE_PREVIEW_LIMIT) : []
                     return (
                         <Box key={messageKey} sx={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start" }}>
                             <Paper
@@ -168,9 +164,9 @@ export function ChatMessagesPane({
                                 elevation={isUser ? 2 : 0}
                                 sx={{
                                     maxWidth: { xs: "97%", sm: "92%" },
-                                    px: { xs: 1.5, sm: 2 },
-                                    py: { xs: 1.1, sm: 1.4 },
-                                    borderRadius: 2.4,
+                                    px: { xs: 1.1, sm: 1.45 },
+                                    py: { xs: 0.75, sm: 0.9 },
+                                    borderRadius: 1.7,
                                     border: "1px solid",
                                     borderColor: isUser ? "rgba(103,232,249,0.42)" : "divider",
                                     bgcolor: isUser ? "transparent" : "rgba(15,23,42,0.45)",
@@ -182,7 +178,7 @@ export function ChatMessagesPane({
                                     animation: "page-rise 220ms ease-out both",
                                 }}
                             >
-                                <Stack spacing={1}>
+                                <Stack spacing={0.65}>
                                     {splitChartBlocks(m.content || "").map((part, i) =>
                                         part.type === "chart" ? (
                                             <LazyChart key={`${messageKey}-part-${i}`} value={part.value} />
@@ -194,149 +190,92 @@ export function ChatMessagesPane({
                                     {!isUser && m.role === "assistant" && (
                                         <Box
                                             sx={{
-                                                mt: 0.4,
-                                                pt: 0.9,
+                                                mt: 0.25,
+                                                pt: 0.55,
                                                 borderTop: "1px solid",
                                                 borderColor: "divider",
                                             }}
                                         >
-                                            <Typography
-                                                variant="caption"
-                                                color="text.secondary"
-                                                sx={{ letterSpacing: "0.08em", display: "block", mb: 0.6 }}
+                                            <Button
+                                                variant="text"
+                                                size="small"
+                                                onClick={() => onToggleSourceList(messageKey)}
+                                                endIcon={
+                                                    sourceExpanded ? (
+                                                        <ExpandMoreRounded fontSize="small" />
+                                                    ) : (
+                                                        <ChevronRightRounded fontSize="small" />
+                                                    )
+                                                }
+                                                sx={{
+                                                    justifyContent: "flex-start",
+                                                    textTransform: "none",
+                                                    px: 0,
+                                                    minHeight: "auto",
+                                                    fontSize: 12,
+                                                    lineHeight: 1.2,
+                                                    color: "text.secondary",
+                                                }}
                                             >
-                                                SOURCES
-                                            </Typography>
-                                            {m.meta?.grounded === false && (
-                                                <Typography variant="caption" color="warning.main" sx={{ display: "block", mb: 0.6 }}>
-                                                    Grounding check failed for this answer.
-                                                </Typography>
-                                            )}
-                                            <Stack spacing={0.2}>
-                                                {sources.length > 0 ? (
-                                                    previewSources.map((src, sidx) => {
-                                                        const clickable = Boolean(
-                                                            (src.url && /^https?:\/\//i.test(src.url)) ||
-                                                            isDocumentationPath(src.path)
-                                                        )
-                                                        const confidence =
-                                                            typeof src.confidence === "number"
-                                                                ? Math.max(0, Math.min(100, Math.round(src.confidence * 100)))
-                                                                : null
-                                                        return (
-                                                            <Box key={`${sourceDisplayText(src)}-${sidx}`} sx={{ py: 0.2 }}>
-                                                                <Button
-                                                                    variant="text"
-                                                                    size="small"
-                                                                    onClick={() => {
-                                                                        void onSourceClick(src)
-                                                                    }}
-                                                                    disabled={!clickable}
-                                                                    sx={{
-                                                                        justifyContent: "flex-start",
-                                                                        textTransform: "none",
-                                                                        px: 0,
-                                                                        minHeight: "auto",
-                                                                        fontSize: 12.25,
-                                                                        lineHeight: 1.35,
-                                                                    }}
-                                                                >
-                                                                    {sourceDisplayText(src)}
-                                                                    {confidence !== null ? ` (${confidence}%)` : ""}
-                                                                </Button>
-                                                                {src.snippet ? (
-                                                                    <Typography
-                                                                        variant="caption"
-                                                                        color="text.secondary"
-                                                                        sx={{ display: "block", lineHeight: 1.3, pl: 0.1 }}
+                                                Sources ({sources.length})
+                                            </Button>
+                                            <Collapse in={sourceExpanded} timeout="auto" unmountOnExit>
+                                                <Stack spacing={0.2} sx={{ mt: 0.25, maxHeight: 220, overflowY: "auto", pr: 0.5 }}>
+                                                    {m.meta?.grounded === false && (
+                                                        <Typography variant="caption" color="warning.main" sx={{ display: "block", mb: 0.35 }}>
+                                                            Grounding check failed for this answer.
+                                                        </Typography>
+                                                    )}
+                                                    {sources.length > 0 ? (
+                                                        sources.map((src, sidx) => {
+                                                            const clickable = Boolean(
+                                                                (src.url && /^https?:\/\//i.test(src.url)) ||
+                                                                isDocumentationPath(src.path)
+                                                            )
+                                                            const confidence =
+                                                                typeof src.confidence === "number"
+                                                                    ? Math.max(0, Math.min(100, Math.round(src.confidence * 100)))
+                                                                    : null
+                                                            return (
+                                                                <Box key={`${sourceDisplayText(src)}-${sidx}`} sx={{ py: 0.2 }}>
+                                                                    <Button
+                                                                        variant="text"
+                                                                        size="small"
+                                                                        onClick={() => {
+                                                                            void onSourceClick(src)
+                                                                        }}
+                                                                        disabled={!clickable}
+                                                                        sx={{
+                                                                            justifyContent: "flex-start",
+                                                                            textTransform: "none",
+                                                                            px: 0,
+                                                                            minHeight: "auto",
+                                                                            fontSize: 12,
+                                                                            lineHeight: 1.35,
+                                                                        }}
                                                                     >
-                                                                        {src.snippet}
-                                                                    </Typography>
-                                                                ) : null}
-                                                            </Box>
-                                                        )
-                                                    })
-                                                ) : (
-                                                    <Typography variant="caption" color="text.secondary">
-                                                        No explicit sources were captured for this answer.
-                                                    </Typography>
-                                                )}
-                                                {hasManySources && (
-                                                    <>
-                                                        <Collapse in={sourceExpanded} timeout="auto" unmountOnExit>
-                                                            <Stack spacing={0.2}>
-                                                                {hiddenSources.map((src, sidx) => {
-                                                                    const clickable = Boolean(
-                                                                        (src.url && /^https?:\/\//i.test(src.url)) ||
-                                                                        isDocumentationPath(src.path)
-                                                                    )
-                                                                    const confidence =
-                                                                        typeof src.confidence === "number"
-                                                                            ? Math.max(0, Math.min(100, Math.round(src.confidence * 100)))
-                                                                            : null
-                                                                    return (
-                                                                        <Box key={`${sourceDisplayText(src)}-hidden-${sidx}`} sx={{ py: 0.2 }}>
-                                                                            <Button
-                                                                                variant="text"
-                                                                                size="small"
-                                                                                onClick={() => {
-                                                                                    void onSourceClick(src)
-                                                                                }}
-                                                                                disabled={!clickable}
-                                                                                sx={{
-                                                                                    justifyContent: "flex-start",
-                                                                                    textTransform: "none",
-                                                                                    px: 0,
-                                                                                    minHeight: "auto",
-                                                                                    fontSize: 12,
-                                                                                    lineHeight: 1.35,
-                                                                                }}
-                                                                            >
-                                                                                {sourceDisplayText(src)}
-                                                                                {confidence !== null ? ` (${confidence}%)` : ""}
-                                                                            </Button>
-                                                                            {src.snippet ? (
-                                                                                <Typography
-                                                                                    variant="caption"
-                                                                                    color="text.secondary"
-                                                                                    sx={{ display: "block", lineHeight: 1.3, pl: 0.1 }}
-                                                                                >
-                                                                                    {src.snippet}
-                                                                                </Typography>
-                                                                            ) : null}
-                                                                        </Box>
-                                                                    )
-                                                                })}
-                                                            </Stack>
-                                                        </Collapse>
-                                                        <Button
-                                                            variant="text"
-                                                            size="small"
-                                                            onClick={() => onToggleSourceList(messageKey)}
-                                                            endIcon={
-                                                                sourceExpanded ? (
-                                                                    <ExpandMoreRounded fontSize="small" />
-                                                                ) : (
-                                                                    <ChevronRightRounded fontSize="small" />
-                                                                )
-                                                            }
-                                                            sx={{
-                                                                justifyContent: "flex-start",
-                                                                textTransform: "none",
-                                                                px: 0,
-                                                                minHeight: "auto",
-                                                                mt: 0.2,
-                                                                fontSize: 12.25,
-                                                                lineHeight: 1.35,
-                                                            }}
-                                                        >
-                                                            {sourceExpanded
-                                                                ? `Show less (${sources.length} total)`
-                                                                : `Show ${hiddenSources.length} more (${sources.length} total)`}
-                                                        </Button>
-                                                    </>
-                                                )}
-                                            </Stack>
+                                                                        {sourceDisplayText(src)}
+                                                                        {confidence !== null ? ` (${confidence}%)` : ""}
+                                                                    </Button>
+                                                                    {src.snippet ? (
+                                                                        <Typography
+                                                                            variant="caption"
+                                                                            color="text.secondary"
+                                                                            sx={{ display: "block", lineHeight: 1.3, pl: 0.1 }}
+                                                                        >
+                                                                            {src.snippet}
+                                                                        </Typography>
+                                                                    ) : null}
+                                                                </Box>
+                                                            )
+                                                        })
+                                                    ) : (
+                                                        <Typography variant="caption" color="text.secondary">
+                                                            No explicit sources were captured for this answer.
+                                                        </Typography>
+                                                    )}
+                                                </Stack>
+                                            </Collapse>
                                         </Box>
                                     )}
                                 </Stack>
@@ -352,12 +291,12 @@ export function ChatMessagesPane({
                         <Paper
                             variant="outlined"
                             sx={{
-                                px: 1.6,
-                                py: 1,
+                                px: 1.15,
+                                py: 0.65,
                                 display: "flex",
                                 alignItems: "center",
                                 gap: 1,
-                                borderRadius: 2,
+                                borderRadius: 1.6,
                                 bgcolor: "rgba(15,23,42,0.55)",
                             }}
                         >

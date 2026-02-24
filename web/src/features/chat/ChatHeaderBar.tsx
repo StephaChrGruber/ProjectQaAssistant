@@ -67,48 +67,48 @@ export function ChatHeaderBar({
     onToggleSessionMemory,
 }: ChatHeaderBarProps) {
     return (
-        <Box sx={{ px: { xs: 1.2, md: 3 }, pt: { xs: 1, md: 1.35 } }}>
+        <Box sx={{ px: { xs: 1, md: 2 }, pt: { xs: 0.6, md: 0.8 } }}>
             <Paper
                 variant="outlined"
                 sx={{
-                    px: { xs: 1.2, md: 1.8 },
-                    py: { xs: 1.1, md: 1.35 },
-                    borderRadius: 2,
+                    px: { xs: 1, md: 1.4 },
+                    py: { xs: 0.7, md: 0.85 },
+                    borderRadius: 1.5,
                     background: "linear-gradient(160deg, rgba(15,23,42,0.8), rgba(15,23,42,0.5))",
                 }}
             >
                 <Stack
                     direction={{ xs: "column", lg: "row" }}
-                    spacing={{ xs: 1.2, lg: 1.4 }}
+                    spacing={{ xs: 0.8, lg: 1 }}
                     justifyContent="space-between"
                     alignItems={{ xs: "stretch", lg: "center" }}
                 >
-                    <Stack spacing={0.5} sx={{ minWidth: 0 }}>
-                        <Stack direction="row" spacing={0.8} alignItems="center" useFlexGap flexWrap="wrap">
-                            <Typography variant="overline" color="text.secondary" sx={{ letterSpacing: "0.15em" }}>
+                    <Stack spacing={0.25} sx={{ minWidth: 0 }}>
+                        <Stack direction="row" spacing={0.6} alignItems="center" useFlexGap flexWrap="wrap">
+                            <Typography variant="overline" color="text.secondary" sx={{ letterSpacing: "0.12em", fontSize: 10 }}>
                                 RAG Conversation
                             </Typography>
                             <Chip
                                 size="small"
                                 label={branch}
                                 sx={{
-                                    height: 20,
-                                    fontSize: 11,
+                                    height: 18,
+                                    fontSize: 10,
                                     bgcolor: "rgba(148,163,184,0.14)",
                                     color: "text.secondary",
                                 }}
                             />
                         </Stack>
-                        <Typography variant="h6" sx={{ fontWeight: 700, fontSize: { xs: "1.02rem", sm: "1.18rem" } }}>
+                        <Typography variant="h6" sx={{ fontWeight: 700, fontSize: { xs: "0.95rem", sm: "1.06rem" }, lineHeight: 1.2 }}>
                             {projectLabel}
                         </Typography>
-                        <Typography variant="body2" color="text.secondary" noWrap>
+                        <Typography variant="caption" color="text.secondary" noWrap sx={{ fontSize: 11.5 }}>
                             {llmSummary}
                         </Typography>
                     </Stack>
 
-                    <Stack spacing={1} sx={{ minWidth: { xs: "100%", lg: 420 }, maxWidth: 620 }}>
-                        <FormControl size="small" sx={{ minWidth: { xs: "100%", sm: 360 } }}>
+                    <Stack spacing={0.7} sx={{ minWidth: { xs: "100%", lg: 360 }, maxWidth: 560 }}>
+                        <FormControl size="small" sx={{ minWidth: { xs: "100%", sm: 320 } }}>
                             <InputLabel id="chat-llm-profile-label">Chat LLM Profile</InputLabel>
                             <Select
                                 labelId="chat-llm-profile-label"
@@ -128,7 +128,7 @@ export function ChatHeaderBar({
                             </Select>
                         </FormControl>
 
-                        <Stack direction="row" spacing={0.7} useFlexGap flexWrap="wrap" alignItems="center">
+                        <Stack direction="row" spacing={0.55} useFlexGap flexWrap="wrap" alignItems="center">
                             <Button
                                 size="small"
                                 variant="outlined"

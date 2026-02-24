@@ -1,6 +1,6 @@
 "use client"
 
-import { Button, Chip, Paper, Stack, TextField, Typography } from "@mui/material"
+import { Button, Paper, Stack, TextField, Typography } from "@mui/material"
 import SendRounded from "@mui/icons-material/SendRounded"
 import ClearAllRounded from "@mui/icons-material/ClearAllRounded"
 import type { PendingUserQuestion } from "@/features/chat/types"
@@ -39,26 +39,26 @@ export function ChatComposer({
                 borderColor: "divider",
                 backgroundColor: "rgba(7, 12, 24, 0.72)",
                 backdropFilter: "blur(12px)",
-                px: { xs: 1.1, md: 3 },
-                pt: { xs: 1, md: 1.3 },
-                pb: "calc(10px + env(safe-area-inset-bottom, 0px))",
+                px: { xs: 0.9, md: 2 },
+                pt: { xs: 0.65, md: 0.8 },
+                pb: "calc(8px + env(safe-area-inset-bottom, 0px))",
             }}
         >
-            <Stack sx={{ maxWidth: 1060, mx: "auto" }} spacing={1}>
+            <Stack sx={{ maxWidth: 1060, mx: "auto" }} spacing={0.7}>
                 {pendingUserQuestion && (
                     <Paper
                         variant="outlined"
                         sx={{
-                            p: 1.2,
-                            borderRadius: 2,
+                            p: 0.9,
+                            borderRadius: 1.6,
                             bgcolor: "rgba(15,23,42,0.62)",
                         }}
                     >
-                        <Stack spacing={1}>
-                            <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.08em" }}>
+                        <Stack spacing={0.75}>
+                            <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.06em", fontSize: 10.5 }}>
                                 ASSISTANT NEEDS INPUT
                             </Typography>
-                            <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                            <Typography variant="body2" sx={{ fontWeight: 600, fontSize: 13.5 }}>
                                 {pendingUserQuestion.question}
                             </Typography>
                             {pendingUserQuestion.answer_mode === "single_choice" ? (
@@ -104,28 +104,15 @@ export function ChatComposer({
                     </Paper>
                 )}
 
-                <Paper
-                    variant="outlined"
-                    sx={{
-                        p: 1.1,
-                        borderRadius: 2,
+                    <Paper
+                        variant="outlined"
+                        sx={{
+                        p: 0.8,
+                        borderRadius: 1.6,
                         background: "linear-gradient(155deg, rgba(15,23,42,0.74), rgba(15,23,42,0.48))",
                     }}
                 >
-                    <Stack spacing={0.9}>
-                        <Stack direction="row" justifyContent="space-between" alignItems="center" useFlexGap flexWrap="wrap" spacing={0.7}>
-                            <Chip
-                                size="small"
-                                label={pendingUserQuestion ? "Pending Clarification" : "Assistant Ready"}
-                                color={pendingUserQuestion ? "secondary" : "primary"}
-                                variant="outlined"
-                                sx={{ fontSize: 11 }}
-                            />
-                            <Typography variant="caption" color="text.secondary">
-                                Enter to send · Shift+Enter newline
-                            </Typography>
-                        </Stack>
-
+                    <Stack spacing={0.7}>
                         <TextField
                             value={input}
                             onChange={(e) => onInputChange(e.target.value)}
@@ -136,8 +123,8 @@ export function ChatComposer({
                                 }
                             }}
                             multiline
-                            minRows={2}
-                            maxRows={8}
+                            minRows={1}
+                            maxRows={6}
                             fullWidth
                             placeholder={
                                 pendingUserQuestion
@@ -147,31 +134,38 @@ export function ChatComposer({
                             disabled={!hasSelectedChat || sending}
                             InputProps={{
                                 sx: {
-                                    fontSize: { xs: 14, sm: 15 },
-                                    borderRadius: 1.5,
+                                    fontSize: { xs: 13.5, sm: 14 },
+                                    borderRadius: 1.2,
                                 },
                             }}
                         />
 
-                        <Stack direction="row" spacing={1} justifyContent="flex-end">
+                        <Stack direction="row" spacing={0.75} justifyContent="space-between" alignItems="center">
+                            <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11 }}>
+                                Enter to send
+                            </Typography>
+                            <Stack direction="row" spacing={0.75}>
                             <Button
+                                size="small"
                                 variant="outlined"
                                 startIcon={<ClearAllRounded />}
                                 onClick={onClear}
                                 disabled={!hasSelectedChat || sending}
-                                sx={{ flex: { xs: 1, sm: "0 0 auto" } }}
+                                sx={{ minWidth: 88 }}
                             >
                                 Clear
                             </Button>
                             <Button
+                                size="small"
                                 variant="contained"
                                 endIcon={<SendRounded />}
                                 onClick={onSend}
                                 disabled={sending || !input.trim() || !hasSelectedChat}
-                                sx={{ flex: { xs: 1, sm: "0 0 auto" } }}
+                                sx={{ minWidth: 88 }}
                             >
                                 Send
                             </Button>
+                            </Stack>
                         </Stack>
                     </Stack>
                 </Paper>
