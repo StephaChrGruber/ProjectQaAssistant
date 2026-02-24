@@ -4,7 +4,7 @@ import dynamic from "next/dynamic"
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react"
 import type { OnMount } from "@monaco-editor/react"
 import type { editor as MonacoEditorNS } from "monaco-editor"
-import { Box, Typography } from "@mui/material"
+import { Box } from "@mui/material"
 
 type CodeComposerEditorProps = {
     value: string
@@ -169,34 +169,17 @@ export const CodeComposerEditor = forwardRef<CodeComposerEditorHandle, CodeCompo
 
     return (
         <Box
+            onClick={() => editorRef.current?.focus()}
             sx={{
                 position: "relative",
                 border: "1px solid",
                 borderColor: "divider",
                 borderRadius: 1.2,
                 backgroundColor: "rgba(2,6,23,0.34)",
-                minHeight: 170,
-                maxHeight: { xs: 280, sm: 340 },
+                height: { xs: 190, sm: 220 },
                 overflow: "hidden",
             }}
         >
-            {value.length === 0 && (
-                <Typography
-                    aria-hidden
-                    sx={{
-                        position: "absolute",
-                        left: 12,
-                        top: 10,
-                        color: "text.disabled",
-                        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                        fontSize: 13,
-                        pointerEvents: "none",
-                    }}
-                >
-                    {placeholder}
-                </Typography>
-            )}
-
             <MonacoEditor
                 height="100%"
                 language={language || "plaintext"}
@@ -219,6 +202,11 @@ export const CodeComposerEditor = forwardRef<CodeComposerEditorHandle, CodeCompo
                     overviewRulerLanes: 0,
                     renderLineHighlight: "none",
                     padding: { top: 10, bottom: 10 },
+                    scrollbar: {
+                        verticalScrollbarSize: 8,
+                        horizontalScrollbarSize: 8,
+                    },
+                    ...(placeholder ? ({ placeholder } as any) : {}),
                 }}
             />
         </Box>
