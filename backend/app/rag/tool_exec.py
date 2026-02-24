@@ -31,8 +31,12 @@ from ..models.tools import (
     BranchDiffFile,
     CreateChatTaskRequest,
     CreateChatTaskResponse,
+    CreateAutomationRequest,
+    CreateAutomationResponse,
     CreateJiraIssueRequest,
     CreateJiraIssueResponse,
+    DeleteAutomationRequest,
+    DeleteAutomationResponse,
     GitBranchItem,
     GitCheckoutBranchRequest,
     GitCheckoutBranchResponse,
@@ -82,16 +86,33 @@ from ..models.tools import (
     RunTestsResponse,
     ListChatTasksRequest,
     ListChatTasksResponse,
+    ListAutomationsRequest,
+    ListAutomationsResponse,
+    ListAutomationTemplatesRequest,
+    ListAutomationTemplatesResponse,
     ChatTaskItem,
     SymbolSearchHit,
     SymbolSearchRequest,
     SymbolSearchResponse,
     UpdateChatTaskRequest,
     UpdateChatTaskResponse,
+    UpdateAutomationRequest,
+    UpdateAutomationResponse,
+    RunAutomationRequest,
+    RunAutomationResponse,
     WriteDocumentationFileRequest,
     WriteDocumentationFileResponse,
 )
 from ..services.documentation import DocumentationError, generate_project_documentation
+from ..services.automations import (
+    create_automation as create_automation_service,
+    delete_automation as delete_automation_service,
+    get_automation as get_automation_service,
+    list_automations as list_automations_service,
+    list_automation_templates as list_automation_templates_service,
+    run_automation as run_automation_service,
+    update_automation as update_automation_service,
+)
 from ..settings import settings
 
 logger = logging.getLogger(__name__)
@@ -3190,3 +3211,96 @@ async def update_chat_task(req: UpdateChatTaskRequest) -> UpdateChatTaskResponse
     if not isinstance(next_row, dict):
         raise RuntimeError("Task update failed")
     return UpdateChatTaskResponse(item=_task_item_from_doc(next_row))
+
+
+async def create_automation(req: CreateAutomationRequest, ctx: Any | None = None) -> CreateAutomationResponse:
+    user_id = _ctx_field(ctx, "user_id") or "agent@system"
+    item = await create_automation_service(
+        req.project_id,
+        user_id=user_id,
+        name=req.name,
+        description=req.description,
+        enabled=bool(req.enabled),
+        trigger=req.trigger if isinstance(req.trigger, dict) else {},
+        conditions=req.conditions if isinstance(req.conditions, dict) else {},
+        action=req.action if isinstance(req.action, dict) else {},
+        cooldown_sec=int(req.cooldown_sec or 0),
+        tags=req.tags if isinstance(req.tags, list) else [],
+    )
+    logger.info(
+        "create_automation.write project=%s name=%s trigger=%s action=%s",
+        req.project_id,
+        str(req.name or "").strip(),
+        str((req.trigger or {}).get("type") if isinstance(req.trigger, dict) else ""),
+        str((req.action or {}).get("type") if isinstance(req.action, dict) else ""),
+    )
+    return CreateAutomationResponse(item=item)
+
+
+async def list_automations(req: ListAutomationsRequest) -> ListAutomationsResponse:
+    items = await list_automations_service(
+        req.project_id,
+        include_disabled=bool(req.include_disabled),
+        limit=max(1, min(int(req.limit or 100), 500)),
+    )
+    return ListAutomationsResponse(total=len(items), items=items)
+
+
+async def update_automation(req: UpdateAutomationRequest, ctx: Any | None = None) -> UpdateAutomationResponse:
+    user_id = _ctx_field(ctx, "user_id") or "agent@system"
+    patch: dict[str, Any] = {}
+    for key in ("name", "description", "enabled", "trigger", "conditions", "action", "cooldown_sec", "tags"):
+        value = getattr(req, key, None)
+        if value is None:
+            continue
+        patch[key] = value
+    if not patch:
+        current = await get_automation_service(req.project_id, req.automation_id)
+        if not current:
+            raise RuntimeError("Automation not found")
+        return UpdateAutomationResponse(item=current)
+    try:
+        item = await update_automation_service(req.project_id, req.automation_id, user_id=user_id, patch=patch)
+    except ValueError as err:
+        raise RuntimeError(str(err))
+    except KeyError:
+        raise RuntimeError("Automation not found")
+    return UpdateAutomationResponse(item=item)
+
+
+async def delete_automation(req: DeleteAutomationRequest) -> DeleteAutomationResponse:
+    try:
+        deleted = await delete_automation_service(req.project_id, req.automation_id)
+    except ValueError as err:
+        raise RuntimeError(str(err))
+    if not deleted:
+        raise RuntimeError("Automation not found")
+    return DeleteAutomationResponse(deleted=True, automation_id=req.automation_id)
+
+
+async def run_automation(req: RunAutomationRequest, ctx: Any | None = None) -> RunAutomationResponse:
+    payload = dict(req.payload or {})
+    payload.setdefault("project_id", req.project_id)
+    payload.setdefault("branch", _ctx_field(ctx, "branch"))
+    payload.setdefault("chat_id", _ctx_field(ctx, "chat_id"))
+    payload.setdefault("user_id", _ctx_field(ctx, "user_id"))
+    try:
+        run = await run_automation_service(
+            req.project_id,
+            req.automation_id,
+            triggered_by="manual",
+            event_type="manual",
+            event_payload=payload,
+        )
+    except ValueError as err:
+        raise RuntimeError(str(err))
+    except KeyError:
+        raise RuntimeError("Automation not found")
+    except RuntimeError as err:
+        raise RuntimeError(str(err))
+    return RunAutomationResponse(run=run)
+
+
+async def list_automation_templates(req: ListAutomationTemplatesRequest) -> ListAutomationTemplatesResponse:
+    items = await list_automation_templates_service()
+    return ListAutomationTemplatesResponse(total=len(items), items=items)

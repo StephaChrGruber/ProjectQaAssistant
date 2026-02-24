@@ -19,8 +19,10 @@ from ..models.tools import (
     ChromaCountRequest,
     ChromaOpenChunksRequest,
     ChromaSearchChunksRequest,
+    CreateAutomationRequest,
     CreateChatTaskRequest,
     CreateJiraIssueRequest,
+    DeleteAutomationRequest,
     GenerateProjectDocsRequest,
     GetToolDetailsRequest,
     GetToolDetailsResponse,
@@ -38,6 +40,8 @@ from ..models.tools import (
     GitStageFilesRequest,
     GitStatusRequest,
     GitUnstageFilesRequest,
+    ListAutomationTemplatesRequest,
+    ListAutomationsRequest,
     ListChatTasksRequest,
     KeywordSearchRequest,
     ListToolsRequest,
@@ -54,6 +58,8 @@ from ..models.tools import (
     SymbolSearchRequest,
     ToolEnvelope,
     ToolError,
+    RunAutomationRequest,
+    UpdateAutomationRequest,
     UpdateChatTaskRequest,
     WriteDocumentationFileRequest,
 )
@@ -62,8 +68,10 @@ from .tool_exec import (
     chroma_count,
     chroma_open_chunks,
     chroma_search_chunks,
+    create_automation,
     create_chat_task,
     create_jira_issue,
+    delete_automation,
     generate_project_docs,
     git_checkout_branch,
     git_commit,
@@ -79,6 +87,8 @@ from .tool_exec import (
     git_stage_files,
     git_status,
     git_unstage_files,
+    list_automation_templates,
+    list_automations,
     list_chat_tasks,
     keyword_search,
     open_file,
@@ -89,6 +99,8 @@ from .tool_exec import (
     repo_tree,
     run_tests,
     symbol_search,
+    run_automation,
+    update_automation,
     update_chat_task,
     write_documentation_file,
 )
@@ -320,6 +332,7 @@ class ToolRuntime:
             return True, ""
 
         caps = await self._context_capabilities(ctx)
+        has_project = bool(caps.get("project_found"))
         has_repo_read = bool(
             caps.get("local_repo_exists")
             or caps.get("remote_git_configured")
@@ -336,6 +349,16 @@ class ToolRuntime:
 
         if name in {"repo_tree", "repo_grep", "open_file", "symbol_search", "git_show_file_at_ref"}:
             return (has_repo_read, "repo_source_unavailable" if not has_repo_read else "")
+
+        if name in {
+            "create_automation",
+            "list_automations",
+            "update_automation",
+            "delete_automation",
+            "run_automation",
+            "list_automation_templates",
+        }:
+            return (has_project, "project_not_found" if not has_project else "")
 
         if name == "read_docs_folder":
             return (has_docs_read, "documentation_source_unavailable" if not has_docs_read else "")
@@ -1400,6 +1423,74 @@ def build_default_tool_runtime(
             timeout_sec=20,
             rate_limit_per_min=40,
             read_only=False,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="create_automation",
+            description="Creates a project automation with trigger, optional conditions, and action.",
+            model=CreateAutomationRequest,
+            handler=create_automation,
+            timeout_sec=25,
+            rate_limit_per_min=30,
+            read_only=False,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="list_automations",
+            description="Lists configured automations for the current project.",
+            model=ListAutomationsRequest,
+            handler=list_automations,
+            timeout_sec=20,
+            rate_limit_per_min=90,
+            max_retries=1,
+            cache_ttl_sec=5,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="update_automation",
+            description="Updates an existing automation (name/enabled/trigger/conditions/action/cooldown/tags).",
+            model=UpdateAutomationRequest,
+            handler=update_automation,
+            timeout_sec=25,
+            rate_limit_per_min=30,
+            read_only=False,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="delete_automation",
+            description="Deletes an automation and its run history.",
+            model=DeleteAutomationRequest,
+            handler=delete_automation,
+            timeout_sec=20,
+            rate_limit_per_min=30,
+            read_only=False,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="run_automation",
+            description="Runs an automation immediately in manual mode.",
+            model=RunAutomationRequest,
+            handler=run_automation,
+            timeout_sec=1200,
+            rate_limit_per_min=20,
+            read_only=False,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="list_automation_templates",
+            description="Lists built-in automation templates that can be applied quickly.",
+            model=ListAutomationTemplatesRequest,
+            handler=list_automation_templates,
+            timeout_sec=15,
+            rate_limit_per_min=120,
+            max_retries=1,
+            cache_ttl_sec=30,
         )
     )
 

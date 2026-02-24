@@ -1,82 +1,127 @@
 # Backend Architecture
 
-The backend of the Local POC Project is designed to provide a robust and scalable API service using FastAPI, MongoDB, and several other key components. This document outlines the architecture and operational details necessary for developers to understand and work with the backend system.
+This document details the backend structure of **Project QA POC**, focusing on its key modules, API design, and extensibility points. It is intended for developers who need to understand, extend, or operate the backend.
+
+---
 
 ## Overview
 
-The backend is built using FastAPI, a modern, fast (high-performance), web framework for building APIs with Python 3.6+ based on standard Python type hints. It is designed to be easy to use and to provide a high level of performance.
+The backend is implemented in Python using **FastAPI** and is containerized for deployment via Docker Compose. It provides RESTful APIs for project QA, chat, ingestion, tool execution, and administration. MongoDB is used for persistent storage, and ChromaDB is used for vector search and semantic retrieval.
 
-### Key Components
+**Key directories and files:**
+- `backend/app/routes/`: FastAPI route modules (API endpoints)
+- `backend/app/models/`: Pydantic models for request/response validation and data structures
+- `backend/app/services/`: Business logic and integrations
+- `backend/app/rag/`: Retrieval-Augmented Generation (RAG) logic
+- `backend/app/utils/`: Utility functions (DB, repo, etc.)
+- `backend/app/db.py`: Database connection helpers
+- `backend/requirements.txt`: Python dependencies
 
-- **FastAPI**: The core framework used for building the API endpoints.
-- **MongoDB**: A NoSQL database used for storing application data. The backend connects to MongoDB using the `motor` library, which is an asynchronous driver for MongoDB.
-- **Beanie**: An ODM (Object Document Mapper) for MongoDB, which is used to define and manage data models.
-- **Uvicorn**: An ASGI server used to run the FastAPI application.
-- **ChromaDB**: Used for managing and querying vector embeddings, which are crucial for certain AI functionalities.
+---
 
-## Directory Structure
+## Key Modules
 
-- **`backend/app/routes`**: Contains the API route definitions. Each file in this directory corresponds to a specific set of functionalities, such as user management, project management, and AI interactions.
-- **`backend/app/models`**: Defines the data models using Beanie, which are used to interact with MongoDB.
-- **`backend/app/settings.py`**: Contains configuration settings for the application, including environment variables and default values.
+### 1. **Routes (API Endpoints)**
 
-## Environment Configuration
+All API endpoints are organized as FastAPI routers under `backend/app/routes/`. Each file typically corresponds to a functional area:
 
-The backend service is configured using environment variables, which are defined in the `docker-compose.yaml` file. Key environment variables include:
+- **`routes/tools.py`**: Tool catalog, repo grep, file open, keyword search, and project metadata endpoints.
+- **`routes/ingestion.py`**: Project ingestion endpoints (triggering, webhook, incremental, etc.).
+- **`routes/chat.py`** and **`routes/chats.py`**: Chat session management, message handling, chat memory, and tool policy endpoints.
+- **`routes/admin.py`**: Admin endpoints for project, connector, and LLM profile management.
 
-- `MONGODB_URI`: The URI for connecting to the MongoDB instance.
-- `MONGODB_DB`: The name of the database to use.
-- `AUTH_MODE`: The authentication mode for the application.
-- `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`: Configuration for connecting to the language model service.
-
-## Running the Backend
-
-The backend service is containerized using Docker and can be started using Docker Compose. The relevant service definition in `docker-compose.yaml` is as follows:
-
-```yaml
-backend:
-  build: ./backend
-  restart: unless-stopped
-  environment:
-    - MONGODB_URI=${MONGODB_URI}
-    - MONGODB_DB=${MONGODB_DB}
-    - AUTH_MODE=${AUTH_MODE}
-    - CHROMA_ROOT=${CHROMA_ROOT}
-    - WEB_ORIGIN=${WEB_ORIGIN}
-    - LLM_BASE_URL=${LLM_BASE_URL}
-    - LLM_API_KEY=${LLM_API_KEY}
-    - LLM_MODEL=${LLM_MODEL}
-    - OPENAI_API_KEY=${OPENAI_API_KEY}
-    - ANONYMIZED_TELEMETRY=${ANONYMIZED_TELEMETRY}
-    - PATH_PICKER_ROOTS=${PATH_PICKER_ROOTS}
-    - MONGO_URI=mongodb://mongo:27017
-    - MONGO_DB=project_qa
-    - ANONYMIZED_TELEMETRY=False
-  volumes:
-    - chroma_data:/data/chroma_projects
-    - ${HOST_REPO_ROOT:-.}:/host/repos
+**Example: Tool Catalog Endpoint**
+```python
+@router.get("/tools/catalog")
+async def tools_catalog(project_id: Optional[str] = None):
+    if project_id:
+        runtime = await build_runtime_for_project(project_id)
+    else:
+        runtime = build_default_tool_runtime()
+    return {"tools": runtime.catalog()}
 ```
 
-## API Endpoints
+### 2. **Models**
 
-The backend exposes several API endpoints, organized by functionality:
+Pydantic models in `backend/app/models/` define the structure of API requests and responses, as well as internal data representations.
 
-- **User Management**: Handled in `backend/app/routes/me.py`, providing endpoints for retrieving user information.
-- **Project Management**: Defined in `backend/app/routes/admin.py`, allowing for the creation and management of projects.
-- **AI Interactions**: Managed in `backend/app/routes/qa.py` and `backend/app/routes/ask_agent.py`, providing endpoints for querying AI models and handling AI-related requests.
+- **`models/tools.py`**: Defines requests/responses for tool execution (e.g., `RepoGrepRequest`, `OpenFileRequest`).
+- **`models/chat.py`**: Defines chat message, chat document, and chat response structures.
+- **`models/base_mongo_models.py`**: MongoDB document models for projects, memberships, connectors, etc.
 
-## Dependencies
+**Example: Chat Message Model**
+```python
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant", "tool", "system"]
+    content: str
+    ts: datetime = Field(default_factory=datetime.utcnow)
+    meta: dict | None = None
+```
 
-The backend relies on several Python packages, as specified in `backend/requirements.txt`. Key dependencies include:
+### 3. **Services**
 
-- `fastapi`: The web framework for building the API.
-- `uvicorn`: The server for running the FastAPI application.
-- `beanie`: The ODM for MongoDB.
-- `motor`: The asynchronous MongoDB driver.
-- `PyJWT`: For handling JSON Web Tokens.
-- `requests`: For making HTTP requests.
-- `chromadb`: For managing vector embeddings.
+Business logic and integrations are encapsulated in the `backend/app/services/` directory.
 
-## Conclusion
+- **`services/custom_tools.py`**: Handles dynamic loading and execution of custom tools per project.
+- **`services/chat_store.py`**: Manages chat persistence and retrieval.
+- **`services/feature_flags.py`**: Feature flag management per project.
+- **`services/llm_profiles.py`**: LLM configuration and profile resolution.
 
-This document provides a comprehensive overview of the backend architecture for the Local POC Project. By understanding the components, configuration, and operational details outlined here, developers can effectively contribute to and extend the backend system.
+### 4. **RAG (Retrieval-Augmented Generation) Logic**
+
+The `backend/app/rag/` directory contains logic for:
+- Ingesting project data into ChromaDB (`rag/ingest.py`)
+- Tool runtime and orchestration (`rag/tool_runtime.py`)
+- Agent-based QA logic (`rag/agent2.py`)
+
+### 5. **Utilities**
+
+- **`utils/projects.py`**: Project metadata helpers.
+- **`utils/repo_tools.py`**: Repo grep and file access utilities.
+- **`utils/mongo.py`**: MongoDB ID and serialization helpers.
+
+---
+
+## API Design
+
+- **RESTful endpoints** are grouped by resource and function.
+- **Authentication** is handled via dependency injection (`Depends(current_user)`), with support for project and global admin roles.
+- **Request/response validation** is enforced using Pydantic models.
+- **Async**: All endpoints are asynchronous for scalability.
+- **Error handling**: Uses FastAPI's HTTPException for error responses.
+
+**Example: Ingestion Endpoint**
+```python
+@router.post("/projects/{project_id}/ingest")
+async def ingest_project(project_id: str, req: IncrementalIngestReq, user=Depends(current_user)):
+    await _require_project_admin(project_id, user)
+    # ... ingestion logic ...
+```
+
+---
+
+## Extensibility Points
+
+### 1. **Custom Tools**
+
+- **Definition**: Custom tools are Python functions or scripts that can be registered per project.
+- **Runtime**: The tool runtime is built dynamically for each project (`build_runtime_for_project` in `services/custom_tools.py`).
+- **API**: Tools are exposed via `/tools/catalog` and can be invoked through chat or directly via API.
+- **Admin APIs**: Tool management endpoints are available under `/admin/custom-tools` (see frontend routes for usage).
+
+### 2. **Ingestion**
+
+- **Connectors**: Supports multiple connector types (e.g., GitHub, Jira, Confluence, local).
+- **Incremental and webhook-based ingestion**: Endpoints in `routes/ingestion.py` allow for flexible data ingestion strategies.
+- **Ingestion runs** are tracked in the `ingestion_runs` MongoDB collection.
+
+### 3. **Chat and QA Logic**
+
+- **Chat sessions**: Managed via `routes/chat.py` and `routes/chats.py`, with persistent storage in MongoDB.
+- **Memory and context**: Each chat maintains a memory summary and pending user questions.
+- **Tool invocation**: Chats can invoke tools as part of the QA workflow, with tool policies and approvals configurable per chat.
+
+### 4. **LLM Integration**
+
+- **LLM configuration**: Supports multiple LLM providers (Ollama, OpenAI) via environment variables and project-level profiles.
+- **Runtime selection**: LLMs are resolved per project and

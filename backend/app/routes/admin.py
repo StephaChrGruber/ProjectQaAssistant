@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta
 import time
 from collections import defaultdict
@@ -18,9 +19,11 @@ from ..services.feature_flags import (
     load_project_feature_flags,
     update_project_feature_flags,
 )
+from ..services.automations import dispatch_automation_event
 from ..utils.mongo import to_jsonable
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 OLLAMA_DEFAULT_BASE_URL = "http://ollama:11434/v1"
 OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
@@ -864,6 +867,8 @@ async def delete_project(project_id: str, user=Depends(current_user)):
     docs_res = await db["docs"].delete_many(
         {"$or": [{"project_id": project_id}, {"projectId": project_id}]}
     )
+    automations_res = await db["automations"].delete_many({"project_id": project_id})
+    automation_runs_res = await db["automation_runs"].delete_many({"project_id": project_id})
 
     messages_deleted = 0
     if legacy_chat_ids:
@@ -893,6 +898,8 @@ async def delete_project(project_id: str, user=Depends(current_user)):
             "messages": messages_deleted,
             "chunks": int(chunks_res.deleted_count or 0),
             "docs": int(docs_res.deleted_count or 0),
+            "automations": int(automations_res.deleted_count or 0),
+            "automation_runs": int(automation_runs_res.deleted_count or 0),
         },
         "chroma": {
             "path": str(chroma_path),
@@ -951,18 +958,34 @@ async def project_connectors_health(project_id: str, user=Depends(current_user))
     items = [_connector_health(c, project_repo_path=project_repo_path) for c in configured_connectors]
     await _persist_connector_health_snapshot(project_id, items)
     ok_count = sum(1 for row in items if bool(row.get("ok")))
+    failed_count = max(0, len(items) - ok_count)
     history = await _build_connector_health_history(
         project_id,
         hours=72,
         limit=1200,
         connector_ids={str(c.id) for c in configured_connectors},
     )
+    try:
+        await dispatch_automation_event(
+            project_id,
+            event_type="connector_health_checked",
+            payload={
+                "project_id": project_id,
+                "total_connectors": len(items),
+                "ok_connectors": ok_count,
+                "failed_connectors": failed_count,
+                "alerts_count": len(history.get("alerts") or []),
+                "items": items[:20],
+            },
+        )
+    except Exception:
+        logger.exception("admin.connector_health.automation_dispatch_failed project=%s", project_id)
     return {
         "project_id": project_id,
         "enabled": True,
         "total": len(items),
         "ok": ok_count,
-        "failed": max(0, len(items) - ok_count),
+        "failed": failed_count,
         "items": items,
         "alerts": history.get("alerts") or [],
         "history": {

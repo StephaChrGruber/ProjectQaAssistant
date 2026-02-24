@@ -1,49 +1,144 @@
-# Local POC Project
+# Project QA POC
 
-Welcome to the Local POC Project! This project serves as a proof of concept for integrating various backend and frontend technologies to create a robust and scalable application. Below, you'll find an overview of the project's purpose, main features, and guidance on navigating the documentation.
+Welcome to **Project QA POC** — a proof-of-concept platform for question answering, code search, and knowledge management over software projects. This documentation serves as the entry point for developers, contributors, and operators.
 
-## Project Purpose
+---
 
-The Local POC Project aims to demonstrate the integration of a FastAPI backend with a Next.js frontend, utilizing MongoDB for data storage and various third-party services for enhanced functionality. This setup is designed to provide a comprehensive example of a modern web application architecture.
+## Overview
+
+Project QA POC enables teams to ingest, index, and query their codebases and documentation using advanced search and LLM-powered tools. It supports extensibility via custom tools and connectors, and provides both a backend API (FastAPI) and a modern frontend (Next.js/React).
+
+---
 
 ## Main Features
 
-- **Backend**: Built with FastAPI, the backend provides a RESTful API for managing project data. It includes features such as user authentication, project management, and integration with external services like OpenAI and Ollama.
-- **Frontend**: Developed using Next.js, the frontend offers a responsive and interactive user interface. It leverages React and various UI libraries to deliver a seamless user experience.
-- **Database**: MongoDB is used as the primary data store, ensuring scalability and flexibility in data management.
-- **Containerization**: The project utilizes Docker for containerization, allowing for easy deployment and management of services.
+- **Semantic & Keyword Search:**  
+  Search code and documentation using both semantic (vector-based) and keyword (regex) queries.
+- **LLM Integration:**  
+  Connects to local or remote LLMs (e.g., via Ollama or OpenAI) for question answering and summarization.
+- **Custom Tools:**  
+  Define and manage custom tools (backend Python or local TypeScript) for project-specific automation and analysis.
+- **Connector Framework:**  
+  Integrate with external sources (e.g., GitHub, Jira, Confluence) for ingestion and enrichment.
+- **Role-Based Access:**  
+  User/group/project management with admin/member/viewer roles.
+- **Ingestion Pipeline:**  
+  Incremental and webhook-based ingestion for code and external data.
+- **Modern Web UI:**  
+  Built with Next.js, React, and MUI for a responsive, developer-friendly experience.
+- **Audit & Versioning:**  
+  Track tool versions, audit runs, and publish/test custom tools.
 
-## Navigating the Documentation
+---
 
-The documentation is organized into several sections to help you get started and make the most of the project:
+## High-Level Goals
 
-- **Architecture**: 
-  - [Overview](architecture/overview.md): Provides a high-level view of the system architecture.
-  - [Backend](architecture/backend.md): Details the backend structure and components.
-  - [Frontend](architecture/frontend.md): Describes the frontend architecture and technologies used.
+- **Accelerate developer onboarding and productivity** by making project knowledge easily discoverable.
+- **Enable rapid prototyping of AI-powered developer tools** with a flexible, extensible backend.
+- **Support secure, role-based collaboration** across teams and projects.
+- **Integrate with real-world developer workflows** (code, issues, docs, chat).
 
-- **Setup**:
-  - [Getting Started](setup/getting-started.md): Instructions for setting up the development environment.
-  - [Docker](setup/docker.md): Guide on using Docker to run the project services.
+---
 
-- **Usage**:
-  - [Backend API](usage/backend-api.md): Documentation on available API endpoints and their usage.
-  - [Frontend](usage/frontend.md): Information on using and extending the frontend application.
+## Architecture
 
-- **Development**:
-  - [Contributing](development/contributing.md): Guidelines for contributing to the project.
-  - [Testing](development/testing.md): Instructions for running tests and ensuring code quality.
+- **Backend:**  
+  - FastAPI app (`backend/app/`)
+  - MongoDB (data storage)
+  - ChromaDB (vector search)
+  - Ollama or OpenAI (LLM inference)
+  - Key modules:  
+    - `models/` (e.g., `tools.py`, `chat.py`, `base_mongo_models.py`)
+    - `routes/` (e.g., `tools.py`, `ingestion.py`)
+    - `services/`, `rag/`, `utils/`
+- **Frontend:**  
+  - Next.js app (`web/`)
+  - TypeScript, React, MUI, Monaco Editor
+  - API routes (e.g., `web/src/app/api/admin/custom-tools/`)
+  - Uses OpenAPI-generated types for backend integration
 
-## Setup and Operational Details
+- **Deployment:**  
+  - Docker Compose (`docker-compose.yaml`) for local development and testing
+  - Services: `mongo`, `ollama`, `backend`, `frontend`
+  - Environment variables for configuration (see `.env` and `docker-compose.yaml`)
 
-To get started with the project, ensure you have Docker installed. The `docker-compose.yaml` file orchestrates the services, including MongoDB, the backend, and the frontend. Use the following command to start the services:
+---
 
-```bash
-docker-compose up --build
-```
+## Getting Started
 
-This command will build and start all services defined in the `docker-compose.yaml` file. The backend will be accessible at `http://localhost:8080`, and the frontend at `http://localhost:3000`.
+1. **Clone the repository** and review the [Getting Started guide](setup/getting-started.md).
+2. **Start services** using Docker Compose:
+   ```sh
+   docker-compose up --build
+   ```
+3. **Access the web UI** at [http://localhost:3000](http://localhost:3000).
+4. **Configure your project** and begin ingestion via the web UI or API.
+5. **Explore and extend** using custom tools and connectors.
 
-For more detailed setup instructions, refer to the [Getting Started](setup/getting-started.md) guide.
+For detailed setup, see:
+- [Setup: Getting Started](setup/getting-started.md)
+- [Setup: Docker Compose](setup/docker-compose.md)
+- [Setup: Development](setup/development.md)
 
-We hope this documentation helps you navigate and utilize the Local POC Project effectively. Happy coding!
+---
+
+## Extending Project QA POC
+
+- **Custom Tools:**  
+  Add Python or TypeScript tools for project-specific automation. See [Custom Tools](extensibility/custom-tools.md).
+- **Connectors:**  
+  Integrate with external systems (e.g., GitHub, Jira). See [Connectors](extensibility/connectors.md).
+
+---
+
+## Documentation Structure
+
+- **Architecture**
+  - [Overview](architecture/overview.md)
+  - [Backend](architecture/backend.md)
+  - [Frontend](architecture/frontend.md)
+  - [Data Models](architecture/data-models.md)
+- **Setup**
+  - [Getting Started](setup/getting-started.md)
+  - [Docker Compose](setup/docker-compose.md)
+  - [Development](setup/development.md)
+- **Extensibility**
+  - [Custom Tools](extensibility/custom-tools.md)
+  - [Connectors](extensibility/connectors.md)
+
+---
+
+## Key Modules & Files
+
+- **Backend**
+  - `backend/app/models/tools.py` — Tool and search request/response models
+  - `backend/app/routes/tools.py` — Tool catalog, project metadata, search endpoints
+  - `backend/app/models/chat.py` — Chat and message models
+  - `backend/app/models/base_mongo_models.py` — User, group, project, and connector models
+  - `backend/app/routes/ingestion.py` — Ingestion endpoints and logic
+  - `backend/requirements.txt`, `pyproject.toml` — Dependencies and linting/type-checking config
+
+- **Frontend**
+  - `web/src/app/api/admin/custom-tools/` — API routes for custom tool management
+  - `web/package.json`, `tsconfig.json` — Frontend dependencies and TypeScript config
+
+- **Deployment**
+  - `docker-compose.yaml` — Service orchestration for local development
+
+---
+
+## Contributing
+
+- Follow code style and linting rules (`ruff`, `mypy`, `eslint`, `prettier`).
+- Write and run tests (`pytest` for backend, `vitest` for frontend).
+- See [Development Setup](setup/development.md) for details.
+
+---
+
+## Support & Feedback
+
+For questions, issues, or feature requests, please open an issue or contact the maintainers.
+
+---
+
+**Start exploring the documentation using the links above!**

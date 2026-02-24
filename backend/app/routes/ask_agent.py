@@ -10,6 +10,7 @@ from ..rag.agent2 import LLMUpstreamError, answer_with_agent
 from ..rag.tool_runtime import ToolContext
 from ..services.llm_profiles import resolve_project_llm_config
 from ..services.custom_tools import build_runtime_for_project
+from ..services.automations import dispatch_automation_event
 from ..services.audit_events import record_audit_event
 from ..services.feature_flags import project_feature_flags
 from ..services.hierarchical_memory import (
@@ -943,6 +944,42 @@ async def ask_agent(req: AskReq):
                 await db["tool_events"].insert_many(docs, ordered=False)
         except Exception:
             logger.exception("Failed to persist tool events for chat_id=%s", chat_id)
+
+    try:
+        automation_payload = {
+            "project_id": req.project_id,
+            "chat_id": chat_id,
+            "branch": req.branch,
+            "user_id": req.user,
+            "question": user_text,
+            "answer": answer,
+            "grounded": bool(grounded_ok),
+            "sources_count": len(answer_sources),
+            "tool_calls": int(tool_summary.get("calls") or 0),
+            "tool_errors": int(tool_summary.get("errors") or 0),
+            "tool_cached_hits": int(tool_summary.get("cached_hits") or 0),
+            "pending_user_input": bool(awaiting_user_input),
+            "llm_provider": active_llm.get("provider"),
+            "llm_model": active_llm.get("model"),
+        }
+        runs = await dispatch_automation_event(
+            req.project_id,
+            event_type="ask_agent_completed",
+            payload=automation_payload,
+        )
+        if runs:
+            logger.info(
+                "ask_agent.automations_dispatched project=%s chat_id=%s runs=%s",
+                req.project_id,
+                chat_id,
+                len(runs),
+            )
+    except Exception:
+        logger.exception(
+            "ask_agent.automations_dispatch_failed project=%s chat_id=%s",
+            req.project_id,
+            chat_id,
+        )
 
     return {
         "answer": answer,

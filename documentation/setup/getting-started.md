@@ -1,130 +1,192 @@
-# Getting Started with Local POC Project
+# Getting Started
 
-Welcome to the Local POC Project! This guide will walk you through the initial setup process, including the installation of dependencies and running the project locally. Follow these steps to get your development environment up and running.
+Welcome to the **Project QA POC**! This guide will walk you through setting up the project locally, including all prerequisites, environment variables, and initial setup steps. By the end, you’ll have the backend, frontend, and supporting services running on your machine.
+
+---
 
 ## Prerequisites
 
-Before you begin, ensure you have the following installed on your machine:
+Before you begin, ensure you have the following installed:
 
-- **Docker**: Required for containerized services.
-- **Node.js**: Version 16 or higher is recommended.
-- **Python**: Version 3.8 or higher.
-- **Git**: For version control.
+- **Docker** and **Docker Compose** (for running services)
+- **Node.js** (v18+ recommended) and **npm** or **yarn** (for frontend development)
+- **Python 3.12** (for backend development)
+- **Git** (to clone the repository)
 
-## Clone the Repository
+---
 
-Start by cloning the repository to your local machine:
+## 1. Clone the Repository
 
 ```bash
-git clone <repository-url>
-cd <repository-directory>
+git clone <your-repo-url>
+cd <your-repo-directory>
 ```
 
-## Setting Up the Backend
+---
 
-The backend is built using FastAPI and requires several Python dependencies.
+## 2. Environment Variables
 
-1. **Navigate to the backend directory**:
+The project uses environment variables for configuration. Create a `.env` file in the root directory (or copy from `.env.example` if available).
 
-   ```bash
-   cd backend
-   ```
+### Example `.env` values:
 
-2. **Install Python dependencies**:
+```env
+# MongoDB
+MONGODB_URI=mongodb://mongo:27017
+MONGODB_DB=project_qa
 
-   Ensure you have a virtual environment set up, then install the required packages:
+# Authentication
+AUTH_MODE=dev
 
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows use `venv\Scripts\activate`
-   pip install -r requirements.txt
-   ```
+# ChromaDB
+CHROMA_ROOT=/data/chroma_projects
 
-3. **Environment Variables**:
+# Web Origin
+WEB_ORIGIN=http://localhost:3000
 
-   Create a `.env` file in the `backend` directory with the following content:
+# LLM (Ollama or OpenAI)
+LLM_BASE_URL=http://ollama:11434
+LLM_MODEL=llama2
+LLM_API_KEY=
+OPENAI_API_KEY=
 
-   ```env
-   MONGODB_URI=mongodb://mongo:27017
-   MONGODB_DB=project_qa
-   AUTH_MODE=local
-   ```
+# Telemetry
+ANONYMIZED_TELEMETRY=False
 
-## Setting Up the Frontend
+# Path Picker
+PATH_PICKER_ROOTS=/host/repos
 
-The frontend is a Next.js application.
+# Ollama Model (used by ollama-pull)
+OLLAMA_MODEL=llama2
+```
 
-1. **Navigate to the web directory**:
+**Note:**  
+- Adjust `LLM_MODEL` and `OLLAMA_MODEL` to the model you want to use (e.g., `llama2`, `mistral`, etc.).
+- `OPENAI_API_KEY` is only needed if using OpenAI models.
 
-   ```bash
-   cd ../web
-   ```
+---
 
-2. **Install Node.js dependencies**:
+## 3. Start All Services with Docker Compose
 
-   Run the following command to install the necessary packages:
+The project uses `docker-compose.yaml` to orchestrate all required services:
 
-   ```bash
-   npm install
-   ```
+- **MongoDB** (database)
+- **Ollama** (local LLM server)
+- **ChromaDB** (vector database, mounted as a volume)
+- **Backend** (FastAPI app, built from `./backend`)
+- **Frontend** (Next.js app, built from `./web`)
 
-3. **Environment Variables**:
+To start everything:
 
-   Create a `.env.local` file in the `web` directory with the following content:
+```bash
+docker compose up --build
+```
 
-   ```env
-   BACKEND_BASE_URL=http://localhost:8080
-   ```
+This will:
 
-## Running the Project
+- Build the backend from `./backend`
+- Start the frontend from `./web`
+- Pull and run the Ollama model specified in your `.env`
+- Expose the following ports:
+  - MongoDB: `27017`
+  - Ollama: `11434`
+  - Backend: `8080`
+  - Frontend: `3000`
 
-### Using Docker
+**Tip:** The first run may take a while as Docker pulls images and Ollama downloads the model.
 
-The easiest way to run the project is by using Docker Compose, which will handle both the backend and the database.
+---
 
-1. **Navigate to the root directory**:
+## 4. Accessing the Application
 
-   ```bash
-   cd ..
-   ```
+- **Frontend:** [http://localhost:3000](http://localhost:3000)
+- **Backend API:** [http://localhost:8080](http://localhost:8080)
+- **Ollama UI/API:** [http://localhost:11434](http://localhost:11434)
+- **MongoDB:** [mongodb://localhost:27017](mongodb://localhost:27017)
 
-2. **Start the services**:
+---
 
-   Run the following command to start all services defined in the `docker-compose.yaml` file:
+## 5. Development Workflow
 
-   ```bash
-   docker-compose up --build
-   ```
+### Backend
 
-   This will start the MongoDB, backend, and any other services defined.
+- Source code: `./backend`
+- Main dependencies: see `backend/requirements.txt`
+- Python version: 3.12 (see `backend/pyproject.toml`)
+- To run backend tests:
+  ```bash
+  cd backend
+  pip install -r requirements.txt
+  pytest
+  ```
 
-### Running Locally
+### Frontend
 
-If you prefer to run the services locally without Docker:
+- Source code: `./web`
+- Main dependencies: see `web/package.json`
+- To start the frontend in development mode:
+  ```bash
+  cd web
+  npm install
+  npm run dev
+  ```
+  This starts the Next.js app on [http://localhost:3000](http://localhost:3000).
 
-1. **Start the backend**:
+---
 
-   In the `backend` directory, activate your virtual environment and run:
+## 6. Initial Data and Seeding
 
-   ```bash
-   uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
-   ```
+- **MongoDB Initialization:**  
+  The `mongo` service mounts `./mongo-init` to `/docker-entrypoint-initdb.d` for initial scripts. Place any `.js` or `.sh` files here to seed data on first run.
 
-2. **Start the frontend**:
+- **Ollama Model Pull:**  
+  The `ollama-pull` service automatically pulls the model specified by `OLLAMA_MODEL` on startup.
 
-   In the `web` directory, run:
+---
 
-   ```bash
-   npm run dev
-   ```
+## 7. Customization & Advanced Setup
 
-   This will start the Next.js development server on port 3000.
+- **Mounting Local Repos:**  
+  The backend mounts `${HOST_REPO_ROOT:-.}:/host/repos` for local repo access. Adjust `HOST_REPO_ROOT` in your `.env` if needed.
 
-## Accessing the Application
+- **Environment Variables for Frontend:**  
+  The frontend uses variables like `BACKEND_BASE_URL`, `POC_DEV_USER`, and `POC_DEV_ADMIN` (see `web/src/app/api/admin/custom-tools/route.ts`). You can set these in a `.env.local` file in `./web` for development overrides.
 
-- **Frontend**: Open your browser and navigate to `http://localhost:3000`.
-- **Backend API**: Access the API documentation at `http://localhost:8080/docs`.
+---
 
-## Conclusion
+## 8. Stopping and Cleaning Up
 
-You are now set up to start developing with the Local POC Project. For further details on architecture and usage, refer to the other documentation files listed in the project. Happy coding!
+To stop all services:
+
+```bash
+docker compose down
+```
+
+To remove all volumes (including database and vector data):
+
+```bash
+docker compose down -v
+```
+
+---
+
+## 9. Troubleshooting
+
+- **Ports already in use:**  
+  Make sure ports `27017`, `11434`, `8080`, and `3000` are free.
+- **Ollama model not found:**  
+  Ensure `OLLAMA_MODEL` is set to a valid model name.
+- **Backend/Frontend not connecting:**  
+  Check that environment variables for service URLs are correct and containers are healthy.
+
+---
+
+## 10. Next Steps
+
+- See [documentation/setup/development.md](development.md) for advanced development workflows.
+- See [documentation/setup/docker-compose.md](docker-compose.md) for Docker details.
+- Explore [documentation/architecture/overview.md](../architecture/overview.md) for system architecture.
+
+---
+
+You’re ready to start developing with Project QA POC! If you encounter issues

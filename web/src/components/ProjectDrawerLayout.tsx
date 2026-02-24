@@ -4,6 +4,7 @@ import ChatBubbleOutlineRounded from "@mui/icons-material/ChatBubbleOutlineRound
 import SettingsRounded from "@mui/icons-material/SettingsRounded"
 import AdminPanelSettingsRounded from "@mui/icons-material/AdminPanelSettingsRounded"
 import FolderRounded from "@mui/icons-material/FolderRounded"
+import AutoModeRounded from "@mui/icons-material/AutoModeRounded"
 import AddRounded from "@mui/icons-material/AddRounded"
 import MenuRounded from "@mui/icons-material/MenuRounded"
 import ExpandMoreRounded from "@mui/icons-material/ExpandMoreRounded"
@@ -62,7 +63,7 @@ type Props = {
     onOpenSettings?: () => void
     user?: DrawerUser | null
     loadingChats?: boolean
-    activeSection?: "chat" | "settings"
+    activeSection?: "chat" | "settings" | "automations"
     children: React.ReactNode
 }
 
@@ -349,6 +350,18 @@ export function ProjectDrawerLayout(props: Props) {
                             <ListItemText primary="Settings" />
                         </ListItemButton>
                     )}
+
+                    <ListItemButton
+                        component={Link}
+                        href={`/projects/${projectId}/automations`}
+                        selected={activeSection === "automations"}
+                        sx={{ borderRadius: 1.7 }}
+                    >
+                        <ListItemIcon sx={{ minWidth: 34 }}>
+                            <AutoModeRounded fontSize="small" />
+                        </ListItemIcon>
+                        <ListItemText primary="Automations" />
+                    </ListItemButton>
 
                     {user?.isGlobalAdmin && (
                         <ListItemButton component={Link} href="/admin" sx={{ borderRadius: 1.7 }}>

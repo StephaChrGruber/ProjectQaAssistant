@@ -567,6 +567,82 @@ class UpdateChatTaskResponse(BaseModel):
     item: ChatTaskItem
 
 
+class CreateAutomationRequest(BaseModel):
+    project_id: str
+    name: str
+    description: str = ""
+    enabled: bool = True
+    trigger: Dict[str, Any]
+    conditions: Dict[str, Any] = Field(default_factory=dict)
+    action: Dict[str, Any]
+    cooldown_sec: int = 0
+    tags: List[str] = Field(default_factory=list)
+
+
+class CreateAutomationResponse(BaseModel):
+    item: Dict[str, Any]
+
+
+class ListAutomationsRequest(BaseModel):
+    project_id: str
+    include_disabled: bool = True
+    limit: int = 100
+
+
+class ListAutomationsResponse(BaseModel):
+    total: int
+    items: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class UpdateAutomationRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    project_id: str
+    automation_id: str = Field(alias="id")
+    name: Optional[str] = None
+    description: Optional[str] = None
+    enabled: Optional[bool] = None
+    trigger: Optional[Dict[str, Any]] = None
+    conditions: Optional[Dict[str, Any]] = None
+    action: Optional[Dict[str, Any]] = None
+    cooldown_sec: Optional[int] = None
+    tags: Optional[List[str]] = None
+
+
+class UpdateAutomationResponse(BaseModel):
+    item: Dict[str, Any]
+
+
+class DeleteAutomationRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    project_id: str
+    automation_id: str = Field(alias="id")
+
+
+class DeleteAutomationResponse(BaseModel):
+    deleted: bool
+    automation_id: str
+
+
+class RunAutomationRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    project_id: str
+    automation_id: str = Field(alias="id")
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RunAutomationResponse(BaseModel):
+    run: Dict[str, Any]
+
+
+class ListAutomationTemplatesRequest(BaseModel):
+    project_id: str
+
+
+class ListAutomationTemplatesResponse(BaseModel):
+    total: int
+    items: List[Dict[str, Any]] = Field(default_factory=list)
+
+
 class ToolError(BaseModel):
     code: str
     message: str
