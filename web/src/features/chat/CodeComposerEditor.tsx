@@ -1,55 +1,171 @@
 "use client"
 
-import { useMemo, useRef, type ChangeEvent, type KeyboardEvent, type UIEvent } from "react"
+import dynamic from "next/dynamic"
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react"
+import type { OnMount } from "@monaco-editor/react"
+import type { editor as MonacoEditorNS } from "monaco-editor"
 import { Box, Typography } from "@mui/material"
-import { normalizeLanguage, tokenColor, tokenizeCode } from "@/features/chat/code-highlighting"
 
 type CodeComposerEditorProps = {
     value: string
     language: string
     disabled?: boolean
     placeholder?: string
+    slashCommands?: SlashCommand[]
     onChange: (next: string) => void
     onSubmit?: () => void
 }
 
-export function CodeComposerEditor({
-    value,
-    language,
-    disabled = false,
-    placeholder = "Write code here",
-    onChange,
-    onSubmit,
-}: CodeComposerEditorProps) {
-    const highlightRef = useRef<HTMLPreElement | null>(null)
-    const normalizedLanguage = normalizeLanguage(language)
+export type SlashCommand = {
+    command: string
+    description: string
+    template: string
+}
 
-    const tokens = useMemo(() => tokenizeCode(value || "", normalizedLanguage), [value, normalizedLanguage])
+export type CodeComposerEditorHandle = {
+    focus: () => void
+    insertSnippetAtCursor: (snippet: string, cursorOffset?: number) => void
+}
 
-    function handleScroll(event: UIEvent<HTMLTextAreaElement>) {
-        if (!highlightRef.current) return
-        highlightRef.current.scrollTop = event.currentTarget.scrollTop
-        highlightRef.current.scrollLeft = event.currentTarget.scrollLeft
-    }
+const MonacoEditor = dynamic(() => import("@monaco-editor/react"), { ssr: false })
 
-    function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-        if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-            event.preventDefault()
-            onSubmit?.()
-            return
+export const CodeComposerEditor = forwardRef<CodeComposerEditorHandle, CodeComposerEditorProps>(function CodeComposerEditor(
+    {
+        value,
+        language,
+        disabled = false,
+        placeholder = "Write code here",
+        slashCommands = [],
+        onChange,
+        onSubmit,
+    }: CodeComposerEditorProps,
+    ref
+) {
+    const editorRef = useRef<MonacoEditorNS.IStandaloneCodeEditor | null>(null)
+    const completionProviderRef = useRef<{ dispose: () => void } | null>(null)
+    const slashCommandsRef = useRef<SlashCommand[]>(slashCommands)
+    slashCommandsRef.current = slashCommands
+
+    const expandTemplate = (template: string, indent: string, keepMarker = false) => {
+        const marker = "__CURSOR__"
+        const withIndent = template
+            .split("\n")
+            .map((line) => (line.length ? `${indent}${line}` : line))
+            .join("\n")
+        const markerIndex = withIndent.indexOf(marker)
+        if (markerIndex < 0) return { text: withIndent, cursorOffset: withIndent.length }
+        return {
+            text: keepMarker ? withIndent : withIndent.replace(marker, ""),
+            cursorOffset: markerIndex,
         }
-        if (event.key !== "Tab") return
-        event.preventDefault()
-        const target = event.currentTarget
-        const start = target.selectionStart ?? 0
-        const end = target.selectionEnd ?? 0
-        const next = `${value.slice(0, start)}  ${value.slice(end)}`
-        onChange(next)
-        queueMicrotask(() => {
-            target.selectionStart = start + 2
-            target.selectionEnd = start + 2
-        })
     }
+
+    const tryExpandSlashCommand = (
+        editor: MonacoEditorNS.IStandaloneCodeEditor,
+        monaco: any
+    ): boolean => {
+        const model = editor.getModel()
+        const position = editor.getPosition()
+        const activeCommands = slashCommandsRef.current || []
+        if (!model || !position || !activeCommands.length) return false
+        const lineNumber = position.lineNumber
+        const lineText = model.getLineContent(lineNumber)
+        const match = lineText.match(/^(\s*)\/([a-zA-Z][a-zA-Z0-9_-]*)\s*$/)
+        if (!match) return false
+        const indent = match[1] || ""
+        const name = String(match[2] || "").toLowerCase()
+        const cmd = activeCommands.find((c) => c.command.toLowerCase() === name)
+        if (!cmd) return false
+        const expanded = expandTemplate(cmd.template, indent)
+        const range = new monaco.Range(lineNumber, 1, lineNumber, lineText.length + 1)
+        editor.executeEdits("code-composer-slash-expand", [{ range, text: expanded.text, forceMoveMarkers: true }])
+        const startOffset = model.getOffsetAt({ lineNumber, column: 1 })
+        const cursor = model.getPositionAt(startOffset + expanded.cursorOffset)
+        editor.setPosition(cursor)
+        editor.focus()
+        return true
+    }
+
+    const handleMount: OnMount = (editor, monaco) => {
+        editorRef.current = editor
+        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => onSubmit?.())
+        editor.addCommand(
+            monaco.KeyCode.Enter,
+            () => {
+                if (tryExpandSlashCommand(editor, monaco)) return
+                editor.trigger("keyboard", "type", { text: "\n" })
+            },
+            "!suggestWidgetVisible && !inSnippetMode"
+        )
+
+        if (language) {
+            completionProviderRef.current?.dispose()
+            completionProviderRef.current = monaco.languages.registerCompletionItemProvider(language, {
+                triggerCharacters: ["/"],
+                provideCompletionItems(model: any, position: any) {
+                    const activeCommands = slashCommandsRef.current || []
+                    if (!activeCommands.length) return { suggestions: [] }
+                    const fullLine = String(model.getLineContent(position.lineNumber) || "")
+                    const before = fullLine.slice(0, position.column - 1)
+                    const match = before.match(/(^|\s)\/([a-zA-Z0-9_-]*)$/)
+                    if (!match) return { suggestions: [] }
+
+                    const leading = match[1] || ""
+                    const typed = String(match[2] || "").toLowerCase()
+                    const wordStart = position.column - typed.length - 1
+                    const range = new monaco.Range(position.lineNumber, wordStart, position.lineNumber, position.column)
+
+                    const suggestions = activeCommands
+                        .filter((cmd) => cmd.command.toLowerCase().startsWith(typed))
+                        .map((cmd, idx) => {
+                            const expanded = expandTemplate(cmd.template, leading, true)
+                            const snippetText = expanded.text.replace("__CURSOR__", "$0")
+                            return {
+                                label: `/${cmd.command}`,
+                                kind: monaco.languages.CompletionItemKind.Snippet,
+                                detail: cmd.description,
+                                sortText: `0${idx}`,
+                                documentation: `${cmd.description}`,
+                                insertText: snippetText,
+                                insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                                range,
+                            }
+                        })
+                    return { suggestions }
+                },
+            })
+        }
+    }
+
+    useEffect(() => {
+        return () => {
+            editorRef.current = null
+            completionProviderRef.current?.dispose()
+            completionProviderRef.current = null
+        }
+    }, [])
+
+    useImperativeHandle(
+        ref,
+        () => ({
+            focus() {
+                editorRef.current?.focus()
+            },
+            insertSnippetAtCursor(snippet: string, cursorOffset?: number) {
+                const editor = editorRef.current
+                if (!editor || disabled) return
+                const model = editor.getModel()
+                const selection = editor.getSelection()
+                if (!model || !selection) return
+                editor.executeEdits("code-composer-insert-snippet", [{ range: selection, text: snippet, forceMoveMarkers: true }])
+                const nextOffset = Math.max(0, Number(cursorOffset || 0))
+                const pos = model.getPositionAt(model.getOffsetAt(selection.getStartPosition()) + nextOffset)
+                editor.setPosition(pos)
+                editor.focus()
+            },
+        }),
+        [disabled]
+    )
 
     return (
         <Box
@@ -64,32 +180,6 @@ export function CodeComposerEditor({
                 overflow: "hidden",
             }}
         >
-            <Box
-                ref={highlightRef}
-                component="pre"
-                aria-hidden
-                sx={{
-                    m: 0,
-                    p: 1.1,
-                    width: "100%",
-                    height: "100%",
-                    overflow: "auto",
-                    whiteSpace: "pre",
-                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                    fontSize: 13,
-                    lineHeight: 1.45,
-                    pointerEvents: "none",
-                }}
-            >
-                {tokens.length === 0
-                    ? "\u00a0"
-                    : tokens.map((token, idx) => (
-                          <span key={idx} style={{ color: tokenColor(token.kind, false) }}>
-                              {token.text}
-                          </span>
-                      ))}
-            </Box>
-
             {value.length === 0 && (
                 <Typography
                     aria-hidden
@@ -107,37 +197,30 @@ export function CodeComposerEditor({
                 </Typography>
             )}
 
-            <Box
-                component="textarea"
-                spellCheck={false}
-                wrap="off"
+            <MonacoEditor
+                height="100%"
+                language={language || "plaintext"}
+                theme="vs-dark"
                 value={value}
-                disabled={disabled}
-                onChange={(event: ChangeEvent<HTMLTextAreaElement>) => onChange(event.target.value)}
-                onScroll={handleScroll}
-                onKeyDown={handleKeyDown}
-                sx={{
-                    position: "absolute",
-                    inset: 0,
-                    width: "100%",
-                    height: "100%",
-                    p: 1.1,
-                    border: "none",
-                    outline: "none",
-                    resize: "none",
-                    overflow: "auto",
-                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                onMount={handleMount}
+                onChange={(next) => onChange(next || "")}
+                options={{
+                    readOnly: disabled,
+                    minimap: { enabled: false },
+                    scrollBeyondLastLine: false,
+                    automaticLayout: true,
+                    wordWrap: "on",
                     fontSize: 13,
-                    lineHeight: 1.45,
-                    letterSpacing: 0,
-                    color: "transparent",
-                    caretColor: "text.primary",
-                    background: "transparent",
-                    "&::selection": {
-                        backgroundColor: "rgba(59,130,246,0.28)",
-                    },
+                    lineHeight: 20,
+                    lineNumbers: "off",
+                    folding: false,
+                    glyphMargin: false,
+                    lineDecorationsWidth: 0,
+                    overviewRulerLanes: 0,
+                    renderLineHighlight: "none",
+                    padding: { top: 10, bottom: 10 },
                 }}
             />
         </Box>
     )
-}
+})

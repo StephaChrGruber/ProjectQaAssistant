@@ -1,11 +1,12 @@
 "use client"
 
-import { useState } from "react"
-import { Alert, Button, FormControl, InputLabel, MenuItem, Paper, Select, Stack, TextField, Typography } from "@mui/material"
+import { useMemo, useRef, useState } from "react"
+import { Button, FormControl, InputLabel, MenuItem, Paper, Select, Stack, TextField, Typography } from "@mui/material"
 import SendRounded from "@mui/icons-material/SendRounded"
 import ClearAllRounded from "@mui/icons-material/ClearAllRounded"
+import CodeRounded from "@mui/icons-material/CodeRounded"
 import type { PendingUserQuestion } from "@/features/chat/types"
-import { CodeComposerEditor } from "@/features/chat/CodeComposerEditor"
+import { CodeComposerEditor, type CodeComposerEditorHandle, type SlashCommand } from "@/features/chat/CodeComposerEditor"
 
 type ChatComposerProps = {
     pendingUserQuestion: PendingUserQuestion | null
@@ -46,43 +47,50 @@ export function ChatComposer({
     onClear,
     onSubmitPendingAnswer,
 }: ChatComposerProps) {
-    const [composeMode, setComposeMode] = useState<"text" | "code">("text")
     const [codeLanguage, setCodeLanguage] = useState("typescript")
-    const [codeDraft, setCodeDraft] = useState("")
-    const [formatError, setFormatError] = useState<string | null>(null)
-
-    const canSend = composeMode === "code" ? Boolean(codeDraft.trim()) : Boolean(input.trim())
-
-    function formatCode() {
-        setFormatError(null)
-        const normalized = codeDraft
-            .split("\n")
-            .map((line) => line.replace(/\t/g, "  ").replace(/[ \t]+$/g, ""))
-            .join("\n")
-
-        if (codeLanguage === "json") {
-            try {
-                const parsed = JSON.parse(normalized || "{}")
-                setCodeDraft(JSON.stringify(parsed, null, 2))
-                return
-            } catch {
-                setFormatError("JSON formatting failed. Check JSON syntax.")
-                return
-            }
-        }
-        setCodeDraft(normalized)
-    }
+    const editorRef = useRef<CodeComposerEditorHandle | null>(null)
+    const canSend = Boolean(input.trim())
+    const codeBlockSnippet = useMemo(() => `\`\`\`${codeLanguage}\n\n\`\`\``, [codeLanguage])
+    const slashCommands = useMemo<SlashCommand[]>(
+        () => [
+            {
+                command: "code",
+                description: `Insert a ${codeLanguage} code block`,
+                template: `\`\`\`${codeLanguage}\n__CURSOR__\n\`\`\``,
+            },
+            {
+                command: "table",
+                description: "Insert a markdown table",
+                template: "| Column A | Column B |\n| --- | --- |\n| __CURSOR__ |  |",
+            },
+            {
+                command: "chart",
+                description: "Insert a chart JSON block",
+                template:
+                    '```chart\n{\n  "type": "line",\n  "data": {\n    "labels": ["Jan", "Feb"],\n    "datasets": [{ "label": "Series", "data": [1, 2] }]\n  },\n  "note": "__CURSOR__"\n}\n```',
+            },
+            {
+                command: "todo",
+                description: "Insert a checklist",
+                template: "- [ ] __CURSOR__\n- [ ] ",
+            },
+            {
+                command: "quote",
+                description: "Insert a quote block",
+                template: "> __CURSOR__",
+            },
+        ],
+        [codeLanguage]
+    )
 
     function sendFromComposer() {
-        if (composeMode === "code") {
-            const payload = codeDraft.trimEnd()
-            if (!payload) return
-            onSend(`\`\`\`${codeLanguage}\n${payload}\n\`\`\``)
-            setCodeDraft("")
-            setFormatError(null)
-            return
-        }
-        onSend()
+        const payload = input.trimEnd()
+        if (!payload) return
+        onSend(payload)
+    }
+
+    function insertCodeBlock() {
+        editorRef.current?.insertSnippetAtCursor(codeBlockSnippet, codeLanguage.length + 4)
     }
 
     return (
@@ -168,100 +176,57 @@ export function ChatComposer({
                     }}
                 >
                     <Stack spacing={0.7}>
-                        <Stack direction={{ xs: "column", sm: "row" }} spacing={0.7} alignItems={{ sm: "center" }}>
-                            <Stack direction="row" spacing={0.6}>
+                        <Stack direction={{ xs: "column", sm: "row" }} spacing={0.6} alignItems={{ sm: "center" }}>
+                            <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11, letterSpacing: "0.04em" }}>
+                                COMPOSER
+                            </Typography>
+                            <Stack direction="row" spacing={0.6} sx={{ ml: { sm: "auto" } }}>
+                                <FormControl size="small" sx={{ minWidth: 150 }}>
+                                    <InputLabel id="chat-code-language-label">Code Language</InputLabel>
+                                    <Select
+                                        labelId="chat-code-language-label"
+                                        label="Code Language"
+                                        value={codeLanguage}
+                                        onChange={(e) => setCodeLanguage(String(e.target.value || "typescript"))}
+                                        disabled={!hasSelectedChat || sending}
+                                    >
+                                        {CODE_LANGUAGE_OPTIONS.map((lang) => (
+                                            <MenuItem key={lang} value={lang}>
+                                                {lang}
+                                            </MenuItem>
+                                        ))}
+                                    </Select>
+                                </FormControl>
                                 <Button
                                     size="small"
-                                    variant={composeMode === "text" ? "contained" : "outlined"}
-                                    onClick={() => setComposeMode("text")}
+                                    variant="outlined"
+                                    startIcon={<CodeRounded />}
+                                    onClick={insertCodeBlock}
                                     disabled={!hasSelectedChat || sending}
                                 >
-                                    Text
-                                </Button>
-                                <Button
-                                    size="small"
-                                    variant={composeMode === "code" ? "contained" : "outlined"}
-                                    onClick={() => setComposeMode("code")}
-                                    disabled={!hasSelectedChat || sending}
-                                >
-                                    Code
+                                    Insert Code Block
                                 </Button>
                             </Stack>
-
-                            {composeMode === "code" && (
-                                <Stack direction="row" spacing={0.6} sx={{ ml: { sm: "auto" } }}>
-                                    <FormControl size="small" sx={{ minWidth: 150 }}>
-                                        <InputLabel id="chat-code-language-label">Language</InputLabel>
-                                        <Select
-                                            labelId="chat-code-language-label"
-                                            label="Language"
-                                            value={codeLanguage}
-                                            onChange={(e) => setCodeLanguage(String(e.target.value || "typescript"))}
-                                            disabled={!hasSelectedChat || sending}
-                                        >
-                                            {CODE_LANGUAGE_OPTIONS.map((lang) => (
-                                                <MenuItem key={lang} value={lang}>
-                                                    {lang}
-                                                </MenuItem>
-                                            ))}
-                                        </Select>
-                                    </FormControl>
-                                    <Button
-                                        size="small"
-                                        variant="outlined"
-                                        onClick={formatCode}
-                                        disabled={!hasSelectedChat || sending || !codeDraft.trim()}
-                                    >
-                                        Format
-                                    </Button>
-                                </Stack>
-                            )}
                         </Stack>
 
-                        {composeMode === "code" ? (
-                            <Stack spacing={0.6}>
-                                {formatError && <Alert severity="warning">{formatError}</Alert>}
-                                <CodeComposerEditor
-                                    value={codeDraft}
-                                    language={codeLanguage}
-                                    placeholder="Write code here"
-                                    disabled={!hasSelectedChat || sending}
-                                    onChange={setCodeDraft}
-                                    onSubmit={sendFromComposer}
-                                />
-                            </Stack>
-                        ) : (
-                            <TextField
-                                value={input}
-                                onChange={(e) => onInputChange(e.target.value)}
-                                onKeyDown={(e) => {
-                                    if (e.key === "Enter" && !e.shiftKey) {
-                                        e.preventDefault()
-                                        sendFromComposer()
-                                    }
-                                }}
-                                multiline
-                                minRows={1}
-                                maxRows={6}
-                                fullWidth
-                                placeholder={
-                                    pendingUserQuestion
-                                        ? "Reply to the pending assistant question (Enter to send)"
-                                        : "Ask a project question (Enter to send, Shift+Enter for newline)"
-                                }
-                                disabled={!hasSelectedChat || sending}
-                                InputProps={{
-                                    sx: {
-                                        fontSize: { xs: 13.5, sm: 14 },
-                                        borderRadius: 1.2,
-                                    },
-                                }}
-                            />
-                        )}
+                        <CodeComposerEditor
+                            ref={editorRef}
+                            value={input}
+                            language="markdown"
+                            slashCommands={slashCommands}
+                            placeholder={
+                                pendingUserQuestion
+                                    ? "Reply with text and/or fenced code blocks. Try /code, /table, /chart. Ctrl/Cmd+Enter sends."
+                                    : "Ask a project question. Use slash commands like /code, /table, /chart."
+                            }
+                            disabled={!hasSelectedChat || sending}
+                            onChange={onInputChange}
+                            onSubmit={sendFromComposer}
+                        />
 
                         <Stack direction="row" spacing={0.75} justifyContent="space-between" alignItems="center">
                             <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11 }}>
-                                {composeMode === "code" ? "Ctrl/Cmd+Enter to send code" : "Enter to send"}
+                                Ctrl/Cmd+Enter to send
                             </Typography>
                             <Stack direction="row" spacing={0.75}>
                                 <Button
