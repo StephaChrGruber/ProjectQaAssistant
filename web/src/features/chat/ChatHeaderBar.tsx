@@ -28,6 +28,7 @@ type ChatHeaderBarProps = {
     branch: string
     llmSummary: string
     selectedLlmProfileId: string
+    projectDefaultLlmLabel?: string
     llmProfiles: LlmProfileDoc[]
     savingLlmProfile: boolean
     selectedChatId: string | null
@@ -49,6 +50,7 @@ export function ChatHeaderBar({
     branch,
     llmSummary,
     selectedLlmProfileId,
+    projectDefaultLlmLabel,
     llmProfiles,
     savingLlmProfile,
     selectedChatId,
@@ -115,7 +117,9 @@ export function ChatHeaderBar({
                                 onChange={(e) => onChangeLlmProfile(e.target.value)}
                                 disabled={savingLlmProfile || !selectedChatId}
                             >
-                                <MenuItem value="">Project default</MenuItem>
+                                <MenuItem value="">
+                                    {projectDefaultLlmLabel ? `Project default · ${projectDefaultLlmLabel}` : "Project default"}
+                                </MenuItem>
                                 {llmProfiles.map((profile) => (
                                     <MenuItem key={profile.id} value={profile.id}>
                                         {profile.name} · {profile.provider.toUpperCase()} · {profile.model}

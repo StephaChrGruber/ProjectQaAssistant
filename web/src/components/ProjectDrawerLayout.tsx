@@ -213,45 +213,6 @@ export function ProjectDrawerLayout(props: Props) {
 
     const drawerContent = (
         <Box sx={{ display: "flex", height: "100%", flexDirection: "column" }}>
-            <Box sx={{ px: 2.25, pt: 2.1, pb: 1.8 }}>
-                <Box
-                    sx={{
-                        border: "1px solid",
-                        borderColor: "divider",
-                        borderRadius: 2,
-                        p: 1.6,
-                        background: "linear-gradient(160deg, rgba(15,23,42,0.86), rgba(15,23,42,0.42))",
-                    }}
-                >
-                    <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
-                        <Typography
-                            variant="overline"
-                            sx={{
-                                color: "secondary.light",
-                                letterSpacing: "0.13em",
-                                fontWeight: 700,
-                                lineHeight: 1,
-                            }}
-                        >
-                            Project QA
-                        </Typography>
-                    </Stack>
-
-                    <Typography
-                        variant="h6"
-                        noWrap
-                        sx={{ mt: 1, fontWeight: 700, lineHeight: 1.2 }}
-                    >
-                        {projectLabel}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary" noWrap sx={{ display: "block", mt: 0.15 }}>
-                        {projectId}
-                    </Typography>
-                </Box>
-            </Box>
-
-            <Divider />
-
             <Box sx={{ px: 2.25, py: 1.5 }}>
                 <Button
                     fullWidth

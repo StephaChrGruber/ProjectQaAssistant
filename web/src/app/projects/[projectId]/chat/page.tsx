@@ -188,12 +188,26 @@ export default function ProjectChatPage() {
         () => llmProfiles.find((p) => p.id === selectedLlmProfileId) || null,
         [llmProfiles, selectedLlmProfileId]
     )
+    const projectDefaultLlmProfile = useMemo(
+        () => llmProfiles.find((p) => p.id === (project?.llm_profile_id || "")) || null,
+        [llmProfiles, project?.llm_profile_id]
+    )
+    const effectiveLlmProfile = selectedLlmProfile || projectDefaultLlmProfile
     const llmSummary = useMemo(() => {
-        if (selectedLlmProfile) {
-            return `${selectedLlmProfile.name} (${selectedLlmProfile.provider.toUpperCase()} · ${selectedLlmProfile.model})`
+        if (effectiveLlmProfile) {
+            return `${effectiveLlmProfile.name} (${effectiveLlmProfile.provider.toUpperCase()} · ${effectiveLlmProfile.model})`
         }
         return `${(project?.llm_provider || "default LLM").toUpperCase()}${project?.llm_model ? ` · ${project.llm_model}` : ""}`
-    }, [project?.llm_model, project?.llm_provider, selectedLlmProfile])
+    }, [effectiveLlmProfile, project?.llm_model, project?.llm_provider])
+    const projectDefaultLlmLabel = useMemo(() => {
+        if (projectDefaultLlmProfile) {
+            return `${projectDefaultLlmProfile.name} (${projectDefaultLlmProfile.provider.toUpperCase()} · ${projectDefaultLlmProfile.model})`
+        }
+        if (project?.llm_model || project?.llm_provider) {
+            return `${(project?.llm_provider || "default LLM").toUpperCase()}${project?.llm_model ? ` · ${project.llm_model}` : ""}`
+        }
+        return "Not configured"
+    }, [project?.llm_model, project?.llm_provider, projectDefaultLlmProfile])
     const newChatProjectOptions = useMemo(() => {
         return (projects || []).map((p) => ({
             id: p._id,
@@ -1427,6 +1441,7 @@ export default function ProjectChatPage() {
                     branch={branch}
                     llmSummary={llmSummary}
                     selectedLlmProfileId={selectedLlmProfileId}
+                    projectDefaultLlmLabel={projectDefaultLlmLabel}
                     llmProfiles={llmProfiles}
                     savingLlmProfile={savingLlmProfile}
                     selectedChatId={selectedChatId}
