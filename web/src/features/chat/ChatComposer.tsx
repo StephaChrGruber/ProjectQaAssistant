@@ -1,11 +1,11 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useState } from "react"
 import { Alert, Button, FormControl, InputLabel, MenuItem, Paper, Select, Stack, TextField, Typography } from "@mui/material"
 import SendRounded from "@mui/icons-material/SendRounded"
 import ClearAllRounded from "@mui/icons-material/ClearAllRounded"
 import type { PendingUserQuestion } from "@/features/chat/types"
-import { ChatMarkdownContent } from "@/features/chat/ChatMarkdownContent"
+import { CodeComposerEditor } from "@/features/chat/CodeComposerEditor"
 
 type ChatComposerProps = {
     pendingUserQuestion: PendingUserQuestion | null
@@ -50,14 +50,6 @@ export function ChatComposer({
     const [codeLanguage, setCodeLanguage] = useState("typescript")
     const [codeDraft, setCodeDraft] = useState("")
     const [formatError, setFormatError] = useState<string | null>(null)
-
-    const codePreview = useMemo(() => {
-        const content = (codeDraft || "").replace(/\n$/, "")
-        if (!content.trim()) {
-            return `\`\`\`${codeLanguage}\n// Write your code here\n\`\`\``
-        }
-        return `\`\`\`${codeLanguage}\n${content}\n\`\`\``
-    }, [codeDraft, codeLanguage])
 
     const canSend = composeMode === "code" ? Boolean(codeDraft.trim()) : Boolean(input.trim())
 
@@ -229,36 +221,14 @@ export function ChatComposer({
                         {composeMode === "code" ? (
                             <Stack spacing={0.6}>
                                 {formatError && <Alert severity="warning">{formatError}</Alert>}
-                                <TextField
+                                <CodeComposerEditor
                                     value={codeDraft}
-                                    onChange={(e) => setCodeDraft(e.target.value)}
-                                    onKeyDown={(e) => {
-                                        if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-                                            e.preventDefault()
-                                            sendFromComposer()
-                                        }
-                                    }}
-                                    multiline
-                                    minRows={6}
-                                    maxRows={14}
-                                    fullWidth
+                                    language={codeLanguage}
                                     placeholder="Write code here"
                                     disabled={!hasSelectedChat || sending}
-                                    InputProps={{
-                                        sx: {
-                                            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                                            fontSize: 13,
-                                            lineHeight: 1.45,
-                                            borderRadius: 1.2,
-                                        },
-                                    }}
+                                    onChange={setCodeDraft}
+                                    onSubmit={sendFromComposer}
                                 />
-                                <Paper variant="outlined" sx={{ p: 0.75, borderRadius: 1.2 }}>
-                                    <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.35 }}>
-                                        Preview
-                                    </Typography>
-                                    <ChatMarkdownContent value={codePreview} isUser={false} />
-                                </Paper>
                             </Stack>
                         ) : (
                             <TextField
