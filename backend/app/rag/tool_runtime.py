@@ -8,10 +8,12 @@ import logging
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Deque, Dict, Optional
 
 from pydantic import BaseModel, ValidationError
 
+from ..db import get_db
 from ..models.tools import (
     CompareBranchesRequest,
     ChromaCountRequest,
@@ -93,6 +95,8 @@ from .tool_exec import (
 
 logger = logging.getLogger(__name__)
 
+BROWSER_LOCAL_REPO_PREFIX = "browser-local://"
+
 
 @dataclass
 class ToolContext:
@@ -126,6 +130,7 @@ class ToolRuntime:
         self._tools: Dict[str, ToolSpec] = {}
         self._windows: Dict[str, Deque[float]] = defaultdict(deque)
         self._cache: Dict[str, tuple[float, ToolEnvelope]] = {}
+        self._capability_cache: Dict[str, tuple[float, dict[str, Any]]] = {}
 
     def register(self, spec: ToolSpec) -> None:
         self._tools[spec.name] = spec
@@ -182,6 +187,193 @@ class ToolRuntime:
         if isinstance(raw, dict):
             return self._coerce_int(raw.get(name), fallback, min_value, max_value)
         return fallback
+
+    def _capability_cache_key(self, ctx: ToolContext) -> str:
+        return "|".join(
+            [
+                str(ctx.project_id or "").strip(),
+                str(ctx.branch or "").strip(),
+                str(ctx.user_id or "").strip(),
+                str(ctx.chat_id or "").strip(),
+            ]
+        )
+
+    def _is_browser_local_repo(self, repo_path: str) -> bool:
+        return str(repo_path or "").strip().lower().startswith(BROWSER_LOCAL_REPO_PREFIX)
+
+    def _has_any_nonempty(self, values: list[Any]) -> bool:
+        for item in values:
+            if isinstance(item, str):
+                if item.strip():
+                    return True
+                continue
+            if item is not None and str(item).strip():
+                return True
+        return False
+
+    def _connector_is_configured(self, connector_type: str, config: dict[str, Any]) -> bool:
+        ctype = str(connector_type or "").strip()
+        cfg = config or {}
+
+        if ctype in {"github", "git"}:
+            owner = str(cfg.get("owner") or "").strip()
+            repo = str(cfg.get("repo") or "").strip()
+            token = str(cfg.get("token") or "").strip()
+            return bool(owner and repo and token)
+
+        if ctype == "bitbucket":
+            workspace = str(cfg.get("workspace") or "").strip()
+            repo = str(cfg.get("repo_slug") or cfg.get("repo") or "").strip()
+            token = str(cfg.get("token") or "").strip()
+            username = str(cfg.get("username") or "").strip()
+            app_password = str(cfg.get("app_password") or cfg.get("appPassword") or "").strip()
+            has_auth = bool(token) or bool(username and app_password)
+            return bool(workspace and repo and has_auth)
+
+        if ctype == "azure_devops":
+            organization = str(cfg.get("organization") or cfg.get("org") or "").strip()
+            project = str(cfg.get("project") or "").strip()
+            repository = str(cfg.get("repository") or cfg.get("repo") or "").strip()
+            pat = str(cfg.get("pat") or cfg.get("token") or "").strip()
+            return bool(organization and project and repository and pat)
+
+        if ctype == "jira":
+            base_url = str(cfg.get("baseUrl") or "").strip()
+            email = str(cfg.get("email") or "").strip()
+            api_token = str(cfg.get("apiToken") or "").strip()
+            return bool(base_url and email and api_token)
+
+        if ctype == "local":
+            paths = cfg.get("paths")
+            has_paths = isinstance(paths, list) and self._has_any_nonempty(list(paths))
+            repo_path = str(cfg.get("repo_path") or "").strip()
+            return has_paths or bool(repo_path)
+
+        return False
+
+    async def _context_capabilities(self, ctx: ToolContext) -> dict[str, Any]:
+        key = self._capability_cache_key(ctx)
+        now = time.time()
+        cached = self._capability_cache.get(key)
+        if cached and now < cached[0]:
+            return dict(cached[1])
+
+        project_id = str(ctx.project_id or "").strip()
+        db = get_db()
+        project_doc: dict[str, Any] | None = None
+        if project_id:
+            project_doc = await db["projects"].find_one({"_id": project_id})
+            if not project_doc:
+                try:
+                    from bson import ObjectId  # lazy import to keep dependency local
+
+                    if ObjectId.is_valid(project_id):
+                        project_doc = await db["projects"].find_one({"_id": ObjectId(project_id)})
+                except Exception:
+                    project_doc = None
+            if not project_doc:
+                project_doc = await db["projects"].find_one({"key": project_id})
+
+        repo_path = str((project_doc or {}).get("repo_path") or "").strip()
+        browser_local = self._is_browser_local_repo(repo_path)
+        local_repo_exists = bool(repo_path and not browser_local and Path(repo_path).exists())
+        has_user = bool(str(ctx.user_id or "").strip())
+        has_chat = bool(str(ctx.chat_id or "").strip())
+
+        connector_project_id = str((project_doc or {}).get("_id") or project_id).strip() or project_id
+        rows = await db["connectors"].find({"projectId": connector_project_id, "isEnabled": True}).to_list(length=200)
+        by_type: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            t = str(row.get("type") or "").strip()
+            if t and t not in by_type:
+                by_type[t] = row
+
+        remote_git_configured = False
+        for t in ("github", "git", "bitbucket", "azure_devops"):
+            row = by_type.get(t)
+            if not row:
+                continue
+            if self._connector_is_configured(t, row.get("config") or {}):
+                remote_git_configured = True
+                break
+
+        jira_configured = False
+        jira_row = by_type.get("jira")
+        if jira_row and self._connector_is_configured("jira", jira_row.get("config") or {}):
+            jira_configured = True
+
+        capabilities = {
+            "project_found": bool(project_doc),
+            "repo_path": repo_path,
+            "browser_local_repo": browser_local,
+            "local_repo_exists": local_repo_exists,
+            "remote_git_configured": remote_git_configured,
+            "jira_configured": jira_configured,
+            "has_user": has_user,
+            "has_chat": has_chat,
+        }
+        self._capability_cache[key] = (now + 8.0, capabilities)
+        return dict(capabilities)
+
+    async def _tool_capability_allowed(self, name: str, spec: ToolSpec, ctx: ToolContext) -> tuple[bool, str]:
+        if name in {"list_tools", "search_tools", "get_tool_details", "get_project_metadata"}:
+            return True, ""
+
+        caps = await self._context_capabilities(ctx)
+        has_repo_read = bool(
+            caps.get("local_repo_exists")
+            or caps.get("remote_git_configured")
+            or (caps.get("browser_local_repo") and caps.get("has_user"))
+        )
+        has_git_branch = bool(
+            caps.get("local_repo_exists")
+            or caps.get("remote_git_configured")
+            or (caps.get("browser_local_repo") and caps.get("has_user"))
+        )
+        has_local_repo = bool(caps.get("local_repo_exists") and not caps.get("browser_local_repo"))
+        has_docs_read = bool(caps.get("local_repo_exists") or caps.get("remote_git_configured"))
+        has_git_fetch = bool(caps.get("local_repo_exists") or (caps.get("browser_local_repo") and caps.get("has_user")))
+
+        if name in {"repo_tree", "repo_grep", "open_file", "symbol_search", "git_show_file_at_ref"}:
+            return (has_repo_read, "repo_source_unavailable" if not has_repo_read else "")
+
+        if name == "read_docs_folder":
+            return (has_docs_read, "documentation_source_unavailable" if not has_docs_read else "")
+
+        if name in {"git_list_branches", "git_checkout_branch", "git_create_branch"}:
+            return (has_git_branch, "git_source_unavailable" if not has_git_branch else "")
+
+        if name == "git_fetch":
+            return (has_git_fetch, "git_source_unavailable" if not has_git_fetch else "")
+
+        if name in {
+            "git_pull",
+            "git_push",
+            "git_status",
+            "git_diff",
+            "git_log",
+            "git_stage_files",
+            "git_unstage_files",
+            "git_commit",
+            "compare_branches",
+            "run_tests",
+            "write_documentation_file",
+        }:
+            return (has_local_repo, "local_repository_unavailable" if not has_local_repo else "")
+
+        if name == "generate_project_docs":
+            return (has_local_repo, "local_repository_unavailable" if not has_local_repo else "")
+
+        if name == "create_jira_issue":
+            return (bool(caps.get("jira_configured")), "jira_connector_not_configured" if not caps.get("jira_configured") else "")
+
+        if name in {"request_user_input", "read_chat_messages"}:
+            return (bool(caps.get("has_chat")), "chat_context_missing" if not caps.get("has_chat") else "")
+
+        if spec.origin == "custom" and str(spec.runtime or "").strip() == "local_typescript":
+            return (bool(caps.get("has_user")), "user_context_missing_for_local_tool" if not caps.get("has_user") else "")
+
+        return True, ""
 
     def _is_tool_allowed(self, name: str, spec: ToolSpec, policy: dict[str, Any]) -> tuple[bool, str]:
         always_allowed = {"list_tools", "search_tools", "get_tool_details", "request_user_input"}
@@ -335,6 +527,10 @@ class ToolRuntime:
         if not allowed:
             logger.warning("tool.forbidden tool=%s reason=%s", name, reason)
             return self._forbidden_error(name, reason)
+        capability_allowed, capability_reason = await self._tool_capability_allowed(name, spec, ctx)
+        if not capability_allowed:
+            logger.warning("tool.unavailable tool=%s reason=%s", name, capability_reason)
+            return self._forbidden_error(name, capability_reason)
 
         effective_timeout = self._tool_override_int(
             policy,
@@ -641,6 +837,65 @@ class ToolRuntime:
             )
         return out
 
+    async def available_tool_names(self, ctx: ToolContext) -> set[str]:
+        rows = await _catalog_with_policy(
+            self,
+            ctx,
+            include_unavailable=False,
+            include_parameters=False,
+            limit=5000,
+        )
+        return {str(row.get("name") or "").strip() for row in rows if str(row.get("name") or "").strip()}
+
+    async def schema_text_for_context(self, ctx: ToolContext, *, include_unavailable: bool = False) -> str:
+        rows = await _catalog_with_policy(
+            self,
+            ctx,
+            include_unavailable=bool(include_unavailable),
+            include_parameters=True,
+            limit=5000,
+        )
+        lines: list[str] = []
+        for row in rows:
+            name = str(row.get("name") or "").strip()
+            if not name:
+                continue
+            lines.append(name)
+            lines.append(f"  Description: {str(row.get('description') or '')}")
+            lines.append(f"  Timeout: {int(row.get('timeout_sec') or 0)}s")
+            lines.append(f"  Rate limit: {int(row.get('rate_limit_per_min') or 0)}/min")
+            lines.append(f"  Retries: {int(row.get('max_retries') or 0)}")
+            lines.append(f"  Read only: {str(bool(row.get('read_only'))).lower()}")
+            if bool(row.get("require_approval")):
+                lines.append("  Requires approval: true")
+            origin = str(row.get("origin") or "").strip()
+            if origin and origin != "builtin":
+                lines.append(f"  Origin: {origin}")
+            runtime = str(row.get("runtime") or "").strip()
+            if runtime:
+                lines.append(f"  Runtime: {runtime}")
+            version = str(row.get("version") or "").strip()
+            if version:
+                lines.append(f"  Version: {version}")
+            ttl = int(row.get("cache_ttl_sec") or 0)
+            if ttl > 0:
+                lines.append(f"  Cache TTL: {ttl}s")
+            lines.append("  Parameters:")
+            params = row.get("parameters")
+            if not isinstance(params, list) or not params:
+                lines.append("  - none")
+            else:
+                for p in params:
+                    if not isinstance(p, dict):
+                        continue
+                    p_name = str(p.get("name") or "").strip()
+                    p_type = str(p.get("type") or "Any").strip() or "Any"
+                    req = "REQUIRED" if bool(p.get("required")) else "OPTIONAL"
+                    if p_name:
+                        lines.append(f"  - {p_name}: {p_type} ({req})")
+            lines.append("")
+        return ("\n".join(lines).rstrip() + "\n") if lines else ""
+
 
 def _meta_handler(req: GetProjectMetadataRequest):
     return get_project_metadata(req.project_id)
@@ -662,7 +917,7 @@ def _show_file_handler(req: GitShowFileAtRefRequest):
     return open_file(open_req)
 
 
-def _catalog_with_policy(
+async def _catalog_with_policy(
     runtime: ToolRuntime,
     ctx: ToolContext,
     *,
@@ -685,6 +940,11 @@ def _catalog_with_policy(
             continue
 
         allowed, reason = runtime._is_tool_allowed(name, spec, policy)
+        if allowed:
+            capability_allowed, capability_reason = await runtime._tool_capability_allowed(name, spec, ctx)
+            if not capability_allowed:
+                allowed = False
+                reason = capability_reason
         if not include_unavailable and not allowed:
             continue
 
@@ -727,20 +987,20 @@ def build_default_tool_runtime(
     rt = ToolRuntime()
 
     async def _list_tools_handler(req: ListToolsRequest, ctx: ToolContext) -> ListToolsResponse:
-        rows = _catalog_with_policy(
+        rows = await _catalog_with_policy(
             rt,
             ctx,
-            include_unavailable=bool(req.include_unavailable),
+            include_unavailable=False,
             include_parameters=bool(req.include_parameters),
             limit=max(1, min(int(req.limit or 200), 500)),
         )
         return ListToolsResponse(count=len(rows), tools=rows)
 
     async def _search_tools_handler(req: SearchToolsRequest, ctx: ToolContext) -> SearchToolsResponse:
-        rows = _catalog_with_policy(
+        rows = await _catalog_with_policy(
             rt,
             ctx,
-            include_unavailable=bool(req.include_unavailable),
+            include_unavailable=False,
             include_parameters=bool(req.include_parameters),
             query=str(req.query or ""),
             limit=max(1, min(int(req.limit or 20), 200)),
@@ -748,10 +1008,10 @@ def build_default_tool_runtime(
         return SearchToolsResponse(query=str(req.query or ""), count=len(rows), tools=rows)
 
     async def _get_tool_details_handler(req: GetToolDetailsRequest, ctx: ToolContext) -> GetToolDetailsResponse:
-        rows = _catalog_with_policy(
+        rows = await _catalog_with_policy(
             rt,
             ctx,
-            include_unavailable=bool(req.include_unavailable),
+            include_unavailable=False,
             include_parameters=True,
             limit=1000,
         )

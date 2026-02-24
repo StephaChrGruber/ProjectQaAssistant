@@ -137,9 +137,9 @@ def _system_prompt(
         "- If enough info is available, answer in normal text (NOT JSON).\n\n"
         "BOOTSTRAP TOOLS\n"
         "────────────────────────────────\n"
-        "- list_tools(args): include_unavailable?:bool, include_parameters?:bool, limit?:int\n"
-        "- search_tools(args): query:str, include_unavailable?:bool, include_parameters?:bool, limit?:int\n"
-        "- get_tool_details(args): tool_name:str, include_unavailable?:bool\n"
+        "- list_tools(args): include_parameters?:bool, limit?:int\n"
+        "- search_tools(args): query:str, include_parameters?:bool, limit?:int\n"
+        "- get_tool_details(args): tool_name:str\n"
         "- request_user_input(args): question:str, answer_mode:'open_text'|'single_choice', options?:string[]\n"
     )
 
@@ -420,7 +420,32 @@ class Agent2:
         tool_calls = 0
         tool_events: list[dict[str, Any]] = []
         no_evidence_cycles = 0
+        tool_ctx = ToolContext(
+            project_id=self.project_id,
+            branch=self.branch,
+            user_id=self.user_id,
+            chat_id=self.chat_id,
+            policy=self.tool_policy,
+        )
         required_action_tools = _required_action_tools(user_text)
+        try:
+            available_tool_names = await self.runtime.available_tool_names(tool_ctx)
+        except Exception:
+            logger.exception(
+                "agent2.available_tools_probe_failed project=%s chat_id=%s",
+                self.project_id,
+                self.chat_id or "",
+            )
+            available_tool_names = set()
+        unavailable_required = sorted(required_action_tools - available_tool_names) if available_tool_names else []
+        if unavailable_required:
+            logger.info(
+                "agent2.required_action_tools_filtered project=%s chat_id=%s unavailable=%s",
+                self.project_id,
+                self.chat_id or "",
+                unavailable_required,
+            )
+            required_action_tools = {t for t in required_action_tools if t in available_tool_names}
         answered_map: dict[str, str] = {}
         for row in (self.interaction_policy.get("answered_questions") or []):
             if not isinstance(row, dict):
@@ -563,14 +588,6 @@ class Agent2:
 
             tool_name = tool_call["tool"]
             model_args = dict(tool_call["args"] or {})
-            ctx = ToolContext(
-                project_id=self.project_id,
-                branch=self.branch,
-                user_id=self.user_id,
-                chat_id=self.chat_id,
-                policy=self.tool_policy,
-            )
-
             logger.info("tool.execute.request tool=%s args=%s", tool_name, model_args)
             envelope_data: dict[str, Any]
             if tool_name == "request_user_input":
@@ -631,12 +648,12 @@ class Agent2:
                         "result": synthetic_result,
                     }
                 else:
-                    envelope = await self.runtime.execute(tool_name, model_args, ctx)
+                    envelope = await self.runtime.execute(tool_name, model_args, tool_ctx)
                     envelope_data = envelope.model_dump()
                     if bool(envelope_data.get("ok")):
                         clarification_calls_this_run += 1
             else:
-                envelope = await self.runtime.execute(tool_name, model_args, ctx)
+                envelope = await self.runtime.execute(tool_name, model_args, tool_ctx)
                 envelope_data = envelope.model_dump()
 
             tool_events.append(envelope_data)

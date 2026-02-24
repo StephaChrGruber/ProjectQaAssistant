@@ -345,7 +345,10 @@ async def _llm_chat_with_tools(
     max_tool_calls: int = MAX_DOC_TOOL_CALLS,
 ) -> str:
     runtime = await _get_doc_tool_runtime(project_id)
-    tool_schema = runtime.schema_text()
+    from ..rag.tool_runtime import ToolContext
+
+    tool_ctx = ToolContext(project_id=project_id, branch=branch, user_id=user_id)
+    tool_schema = await runtime.schema_text_for_context(tool_ctx, include_unavailable=False)
     convo: list[dict[str, str]] = [{"role": "system", "content": _doc_tool_system_prompt(tool_schema)}]
     convo.extend(messages)
     tool_calls = 0
@@ -385,10 +388,7 @@ async def _llm_chat_with_tools(
             }
             logger.warning("docs.tools.blocked tool=%s reason=recursion_guard", tool_name)
         else:
-            from ..rag.tool_runtime import ToolContext
-
-            ctx = ToolContext(project_id=project_id, branch=branch, user_id=user_id)
-            envelope_model = await runtime.execute(tool_name, tool_args, ctx)
+            envelope_model = await runtime.execute(tool_name, tool_args, tool_ctx)
             envelope = envelope_model.model_dump()
             logger.info(
                 "docs.tools.executed tool=%s ok=%s duration_ms=%s",

@@ -455,7 +455,7 @@ class SearchToolsResponse(BaseModel):
 
 class GetToolDetailsRequest(BaseModel):
     tool_name: str
-    include_unavailable: bool = True
+    include_unavailable: bool = False
 
 
 class GetToolDetailsResponse(BaseModel):
