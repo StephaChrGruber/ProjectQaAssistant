@@ -280,7 +280,7 @@ export function ProjectDrawerLayout(props: Props) {
                                     {expanded ? <ExpandMoreRounded fontSize="small" /> : <ChevronRightRounded fontSize="small" />}
                                     <ListItemText
                                         primary={group.projectLabel}
-                                        secondary={inThisProject ? `Current project · ${branch}` : undefined}
+                                        secondary={inThisProject ? "Current project" : undefined}
                                         primaryTypographyProps={{ noWrap: true, fontWeight: 650, fontSize: 13.2 }}
                                         secondaryTypographyProps={{ noWrap: true, fontSize: 11.2 }}
                                         sx={{ ml: 0.6 }}
