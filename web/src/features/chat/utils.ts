@@ -102,7 +102,7 @@ export function splitChartBlocks(text: string): Array<{ type: "text" | "chart"; 
     const lang = String(m[1] || "").trim().toLowerCase()
     const body = String(m[2] || "").trim()
     const maybeChart = parseChartSpec(body)
-    const chartLang = lang === "chart" || lang === "json"
+    const chartLang = lang === "chart" || lang === "json" || lang === "jsonc" || lang === "chartjs"
 
     if (!chartLang || !maybeChart) {
       continue
@@ -117,6 +117,12 @@ export function splitChartBlocks(text: string): Array<{ type: "text" | "chart"; 
 
   if (cursor < text.length) {
     parts.push({ type: "text", value: text.slice(cursor) })
+  }
+  if (!parts.length) {
+    const maybeWholeChart = parseChartSpec((text || "").trim())
+    if (maybeWholeChart) {
+      return [{ type: "chart", value: (text || "").trim() }]
+    }
   }
   return parts
 }
@@ -200,12 +206,18 @@ export function parseChartSpec(raw: string): ChatChartSpec | null {
     if (!obj || typeof obj !== "object") return null
     const rec = obj as Record<string, unknown>
     const type = rec.type === "bar" ? "bar" : rec.type === "line" ? "line" : null
-    const xKey = typeof rec.xKey === "string" ? rec.xKey : ""
-    const data = Array.isArray(rec.data)
+    const height = typeof rec.height === "number" ? Math.max(180, Math.min(520, Math.round(rec.height))) : 280
+    const title = typeof rec.title === "string" ? rec.title : undefined
+    if (!type) return null
+
+    // Format A (native):
+    // { type, xKey, data:[{...}], series:[{key,label,color}] }
+    const xKeyA = typeof rec.xKey === "string" ? rec.xKey : ""
+    const dataA = Array.isArray(rec.data)
       ? (rec.data.filter((d) => d && typeof d === "object") as Array<Record<string, string | number>>)
       : []
-    const rawSeries = Array.isArray(rec.series) ? rec.series : []
-    const series: ChatChartSeries[] = rawSeries
+    const rawSeriesA = Array.isArray(rec.series) ? rec.series : []
+    const seriesA: ChatChartSeries[] = rawSeriesA
       .map((s) => (s && typeof s === "object" ? (s as Record<string, unknown>) : null))
       .filter((s): s is Record<string, unknown> => !!s)
       .map((s) => ({
@@ -214,12 +226,59 @@ export function parseChartSpec(raw: string): ChatChartSpec | null {
         color: typeof s.color === "string" ? s.color : undefined,
       }))
       .filter((s) => !!s.key)
-    const height = typeof rec.height === "number" ? Math.max(180, Math.min(520, Math.round(rec.height))) : 280
-    const title = typeof rec.title === "string" ? rec.title : undefined
-    if (!type || !xKey || !data.length || !series.length) return null
+    if (xKeyA && dataA.length && seriesA.length) {
+      return { type, title, data: dataA, xKey: xKeyA, series: seriesA, height }
+    }
+
+    // Format B (Chart.js-like):
+    // { type, data:{ labels:[...], datasets:[{label,data:[...],color|borderColor|backgroundColor}] } }
+    const dataObj = rec.data && typeof rec.data === "object" ? (rec.data as Record<string, unknown>) : null
+    const labels = Array.isArray(dataObj?.labels) ? dataObj?.labels : []
+    const datasets = Array.isArray(dataObj?.datasets) ? dataObj?.datasets : []
+    if (!labels.length || !datasets.length) return null
+
+    const xKey = "x"
+    const series: ChatChartSeries[] = []
+    const normalizedDatasets = datasets
+      .map((d, idx) => {
+        if (!d || typeof d !== "object") return null
+        const ds = d as Record<string, unknown>
+        const values = Array.isArray(ds.data) ? ds.data : []
+        const label = typeof ds.label === "string" && ds.label.trim() ? ds.label.trim() : `Series ${idx + 1}`
+        const key =
+          typeof ds.key === "string" && ds.key.trim()
+            ? ds.key.trim()
+            : label
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, "_")
+                .replace(/^_+|_+$/g, "") || `series_${idx + 1}`
+        const color =
+          (typeof ds.color === "string" ? ds.color : "") ||
+          (typeof ds.borderColor === "string" ? ds.borderColor : "") ||
+          (typeof ds.backgroundColor === "string" ? ds.backgroundColor : "") ||
+          undefined
+        series.push({ key, label, color })
+        return { key, values }
+      })
+      .filter((d): d is { key: string; values: unknown[] } => !!d)
+
+    if (!normalizedDatasets.length || !series.length) return null
+    const rows = labels.map((label, idx) => {
+      const row: Record<string, string | number> = { [xKey]: String(label ?? idx + 1) }
+      for (const ds of normalizedDatasets) {
+        const v = ds.values[idx]
+        if (typeof v === "number") {
+          row[ds.key] = v
+        } else if (typeof v === "string" && v.trim() && Number.isFinite(Number(v))) {
+          row[ds.key] = Number(v)
+        }
+      }
+      return row
+    })
+    const data = rows.filter((row) => Object.keys(row).length > 1)
+    if (!data.length) return null
     return { type, title, data, xKey, series, height }
   } catch {
     return null
   }
 }
-
