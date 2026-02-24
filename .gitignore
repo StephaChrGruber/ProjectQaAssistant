@@ -28,3 +28,6 @@ web/out/
 # Coverage
 .coverage
 coverage/
+
+# Documentation
+documentation
