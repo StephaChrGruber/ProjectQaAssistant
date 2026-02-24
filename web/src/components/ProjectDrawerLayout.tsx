@@ -6,6 +6,8 @@ import AdminPanelSettingsRounded from "@mui/icons-material/AdminPanelSettingsRou
 import FolderRounded from "@mui/icons-material/FolderRounded"
 import AddRounded from "@mui/icons-material/AddRounded"
 import MenuRounded from "@mui/icons-material/MenuRounded"
+import ExpandMoreRounded from "@mui/icons-material/ExpandMoreRounded"
+import ChevronRightRounded from "@mui/icons-material/ChevronRightRounded"
 import {
     AppBar,
     Box,
@@ -13,15 +15,11 @@ import {
     Chip,
     Divider,
     Drawer,
-    FormControl,
     IconButton,
-    InputLabel,
     List,
     ListItemButton,
     ListItemIcon,
     ListItemText,
-    MenuItem,
-    Select,
     Stack,
     Toolbar,
     Typography,
@@ -42,20 +40,26 @@ export type DrawerChat = {
     chat_id: string
     title?: string
     branch?: string
+    project_id?: string
     updated_at?: string
     created_at?: string
+}
+
+export type DrawerChatGroup = {
+    projectId: string
+    projectLabel: string
+    chats: DrawerChat[]
 }
 
 type Props = {
     projectId: string
     projectLabel: string
     branch: string
-    branches: string[]
-    onBranchChange: (branch: string) => void
-    chats: DrawerChat[]
+    chatGroups: DrawerChatGroup[]
     selectedChatId: string | null
-    onSelectChat: (chat: DrawerChat) => void
+    onSelectChat: (chat: DrawerChat, projectId: string) => void
     onNewChat: () => void
+    onOpenSettings?: () => void
     user?: DrawerUser | null
     loadingChats?: boolean
     activeSection?: "chat" | "settings"
@@ -78,8 +82,11 @@ function formatTime(iso?: string): string {
 
 function chatLabel(chat: DrawerChat): string {
     const title = (chat.title || "").trim()
-    if (!title) return "New Conversation"
-    return title
+    const looksLikeId = /^[a-f0-9]{24}$/i.test(title) || /^[-\w]+::[-\w]+::/.test(title)
+    if (title && title !== chat.chat_id && !title.includes("::") && !looksLikeId) return title
+    const ts = formatTime(chat.updated_at || chat.created_at)
+    if (ts) return `Conversation · ${ts}`
+    return "New Conversation"
 }
 
 export function ProjectDrawerLayout(props: Props) {
@@ -87,12 +94,11 @@ export function ProjectDrawerLayout(props: Props) {
         projectId,
         projectLabel,
         branch,
-        branches,
-        onBranchChange,
-        chats,
+        chatGroups,
         selectedChatId,
         onSelectChat,
         onNewChat,
+        onOpenSettings,
         user,
         loadingChats,
         activeSection = "chat",
@@ -105,17 +111,92 @@ export function ProjectDrawerLayout(props: Props) {
     const [mobileOpen, setMobileOpen] = useState(false)
 
     const userLabel = useMemo(() => user?.displayName || user?.email || "Developer", [user])
-    const uniqueChats = useMemo(() => {
-        const out: DrawerChat[] = []
-        const seen = new Set<string>()
-        for (const chat of chats || []) {
-            const id = (chat?.chat_id || "").trim()
-            if (!id || seen.has(id)) continue
-            seen.add(id)
-            out.push(chat)
-        }
-        return out
-    }, [chats])
+    const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({})
+
+    const normalizedGroups = useMemo(() => {
+        return (chatGroups || []).map((group) => {
+            const out: DrawerChat[] = []
+            const seen = new Set<string>()
+            for (const chat of group.chats || []) {
+                const id = (chat?.chat_id || "").trim()
+                if (!id || seen.has(id)) continue
+                seen.add(id)
+                out.push(chat)
+            }
+            return {
+                projectId: group.projectId,
+                projectLabel: group.projectLabel,
+                chats: out,
+            }
+        })
+    }, [chatGroups])
+
+    const totalConversations = useMemo(
+        () => normalizedGroups.reduce((acc, group) => acc + (group.chats?.length || 0), 0),
+        [normalizedGroups]
+    )
+
+    useEffect(() => {
+        setExpandedGroups((prev) => {
+            const next: Record<string, boolean> = {}
+            for (const group of normalizedGroups) {
+                const hasSelected = !!group.chats.find((c) => c.chat_id === selectedChatId)
+                next[group.projectId] = prev[group.projectId] ?? (hasSelected || group.projectId === projectId)
+            }
+            return next
+        })
+    }, [normalizedGroups, projectId, selectedChatId])
+
+    const toggleGroup = (groupProjectId: string) => {
+        setExpandedGroups((prev) => ({ ...prev, [groupProjectId]: !prev[groupProjectId] }))
+    }
+
+    const fallbackChatLabel = useMemo(() => {
+        const title = (projectLabel || "").trim()
+        if (!title) return "New Conversation"
+        return `${title} Conversation`
+    }, [projectLabel])
+
+    const renderChatItem = (chat: DrawerChat, groupProjectId: string) => {
+        const selected = chat.chat_id === selectedChatId
+        const primary = chatLabel(chat) || fallbackChatLabel
+        return (
+            <ListItemButton
+                key={`${groupProjectId}::${chat.chat_id}`}
+                selected={selected}
+                onClick={() => {
+                    onSelectChat(chat, groupProjectId)
+                    if (!desktop) setMobileOpen(false)
+                }}
+                sx={{
+                    mb: 0.45,
+                    borderRadius: 2.2,
+                    alignItems: "flex-start",
+                    border: "1px solid",
+                    borderColor: selected ? "rgba(34,211,238,0.38)" : "rgba(148,163,184,0.15)",
+                    bgcolor: selected ? "rgba(14,116,144,0.16)" : "rgba(15,23,42,0.28)",
+                    ml: 0.5,
+                }}
+            >
+                <ListItemIcon sx={{ minWidth: 34, mt: 0.1 }}>
+                    <ChatBubbleOutlineRounded fontSize="small" />
+                </ListItemIcon>
+                <ListItemText
+                    primary={primary}
+                    secondary={`${chat.branch || branch}${chat.updated_at ? ` · ${formatTime(chat.updated_at)}` : ""}`}
+                    primaryTypographyProps={{
+                        noWrap: true,
+                        fontWeight: selected ? 600 : 500,
+                        fontSize: 13.5,
+                    }}
+                    secondaryTypographyProps={{
+                        noWrap: true,
+                        fontSize: 11.5,
+                    }}
+                />
+            </ListItemButton>
+        )
+    }
 
     useEffect(() => {
         setMobileOpen(false)
@@ -154,18 +235,6 @@ export function ProjectDrawerLayout(props: Props) {
                         >
                             Project QA
                         </Typography>
-                        <Chip
-                            size="small"
-                            label={branch || "branch"}
-                            variant="outlined"
-                            sx={{
-                                height: 22,
-                                fontSize: 11,
-                                color: "secondary.light",
-                                borderColor: "rgba(34,211,238,0.35)",
-                                bgcolor: "rgba(8,47,73,0.26)",
-                            }}
-                        />
                     </Stack>
 
                     <Typography
@@ -183,27 +252,7 @@ export function ProjectDrawerLayout(props: Props) {
 
             <Divider />
 
-            <Box sx={{ px: 2.25, py: 1.8 }}>
-                <FormControl fullWidth size="small">
-                    <InputLabel id="branch-select-label">Branch</InputLabel>
-                    <Select
-                        labelId="branch-select-label"
-                        label="Branch"
-                        value={branch}
-                        onChange={(event) => {
-                            onBranchChange(event.target.value)
-                            if (!desktop) setMobileOpen(false)
-                        }}
-                    >
-                        {branches.map((item) => (
-                            <MenuItem key={item} value={item}>
-                                {item}
-                            </MenuItem>
-                        ))}
-                        {branches.length === 0 && <MenuItem value={branch}>{branch}</MenuItem>}
-                    </Select>
-                </FormControl>
-
+            <Box sx={{ px: 2.25, py: 1.5 }}>
                 <Button
                     fullWidth
                     variant="contained"
@@ -212,7 +261,6 @@ export function ProjectDrawerLayout(props: Props) {
                         onNewChat()
                         if (!desktop) setMobileOpen(false)
                     }}
-                    sx={{ mt: 1.5 }}
                 >
                     New Chat
                 </Button>
@@ -230,7 +278,7 @@ export function ProjectDrawerLayout(props: Props) {
                     </Typography>
                     <Chip
                         size="small"
-                        label={uniqueChats.length}
+                        label={totalConversations}
                         sx={{
                             height: 20,
                             fontSize: 11,
@@ -247,48 +295,58 @@ export function ProjectDrawerLayout(props: Props) {
                         </ListItemButton>
                     )}
 
-                    {!loadingChats && uniqueChats.length === 0 && (
+                    {!loadingChats && totalConversations === 0 && (
                         <ListItemButton disabled sx={{ borderRadius: 2, py: 1 }}>
-                            <ListItemText primary="No chats for this branch" />
+                            <ListItemText primary="No conversations yet" />
                         </ListItemButton>
                     )}
 
-                    {uniqueChats.map((chat) => {
-                        const selected = chat.chat_id === selectedChatId
+                    {normalizedGroups.map((group) => {
+                        const expanded = expandedGroups[group.projectId] ?? true
+                        const inThisProject = group.projectId === projectId
                         return (
-                            <ListItemButton
-                                key={chat.chat_id}
-                                selected={selected}
-                                onClick={() => {
-                                    onSelectChat(chat)
-                                    if (!desktop) setMobileOpen(false)
-                                }}
-                                sx={{
-                                    mb: 0.5,
-                                    borderRadius: 2.2,
-                                    alignItems: "flex-start",
-                                    border: "1px solid",
-                                    borderColor: selected ? "rgba(34,211,238,0.38)" : "rgba(148,163,184,0.15)",
-                                    bgcolor: selected ? "rgba(14,116,144,0.16)" : "rgba(15,23,42,0.28)",
-                                }}
-                            >
-                                <ListItemIcon sx={{ minWidth: 34, mt: 0.1 }}>
-                                    <ChatBubbleOutlineRounded fontSize="small" />
-                                </ListItemIcon>
-                                <ListItemText
-                                    primary={chatLabel(chat)}
-                                    secondary={`${chat.branch || branch}${chat.updated_at ? ` · ${formatTime(chat.updated_at)}` : ""}`}
-                                    primaryTypographyProps={{
-                                        noWrap: true,
-                                        fontWeight: selected ? 600 : 500,
-                                        fontSize: 14,
+                            <Box key={group.projectId} sx={{ mb: 0.8 }}>
+                                <ListItemButton
+                                    onClick={() => toggleGroup(group.projectId)}
+                                    sx={{
+                                        borderRadius: 2,
+                                        mb: 0.35,
+                                        border: "1px solid",
+                                        borderColor: inThisProject ? "rgba(34,211,238,0.3)" : "rgba(148,163,184,0.16)",
+                                        bgcolor: inThisProject ? "rgba(8,47,73,0.28)" : "rgba(15,23,42,0.2)",
                                     }}
-                                    secondaryTypographyProps={{
-                                        noWrap: true,
-                                        fontSize: 11.5,
-                                    }}
-                                />
-                            </ListItemButton>
+                                >
+                                    {expanded ? <ExpandMoreRounded fontSize="small" /> : <ChevronRightRounded fontSize="small" />}
+                                    <ListItemText
+                                        primary={group.projectLabel}
+                                        secondary={inThisProject ? `Current project · ${branch}` : undefined}
+                                        primaryTypographyProps={{ noWrap: true, fontWeight: 650, fontSize: 13.2 }}
+                                        secondaryTypographyProps={{ noWrap: true, fontSize: 11.2 }}
+                                        sx={{ ml: 0.6 }}
+                                    />
+                                    <Chip
+                                        size="small"
+                                        label={group.chats.length}
+                                        sx={{
+                                            height: 20,
+                                            fontSize: 11,
+                                            bgcolor: "rgba(148,163,184,0.14)",
+                                            color: "text.secondary",
+                                        }}
+                                    />
+                                </ListItemButton>
+                                {expanded && (
+                                    <Box sx={{ pl: 0.45 }}>
+                                        {group.chats.length ? (
+                                            group.chats.map((chat) => renderChatItem(chat, group.projectId))
+                                        ) : (
+                                            <ListItemButton disabled sx={{ borderRadius: 2, py: 0.8, ml: 0.5 }}>
+                                                <ListItemText primary="No conversations" />
+                                            </ListItemButton>
+                                        )}
+                                    </Box>
+                                )}
+                            </Box>
                         )
                     })}
                 </List>
@@ -302,17 +360,33 @@ export function ProjectDrawerLayout(props: Props) {
                 </Typography>
 
                 <List dense>
-                    <ListItemButton
-                        component={Link}
-                        href={`/projects/${projectId}/settings`}
-                        selected={activeSection === "settings"}
-                        sx={{ borderRadius: 2 }}
-                    >
-                        <ListItemIcon sx={{ minWidth: 34 }}>
-                            <SettingsRounded fontSize="small" />
-                        </ListItemIcon>
-                        <ListItemText primary="Settings" />
-                    </ListItemButton>
+                    {onOpenSettings ? (
+                        <ListItemButton
+                            onClick={() => {
+                                onOpenSettings()
+                                if (!desktop) setMobileOpen(false)
+                            }}
+                            selected={activeSection === "settings"}
+                            sx={{ borderRadius: 2 }}
+                        >
+                            <ListItemIcon sx={{ minWidth: 34 }}>
+                                <SettingsRounded fontSize="small" />
+                            </ListItemIcon>
+                            <ListItemText primary="Settings" />
+                        </ListItemButton>
+                    ) : (
+                        <ListItemButton
+                            component={Link}
+                            href={`/projects/${projectId}/settings`}
+                            selected={activeSection === "settings"}
+                            sx={{ borderRadius: 2 }}
+                        >
+                            <ListItemIcon sx={{ minWidth: 34 }}>
+                                <SettingsRounded fontSize="small" />
+                            </ListItemIcon>
+                            <ListItemText primary="Settings" />
+                        </ListItemButton>
+                    )}
 
                     {user?.isGlobalAdmin && (
                         <ListItemButton component={Link} href="/admin" sx={{ borderRadius: 2 }}>

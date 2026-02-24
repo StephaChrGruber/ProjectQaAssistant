@@ -17,7 +17,6 @@ import {
 } from "@mui/material"
 import PlayCircleOutlineRounded from "@mui/icons-material/PlayCircleOutlineRounded"
 import SettingsRounded from "@mui/icons-material/SettingsRounded"
-import AdminPanelSettingsRounded from "@mui/icons-material/AdminPanelSettingsRounded"
 import HistoryRounded from "@mui/icons-material/HistoryRounded"
 import { backendJson } from "@/lib/backend"
 import { readLastChat } from "@/lib/last-chat"
@@ -128,16 +127,6 @@ export default function ProjectsPage() {
                                                 }}
                                             >
                                                 Resume Last Chat
-                                            </Button>
-                                        )}
-                                        {me?.isGlobalAdmin && (
-                                            <Button
-                                                component={Link}
-                                                href="/admin"
-                                                variant="outlined"
-                                                startIcon={<AdminPanelSettingsRounded />}
-                                            >
-                                                Admin
                                             </Button>
                                         )}
                                     </Stack>

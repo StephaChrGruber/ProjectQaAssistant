@@ -7,6 +7,9 @@ import {
     Alert,
     Box,
     Collapse,
+    Dialog,
+    DialogContent,
+    DialogTitle,
     List,
     ListItemButton,
     ListItemText,
@@ -19,7 +22,12 @@ import DescriptionOutlined from "@mui/icons-material/DescriptionOutlined"
 import ExpandMoreRounded from "@mui/icons-material/ExpandMoreRounded"
 import ChevronRightRounded from "@mui/icons-material/ChevronRightRounded"
 import { backendJson } from "@/lib/backend"
-import { ProjectDrawerLayout, type DrawerChat, type DrawerUser } from "@/components/ProjectDrawerLayout"
+import {
+    ProjectDrawerLayout,
+    type DrawerChat,
+    type DrawerChatGroup,
+    type DrawerUser,
+} from "@/components/ProjectDrawerLayout"
 import { buildChatPath, saveLastChat } from "@/lib/last-chat"
 import {
     buildLocalRepoDocumentationContext,
@@ -37,6 +45,7 @@ import { ChatMessagesPane } from "@/features/chat/ChatMessagesPane"
 import { ChatHeaderBar } from "@/features/chat/ChatHeaderBar"
 import { ChatToolEventsBanner } from "@/features/chat/ChatToolEventsBanner"
 import { ChatComposer } from "@/features/chat/ChatComposer"
+import { NewChatDialog } from "@/features/chat/NewChatDialog"
 import { useLocalToolJobWorker } from "@/features/local-tools/useLocalToolJobWorker"
 import type {
     AskAgentResponse,
@@ -108,6 +117,8 @@ export default function ProjectChatPage() {
     const [branches, setBranches] = useState<string[]>(["main"])
     const [branch, setBranch] = useState("main")
 
+    const [projects, setProjects] = useState<ProjectDoc[]>([])
+    const [chatGroups, setChatGroups] = useState<DrawerChatGroup[]>([])
     const [chats, setChats] = useState<DrawerChat[]>([])
     const [selectedChatId, setSelectedChatId] = useState<string | null>(null)
     const selectedChatIdRef = useRef<string | null>(null)
@@ -159,6 +170,10 @@ export default function ProjectChatPage() {
     const [savingMemory, setSavingMemory] = useState(false)
     const [pendingUserQuestion, setPendingUserQuestion] = useState<PendingUserQuestion | null>(null)
     const [pendingAnswerInput, setPendingAnswerInput] = useState("")
+    const [newChatOpen, setNewChatOpen] = useState(false)
+    const [creatingNewChat, setCreatingNewChat] = useState(false)
+    const [newChatError, setNewChatError] = useState<string | null>(null)
+    const [settingsOpen, setSettingsOpen] = useState(false)
 
     const scrollRef = useRef<HTMLDivElement | null>(null)
     const projectLabel = useMemo(() => project?.name || project?.key || projectId, [project, projectId])
@@ -179,6 +194,13 @@ export default function ProjectChatPage() {
         }
         return `${(project?.llm_provider || "default LLM").toUpperCase()}${project?.llm_model ? ` · ${project.llm_model}` : ""}`
     }, [project?.llm_model, project?.llm_provider, selectedLlmProfile])
+    const newChatProjectOptions = useMemo(() => {
+        return (projects || []).map((p) => ({
+            id: p._id,
+            label: p.name || p.key || p._id,
+            defaultBranch: p.default_branch || "main",
+        }))
+    }, [projects])
     useEffect(() => {
         if (!error) return
         const timer = window.setTimeout(() => setError(null), 9000)
@@ -208,6 +230,12 @@ export default function ProjectChatPage() {
         const timer = window.setTimeout(() => setTasksError(null), 9000)
         return () => window.clearTimeout(timer)
     }, [tasksError])
+
+    useEffect(() => {
+        if (!newChatError) return
+        const timer = window.setTimeout(() => setNewChatError(null), 9000)
+        return () => window.clearTimeout(timer)
+    }, [newChatError])
 
     useEffect(() => {
         if (!lastToolEvents?.length) {
@@ -350,49 +378,88 @@ export default function ProjectChatPage() {
         async (activeBranch: string, preferredChatId?: string | null) => {
             setLoadingChats(true)
             try {
-                const docs = await backendJson<DrawerChat[]>(
-                    `/api/projects/${projectId}/chats?branch=${encodeURIComponent(activeBranch)}&limit=100&user=${encodeURIComponent(userId)}`
-                )
-                const uniqueDocs = dedupeChatsById(docs || [])
+                const allProjects = await backendJson<ProjectDoc[]>("/api/projects")
+                const projectRows = (allProjects || []).filter((p) => p && p._id)
+                setProjects(projectRows)
 
+                const groups = await Promise.all(
+                    projectRows.map(async (row) => {
+                        try {
+                            const docs = await backendJson<DrawerChat[]>(
+                                `/api/projects/${encodeURIComponent(row._id)}/chats?limit=100&user=${encodeURIComponent(userId)}`
+                            )
+                            return {
+                                projectId: row._id,
+                                projectLabel: row.name || row.key || row._id,
+                                chats: dedupeChatsById(docs || []),
+                            } satisfies DrawerChatGroup
+                        } catch {
+                            return {
+                                projectId: row._id,
+                                projectLabel: row.name || row.key || row._id,
+                                chats: [],
+                            } satisfies DrawerChatGroup
+                        }
+                    })
+                )
+
+                let currentGroup = groups.find((g) => g.projectId === projectId)
+                if (!currentGroup) {
+                    currentGroup = {
+                        projectId,
+                        projectLabel,
+                        chats: [],
+                    }
+                    groups.unshift(currentGroup)
+                }
+
+                let currentChats = dedupeChatsById(currentGroup.chats || [])
                 const current = preferredChatId || selectedChatIdRef.current
-                if (current && !uniqueDocs.some((c) => c.chat_id === current)) {
+                if (current && !currentChats.some((c) => c.chat_id === current)) {
                     await ensureChat(current, activeBranch)
                     const now = new Date().toISOString()
-                    const merged: DrawerChat[] = [
+                    currentChats = dedupeChatsById([
                         {
                             chat_id: current,
                             title: `${projectLabel} / ${activeBranch}`,
+                            project_id: projectId,
                             branch: activeBranch,
                             updated_at: now,
                             created_at: now,
                         },
-                        ...uniqueDocs.filter((c) => c.chat_id !== current),
-                    ]
-                    setChats(dedupeChatsById(merged))
-                    setSelectedChatId(current)
-                    return current
+                        ...currentChats,
+                    ])
                 }
 
-                if (!uniqueDocs.length) {
+                if (!currentChats.length) {
                     const fallback = preferredChatId || `${projectId}::${activeBranch}::${userId}`
                     await ensureChat(fallback, activeBranch)
                     const now = new Date().toISOString()
-                    const seeded: DrawerChat = {
-                        chat_id: fallback,
-                        title: `${projectLabel} / ${activeBranch}`,
-                        branch: activeBranch,
-                        updated_at: now,
-                        created_at: now,
-                    }
-                    setChats([seeded])
-                    setSelectedChatId(fallback)
-                    return fallback
+                    currentChats = [
+                        {
+                            chat_id: fallback,
+                            title: `${projectLabel} / ${activeBranch}`,
+                            project_id: projectId,
+                            branch: activeBranch,
+                            updated_at: now,
+                            created_at: now,
+                        },
+                    ]
                 }
 
-                setChats(uniqueDocs)
+                const nextGroups = groups.map((group) =>
+                    group.projectId === projectId
+                        ? {
+                              ...group,
+                              chats: currentChats,
+                          }
+                        : group
+                )
+                setChatGroups(nextGroups)
+                setChats(currentChats)
+
                 const next =
-                    (current && uniqueDocs.some((c) => c.chat_id === current) && current) || uniqueDocs[0]?.chat_id || null
+                    (current && currentChats.some((c) => c.chat_id === current) && current) || currentChats[0]?.chat_id || null
                 setSelectedChatId(next)
                 return next
             } finally {
@@ -432,8 +499,38 @@ export default function ProjectChatPage() {
                 })
                 return dedupeChatsById(next)
             })
+            setChatGroups((prev) =>
+                (prev || []).map((group) => {
+                    if (group.projectId !== projectId) return group
+                    const next = [...(group.chats || [])]
+                    const idx = next.findIndex((c) => c.chat_id === chatId)
+                    if (idx >= 0) {
+                        const current = next[idx]
+                        const updated: DrawerChat = {
+                            ...current,
+                            branch: current.branch || branch,
+                            updated_at: nowIso,
+                        }
+                        if (!(current.title || "").trim() && preview) {
+                            updated.title = preview
+                        }
+                        next.splice(idx, 1)
+                        next.unshift(updated)
+                        return { ...group, chats: dedupeChatsById(next) }
+                    }
+                    next.unshift({
+                        chat_id: chatId,
+                        project_id: projectId,
+                        title: preview || `${projectLabel} / ${branch}`,
+                        branch,
+                        updated_at: nowIso,
+                        created_at: nowIso,
+                    })
+                    return { ...group, chats: dedupeChatsById(next) }
+                })
+            )
         },
-        [branch, projectLabel]
+        [branch, projectId, projectLabel]
     )
 
     const loadChatToolConfig = useCallback(
@@ -723,27 +820,86 @@ export default function ProjectChatPage() {
         void restoreLocalRepoSession(projectId)
     }, [browserLocalRepoMode, projectId])
 
-    const onSelectChat = useCallback((chat: DrawerChat) => {
-        setSelectedChatId(chat.chat_id)
-    }, [])
+    const onSelectChat = useCallback(
+        (chat: DrawerChat, chatProjectId: string) => {
+            const targetBranch = (chat.branch || branch || "main").trim() || "main"
+            const path = buildChatPath(chatProjectId, targetBranch, chat.chat_id)
+            saveLastChat({
+                projectId: chatProjectId,
+                branch: targetBranch,
+                chatId: chat.chat_id,
+                path,
+                ts: Date.now(),
+            })
 
-    const onBranchChange = useCallback((nextBranch: string) => {
-        setBranch(nextBranch)
-        setMessages([])
-        setSelectedChatId(null)
-    }, [])
+            if (chatProjectId !== projectId) {
+                router.push(path)
+                return
+            }
 
-    const onNewChat = useCallback(async () => {
-        const newChatId = makeChatId(projectId, branch, userId)
-        setError(null)
-        try {
-            await ensureChat(newChatId, branch)
-            await loadChats(branch, newChatId)
+            setBranch(targetBranch)
+            setSelectedChatId(chat.chat_id)
             setMessages([])
-        } catch (err) {
-            setError(errText(err))
-        }
-    }, [branch, ensureChat, loadChats, projectId, userId])
+        },
+        [branch, projectId, router]
+    )
+
+    const onNewChat = useCallback(() => {
+        setNewChatError(null)
+        setNewChatOpen(true)
+    }, [])
+
+    const createNewChat = useCallback(
+        async (input: { projectId: string; branch: string; llmProfileId: string }) => {
+            const targetProjectId = input.projectId
+            const targetBranch = (input.branch || "main").trim() || "main"
+            const chatId = makeChatId(targetProjectId, targetBranch, userId)
+            setCreatingNewChat(true)
+            setNewChatError(null)
+            try {
+                await backendJson<ChatResponse>("/api/chats/ensure", {
+                    method: "POST",
+                    body: JSON.stringify({
+                        chat_id: chatId,
+                        project_id: targetProjectId,
+                        branch: targetBranch,
+                        user: userId,
+                        messages: [],
+                    }),
+                })
+
+                if (input.llmProfileId.trim()) {
+                    await backendJson<ChatLlmProfileResponse>(`/api/chats/${encodeURIComponent(chatId)}/llm-profile`, {
+                        method: "PUT",
+                        body: JSON.stringify({ llm_profile_id: input.llmProfileId.trim() }),
+                    })
+                }
+
+                const path = buildChatPath(targetProjectId, targetBranch, chatId)
+                saveLastChat({
+                    projectId: targetProjectId,
+                    branch: targetBranch,
+                    chatId,
+                    path,
+                    ts: Date.now(),
+                })
+                setNewChatOpen(false)
+                if (targetProjectId === projectId) {
+                    setBranch(targetBranch)
+                    setSelectedChatId(chatId)
+                    setMessages([])
+                    touchChatLocally(chatId, "")
+                    await loadChats(targetBranch, chatId)
+                }
+                router.push(path)
+            } catch (err) {
+                setNewChatError(errText(err))
+            } finally {
+                setCreatingNewChat(false)
+            }
+        },
+        [loadChats, projectId, router, touchChatLocally, userId]
+    )
 
     const toggleToolEnabled = useCallback((toolName: string) => {
         setToolEnabledSet((prev) => {
@@ -1256,12 +1412,11 @@ export default function ProjectChatPage() {
             projectId={projectId}
             projectLabel={projectLabel}
             branch={branch}
-            branches={branches}
-            onBranchChange={onBranchChange}
-            chats={chats}
+            chatGroups={chatGroups}
             selectedChatId={selectedChatId}
             onSelectChat={onSelectChat}
             onNewChat={onNewChat}
+            onOpenSettings={() => setSettingsOpen(true)}
             user={me}
             loadingChats={loadingChats}
             activeSection="chat"
@@ -1413,6 +1568,43 @@ export default function ProjectChatPage() {
                     onDocsErrorClose={() => setDocsError(null)}
                     onDocsNoticeClose={() => setDocsNotice(null)}
                 />
+
+                <NewChatDialog
+                    open={newChatOpen}
+                    projects={newChatProjectOptions}
+                    llmProfiles={llmProfiles}
+                    defaultProjectId={projectId}
+                    defaultBranch={branch}
+                    busy={creatingNewChat}
+                    error={newChatError}
+                    onClose={() => setNewChatOpen(false)}
+                    onCreate={(input) => {
+                        void createNewChat(input)
+                    }}
+                />
+
+                <Dialog
+                    open={settingsOpen}
+                    onClose={() => setSettingsOpen(false)}
+                    fullWidth
+                    maxWidth="xl"
+                >
+                    <DialogTitle>{projectLabel} Settings</DialogTitle>
+                    <DialogContent sx={{ p: 0, height: { xs: "76vh", md: "84vh" } }}>
+                        <Box
+                            component="iframe"
+                            title={`${projectLabel} settings`}
+                            src={`/projects/${encodeURIComponent(projectId)}/settings?embedded=1&branch=${encodeURIComponent(branch)}`}
+                            sx={{
+                                border: 0,
+                                width: "100%",
+                                height: "100%",
+                                display: "block",
+                                bgcolor: "background.default",
+                            }}
+                        />
+                    </DialogContent>
+                </Dialog>
             </Stack>
         </ProjectDrawerLayout>
     )

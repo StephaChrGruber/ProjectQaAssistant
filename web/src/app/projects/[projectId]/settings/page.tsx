@@ -1,14 +1,19 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { useParams, useRouter } from "next/navigation"
+import { useParams, useRouter, useSearchParams } from "next/navigation"
 import {
     Alert,
     Box,
     Stack,
 } from "@mui/material"
 import { backendJson } from "@/lib/backend"
-import { ProjectDrawerLayout, type DrawerChat, type DrawerUser } from "@/components/ProjectDrawerLayout"
+import {
+    ProjectDrawerLayout,
+    type DrawerChat,
+    type DrawerChatGroup,
+    type DrawerUser,
+} from "@/components/ProjectDrawerLayout"
 import { buildChatPath, saveLastChat } from "@/lib/last-chat"
 import PathPickerDialog from "@/components/PathPickerDialog"
 import DetailCard from "@/features/project-settings/DetailCard"
@@ -62,6 +67,7 @@ import {
 export default function ProjectSettingsPage() {
     const { projectId } = useParams<{ projectId: string }>()
     const router = useRouter()
+    const searchParams = useSearchParams()
 
     const [me, setMe] = useState<DrawerUser | null>(null)
     const [project, setProject] = useState<ProjectDoc | null>(null)
@@ -137,6 +143,7 @@ export default function ProjectSettingsPage() {
         () => isBrowserLocalRepoPath(editForm.repo_path) && hasLocalRepoSnapshot(projectId),
         [editForm.repo_path, projectId]
     )
+    const embedded = searchParams.get("embedded") === "1"
 
     const providerOptions = useMemo(
         () => resolveProviderOptions(llmOptions, DEFAULT_PROVIDER_OPTIONS),
@@ -715,11 +722,12 @@ export default function ProjectSettingsPage() {
     }
 
     const onSelectChat = useCallback(
-        (chat: DrawerChat) => {
+        (chat: DrawerChat, sourceProjectId: string) => {
+            const targetProjectId = sourceProjectId || projectId
             const targetBranch = chat.branch || branch
-            const path = buildChatPath(projectId, targetBranch, chat.chat_id)
+            const path = buildChatPath(targetProjectId, targetBranch, chat.chat_id)
             saveLastChat({
-                projectId,
+                projectId: targetProjectId,
                 branch: targetBranch,
                 chatId: chat.chat_id,
                 path,
@@ -743,14 +751,111 @@ export default function ProjectSettingsPage() {
         router.push(path)
     }, [branch, projectId, router, userId])
 
+    const chatGroups = useMemo<DrawerChatGroup[]>(
+        () => [
+            {
+                projectId,
+                projectLabel,
+                chats,
+            },
+        ],
+        [chats, projectId, projectLabel]
+    )
+
+    const settingsBody = (
+        <Box sx={{ minHeight: 0, flex: 1, overflowY: "auto", px: { xs: 1.5, md: 3 }, py: { xs: 1.8, md: 2.5 } }}>
+            <Stack spacing={2} sx={{ maxWidth: 980, mx: "auto" }}>
+                <ProjectSettingsOverviewCards
+                    projectId={projectId}
+                    project={project}
+                    projectLabel={projectLabel}
+                    isGlobalAdmin={Boolean(me?.isGlobalAdmin)}
+                />
+
+                {error && <Alert severity="error">{error}</Alert>}
+                {notice && <Alert severity="success">{notice}</Alert>}
+
+                {me?.isGlobalAdmin && (
+                    <ProjectSettingsAdminPanel
+                        projectId={projectId}
+                        branch={branch}
+                        editForm={editForm}
+                        setEditForm={setEditForm}
+                        isBrowserLocalRepoPath={isBrowserLocalRepoPath}
+                        localRepoConfiguredInBrowser={localRepoConfiguredInBrowser}
+                        setPathPickerOpen={setPathPickerOpen}
+                        llmProfiles={llmProfiles}
+                        providerOptions={providerOptions}
+                        applyProviderChange={applyProviderChange}
+                        editModelOptions={editModelOptions}
+                        onSaveProjectSettings={onSaveProjectSettings}
+                        savingProject={savingProject}
+                        savingConnector={savingConnector}
+                        ingesting={ingesting}
+                        loadLlmOptions={loadLlmOptions}
+                        loadingLlmOptions={loadingLlmOptions}
+                        llmOptionsError={llmOptionsError}
+                        gitForm={gitForm}
+                        setGitForm={setGitForm}
+                        bitbucketForm={bitbucketForm}
+                        setBitbucketForm={setBitbucketForm}
+                        azureDevOpsForm={azureDevOpsForm}
+                        setAzureDevOpsForm={setAzureDevOpsForm}
+                        localConnectorForm={localConnectorForm}
+                        setLocalConnectorForm={setLocalConnectorForm}
+                        confluenceForm={confluenceForm}
+                        setConfluenceForm={setConfluenceForm}
+                        jiraForm={jiraForm}
+                        setJiraForm={setJiraForm}
+                        saveConnector={saveConnector}
+                        runIngest={runIngest}
+                        runningIncrementalIngest={runningIncrementalIngest}
+                        runIncrementalIngest={runIncrementalIngest}
+                        loadQaMetrics={loadQaMetrics}
+                        loadingQaMetrics={loadingQaMetrics}
+                        qaMetrics={qaMetrics}
+                        evaluationQuestions={evaluationQuestions}
+                        setEvaluationQuestions={setEvaluationQuestions}
+                        runEvaluations={runEvaluations}
+                        runningEvaluations={runningEvaluations}
+                        latestEvalRun={latestEvalRun}
+                        featureFlags={featureFlags}
+                        setFeatureFlags={setFeatureFlags}
+                        saveFeatureFlags={saveFeatureFlags}
+                        savingFeatureFlags={savingFeatureFlags}
+                        connectorHealth={connectorHealth}
+                        connectorHealthHistory={connectorHealthHistory}
+                        loadingConnectorHealth={loadingConnectorHealth}
+                        refreshConnectorHealth={refreshConnectorHealth}
+                        DetailCardComponent={DetailCard}
+                    />
+                )}
+            </Stack>
+
+            <PathPickerDialog
+                open={pathPickerOpen}
+                title="Pick Repository Folder"
+                initialPath={editForm.repo_path}
+                localRepoKey={projectId}
+                onClose={() => setPathPickerOpen(false)}
+                onPick={(path) => {
+                    setEditForm((f) => ({ ...f, repo_path: path }))
+                    setPathPickerOpen(false)
+                }}
+            />
+        </Box>
+    )
+
+    if (embedded) {
+        return settingsBody
+    }
+
     return (
         <ProjectDrawerLayout
             projectId={projectId}
             projectLabel={projectLabel}
             branch={branch}
-            branches={branches}
-            onBranchChange={setBranch}
-            chats={chats}
+            chatGroups={chatGroups}
             selectedChatId={null}
             onSelectChat={onSelectChat}
             onNewChat={onNewChat}
@@ -758,87 +863,7 @@ export default function ProjectSettingsPage() {
             loadingChats={loadingChats}
             activeSection="settings"
         >
-            <Box sx={{ minHeight: 0, flex: 1, overflowY: "auto", px: { xs: 1.5, md: 3 }, py: { xs: 1.8, md: 2.5 } }}>
-                <Stack spacing={2} sx={{ maxWidth: 980, mx: "auto" }}>
-                    <ProjectSettingsOverviewCards
-                        projectId={projectId}
-                        project={project}
-                        projectLabel={projectLabel}
-                        isGlobalAdmin={Boolean(me?.isGlobalAdmin)}
-                    />
-
-                    {error && <Alert severity="error">{error}</Alert>}
-                    {notice && <Alert severity="success">{notice}</Alert>}
-
-                    {me?.isGlobalAdmin && (
-                        <ProjectSettingsAdminPanel
-                            projectId={projectId}
-                            branch={branch}
-                            editForm={editForm}
-                            setEditForm={setEditForm}
-                            isBrowserLocalRepoPath={isBrowserLocalRepoPath}
-                            localRepoConfiguredInBrowser={localRepoConfiguredInBrowser}
-                            setPathPickerOpen={setPathPickerOpen}
-                            llmProfiles={llmProfiles}
-                            providerOptions={providerOptions}
-                            applyProviderChange={applyProviderChange}
-                            editModelOptions={editModelOptions}
-                            onSaveProjectSettings={onSaveProjectSettings}
-                            savingProject={savingProject}
-                            savingConnector={savingConnector}
-                            ingesting={ingesting}
-                            loadLlmOptions={loadLlmOptions}
-                            loadingLlmOptions={loadingLlmOptions}
-                            llmOptionsError={llmOptionsError}
-                            gitForm={gitForm}
-                            setGitForm={setGitForm}
-                            bitbucketForm={bitbucketForm}
-                            setBitbucketForm={setBitbucketForm}
-                            azureDevOpsForm={azureDevOpsForm}
-                            setAzureDevOpsForm={setAzureDevOpsForm}
-                            localConnectorForm={localConnectorForm}
-                            setLocalConnectorForm={setLocalConnectorForm}
-                            confluenceForm={confluenceForm}
-                            setConfluenceForm={setConfluenceForm}
-                            jiraForm={jiraForm}
-                            setJiraForm={setJiraForm}
-                            saveConnector={saveConnector}
-                            runIngest={runIngest}
-                            runningIncrementalIngest={runningIncrementalIngest}
-                            runIncrementalIngest={runIncrementalIngest}
-                            loadQaMetrics={loadQaMetrics}
-                            loadingQaMetrics={loadingQaMetrics}
-                            qaMetrics={qaMetrics}
-                            evaluationQuestions={evaluationQuestions}
-                            setEvaluationQuestions={setEvaluationQuestions}
-                            runEvaluations={runEvaluations}
-                            runningEvaluations={runningEvaluations}
-                            latestEvalRun={latestEvalRun}
-                            featureFlags={featureFlags}
-                            setFeatureFlags={setFeatureFlags}
-                            saveFeatureFlags={saveFeatureFlags}
-                            savingFeatureFlags={savingFeatureFlags}
-                            connectorHealth={connectorHealth}
-                            connectorHealthHistory={connectorHealthHistory}
-                            loadingConnectorHealth={loadingConnectorHealth}
-                            refreshConnectorHealth={refreshConnectorHealth}
-                            DetailCardComponent={DetailCard}
-                        />
-                    )}
-                </Stack>
-
-                <PathPickerDialog
-                    open={pathPickerOpen}
-                    title="Pick Repository Folder"
-                    initialPath={editForm.repo_path}
-                    localRepoKey={projectId}
-                    onClose={() => setPathPickerOpen(false)}
-                    onPick={(path) => {
-                        setEditForm((f) => ({ ...f, repo_path: path }))
-                        setPathPickerOpen(false)
-                    }}
-                />
-            </Box>
+            {settingsBody}
         </ProjectDrawerLayout>
     )
 }
