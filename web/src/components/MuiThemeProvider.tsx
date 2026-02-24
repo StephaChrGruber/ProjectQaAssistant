@@ -44,14 +44,50 @@ const baseTheme = createTheme({
             "Segoe UI",
             "sans-serif",
         ].join(","),
+        fontSize: 13,
+        h4: {
+            fontWeight: 700,
+            fontSize: "1.35rem",
+            letterSpacing: "-0.01em",
+            lineHeight: 1.2,
+        },
+        h5: {
+            fontWeight: 700,
+            fontSize: "1.14rem",
+            letterSpacing: "-0.01em",
+            lineHeight: 1.22,
+        },
         button: {
             textTransform: "none",
             fontWeight: 600,
             letterSpacing: "0.01em",
+            fontSize: "0.82rem",
         },
         h6: {
             fontWeight: 700,
+            fontSize: "0.98rem",
             letterSpacing: "-0.01em",
+            lineHeight: 1.25,
+        },
+        subtitle1: {
+            fontSize: "0.9rem",
+            lineHeight: 1.35,
+        },
+        subtitle2: {
+            fontSize: "0.82rem",
+            lineHeight: 1.35,
+        },
+        body1: {
+            fontSize: "0.89rem",
+            lineHeight: 1.45,
+        },
+        body2: {
+            fontSize: "0.82rem",
+            lineHeight: 1.45,
+        },
+        caption: {
+            fontSize: "0.74rem",
+            lineHeight: 1.35,
         },
     },
     shadows: [
@@ -102,14 +138,25 @@ export function MuiThemeProvider({ children }: Props) {
                     MuiButton: {
                         styleOverrides: {
                             root: {
-                                borderRadius: 12,
-                                minHeight: 38,
+                                borderRadius: 10,
+                                minHeight: 34,
+                                paddingTop: 6,
+                                paddingBottom: 6,
+                                paddingLeft: 12,
+                                paddingRight: 12,
                                 boxShadow: "none",
                             },
                             contained: {
                                 background: "linear-gradient(135deg, #22d3ee 0%, #34d399 100%)",
                                 color: "#04221d",
                                 fontWeight: 700,
+                            },
+                            sizeSmall: {
+                                minHeight: 30,
+                                paddingTop: 4,
+                                paddingBottom: 4,
+                                paddingLeft: 10,
+                                paddingRight: 10,
                             },
                         },
                     },
@@ -128,13 +175,28 @@ export function MuiThemeProvider({ children }: Props) {
                     MuiOutlinedInput: {
                         styleOverrides: {
                             root: {
-                                borderRadius: 12,
+                                borderRadius: 10,
                                 backgroundColor: "rgba(15, 23, 42, 0.32)",
                                 "& .MuiOutlinedInput-notchedOutline": {
                                     borderColor: "rgba(148,163,184,0.25)",
                                 },
                                 "&:hover .MuiOutlinedInput-notchedOutline": {
                                     borderColor: "rgba(148,163,184,0.46)",
+                                },
+                            },
+                            input: {
+                                paddingTop: 9,
+                                paddingBottom: 9,
+                                fontSize: "0.86rem",
+                            },
+                        },
+                    },
+                    MuiCardContent: {
+                        styleOverrides: {
+                            root: {
+                                padding: 12,
+                                "&:last-child": {
+                                    paddingBottom: 12,
                                 },
                             },
                         },
@@ -167,7 +229,9 @@ export function MuiThemeProvider({ children }: Props) {
                     MuiListItemButton: {
                         styleOverrides: {
                             root: {
-                                borderRadius: 12,
+                                borderRadius: 10,
+                                paddingTop: 6,
+                                paddingBottom: 6,
                                 transition: "background-color 120ms ease, transform 120ms ease",
                                 "&.Mui-selected": {
                                     backgroundColor: "rgba(34,211,238,0.16)",
@@ -182,7 +246,48 @@ export function MuiThemeProvider({ children }: Props) {
                     MuiChip: {
                         styleOverrides: {
                             root: {
-                                borderRadius: 10,
+                                borderRadius: 9,
+                                height: 22,
+                                fontSize: "0.7rem",
+                            },
+                        },
+                    },
+                    MuiMenuItem: {
+                        styleOverrides: {
+                            root: {
+                                minHeight: 34,
+                                fontSize: "0.84rem",
+                            },
+                        },
+                    },
+                    MuiDialogTitle: {
+                        styleOverrides: {
+                            root: {
+                                paddingTop: 10,
+                                paddingBottom: 8,
+                                paddingLeft: 14,
+                                paddingRight: 14,
+                            },
+                        },
+                    },
+                    MuiDialogContent: {
+                        styleOverrides: {
+                            root: {
+                                paddingTop: 8,
+                                paddingBottom: 10,
+                                paddingLeft: 14,
+                                paddingRight: 14,
+                            },
+                        },
+                    },
+                    MuiDialogActions: {
+                        styleOverrides: {
+                            root: {
+                                paddingTop: 8,
+                                paddingBottom: 10,
+                                paddingLeft: 14,
+                                paddingRight: 14,
+                                gap: 8,
                             },
                         },
                     },
@@ -196,7 +301,7 @@ export function MuiThemeProvider({ children }: Props) {
                 },
             })
         )
-        return responsiveFontSizes(merged, { factor: 2 })
+        return responsiveFontSizes(merged, { factor: 1.5 })
     }, [])
 
     return (

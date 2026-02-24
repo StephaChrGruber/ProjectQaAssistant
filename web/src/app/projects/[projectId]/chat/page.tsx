@@ -1464,7 +1464,7 @@ export default function ProjectChatPage() {
                 />
 
                 {error && (
-                    <Box sx={{ px: { xs: 1.5, md: 3 }, pt: 1.25 }}>
+                    <Box sx={{ px: { xs: 1, md: 2 }, pt: 0.7 }}>
                         <Alert severity="error" onClose={() => setError(null)}>
                             {error}
                         </Alert>
@@ -1478,7 +1478,7 @@ export default function ProjectChatPage() {
                     />
                 )}
                 {docsNotice && !docsOpen && (
-                    <Box sx={{ px: { xs: 1.5, md: 3 }, pt: 1.25 }}>
+                    <Box sx={{ px: { xs: 1, md: 2 }, pt: 0.7 }}>
                         <Alert severity="success" onClose={() => setDocsNotice(null)}>
                             {docsNotice}
                         </Alert>

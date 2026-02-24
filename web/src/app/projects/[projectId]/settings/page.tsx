@@ -763,8 +763,8 @@ export default function ProjectSettingsPage() {
     )
 
     const settingsBody = (
-        <Box sx={{ minHeight: 0, flex: 1, overflowY: "auto", px: { xs: 1.5, md: 3 }, py: { xs: 1.8, md: 2.5 } }}>
-            <Stack spacing={2} sx={{ maxWidth: 980, mx: "auto" }}>
+        <Box sx={{ minHeight: 0, flex: 1, overflowY: "auto", px: { xs: 1.1, md: 2 }, py: { xs: 1, md: 1.4 } }}>
+            <Stack spacing={1.25} sx={{ maxWidth: 980, mx: "auto" }}>
                 <ProjectSettingsOverviewCards
                     projectId={projectId}
                     project={project}

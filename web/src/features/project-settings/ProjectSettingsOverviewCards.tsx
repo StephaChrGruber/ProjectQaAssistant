@@ -22,29 +22,29 @@ export function ProjectSettingsOverviewCards({
     return (
         <>
             <Card variant="outlined">
-                <CardContent sx={{ p: { xs: 1.5, md: 2.5 } }}>
-                    <Typography variant="overline" color="primary.light" sx={{ letterSpacing: "0.14em" }}>
+                <CardContent sx={{ p: { xs: 1.1, md: 1.4 } }}>
+                    <Typography variant="overline" color="primary.light" sx={{ letterSpacing: "0.1em", fontSize: 10.5 }}>
                         Workspace Settings
                     </Typography>
-                    <Typography variant="h4" sx={{ mt: 0.5, fontWeight: 700, fontSize: { xs: "1.55rem", md: "2.1rem" } }}>
+                    <Typography variant="h4" sx={{ mt: 0.35, fontWeight: 700, fontSize: { xs: "1.2rem", md: "1.5rem" } }}>
                         {projectLabel}
                     </Typography>
-                    <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.6 }}>
                         Review and configure this project&apos;s assistant behavior.
                     </Typography>
                 </CardContent>
             </Card>
 
             <Card variant="outlined">
-                <CardContent sx={{ p: { xs: 1.5, md: 2.5 } }}>
+                <CardContent sx={{ p: { xs: 1.1, md: 1.4 } }}>
                     <Typography variant="h6" sx={{ fontWeight: 700 }}>
                         Project Snapshot
                     </Typography>
                     <Box
                         sx={{
-                            mt: 1.5,
+                            mt: 1,
                             display: "grid",
-                            gap: 1.2,
+                            gap: 0.9,
                             gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
                         }}
                     >
@@ -71,14 +71,14 @@ export function ProjectSettingsOverviewCards({
 
             {!isGlobalAdmin && (
                 <Card variant="outlined">
-                    <CardContent sx={{ p: { xs: 1.5, md: 2.5 } }}>
+                    <CardContent sx={{ p: { xs: 1.1, md: 1.4 } }}>
                         <Typography variant="h6" sx={{ fontWeight: 700 }}>
                             Sources
                         </Typography>
-                        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.65 }}>
                             Source connectors are managed by a global admin.
                         </Typography>
-                        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 1.5 }}>
+                        <Stack direction="row" spacing={0.7} useFlexGap flexWrap="wrap" sx={{ mt: 0.9 }}>
                             <Chip label="Git" color="primary" variant="outlined" />
                             <Chip label="Bitbucket" color="primary" variant="outlined" />
                             <Chip label="Azure DevOps" color="primary" variant="outlined" />
@@ -88,10 +88,10 @@ export function ProjectSettingsOverviewCards({
                         </Stack>
                         <Stack
                             direction="row"
-                            spacing={1}
+                            spacing={0.7}
                             useFlexGap
                             flexWrap="wrap"
-                            sx={{ mt: 2, "& .MuiButton-root": { width: { xs: "100%", sm: "auto" } } }}
+                            sx={{ mt: 1.15, "& .MuiButton-root": { width: { xs: "100%", sm: "auto" } } }}
                         >
                             <Button component={Link} href={`/projects/${projectId}/chat`} variant="contained">
                                 Open Chat
@@ -106,4 +106,3 @@ export function ProjectSettingsOverviewCards({
         </>
     )
 }
-

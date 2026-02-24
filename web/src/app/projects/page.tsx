@@ -82,30 +82,30 @@ export default function ProjectsPage() {
     const hasLastChat = useMemo(() => Boolean(readLastChat()?.path), [])
 
     return (
-        <Box sx={{ minHeight: "100vh", py: { xs: 2, md: 3 } }}>
+        <Box sx={{ minHeight: "100vh", py: { xs: 1.2, md: 1.8 } }}>
             <Container maxWidth="xl">
-                <Stack spacing={{ xs: 2, md: 2.5 }}>
+                <Stack spacing={{ xs: 1.3, md: 1.7 }}>
                     <Card variant="outlined">
-                        <CardContent sx={{ p: { xs: 1.5, md: 2.5 } }}>
+                        <CardContent sx={{ p: { xs: 1.1, md: 1.4 } }}>
                             <Stack
                                 direction={{ xs: "column", md: "row" }}
-                                spacing={2}
+                                spacing={1.2}
                                 alignItems={{ xs: "flex-start", md: "center" }}
                                 justifyContent="space-between"
                             >
                                 <Box>
-                                    <Typography variant="overline" color="primary.light" sx={{ letterSpacing: "0.13em" }}>
+                                    <Typography variant="overline" color="primary.light" sx={{ letterSpacing: "0.1em", fontSize: 10.5 }}>
                                         Project QA Assistant
                                     </Typography>
-                                    <Typography variant="h4" sx={{ mt: 0.6, fontWeight: 700, fontSize: { xs: "1.55rem", md: "2.1rem" } }}>
+                                    <Typography variant="h4" sx={{ mt: 0.35, fontWeight: 700, fontSize: { xs: "1.2rem", md: "1.5rem" } }}>
                                         Workspaces
                                     </Typography>
-                                    <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.55 }}>
                                         Open a project chat with branch-aware retrieval over GitHub/Bitbucket/Azure DevOps, local repo, Confluence, and Jira.
                                     </Typography>
                                 </Box>
 
-                                <Stack spacing={1} sx={{ minWidth: { xs: "100%", md: 280 }, alignItems: { xs: "stretch", md: "flex-end" } }}>
+                                <Stack spacing={0.7} sx={{ minWidth: { xs: "100%", md: 260 }, alignItems: { xs: "stretch", md: "flex-end" } }}>
                                     <Typography variant="body2" color="text.secondary" sx={{ textAlign: { md: "right" } }}>
                                         {userLabel}
                                     </Typography>
@@ -146,7 +146,7 @@ export default function ProjectsPage() {
                     <Box
                         sx={{
                             display: "grid",
-                            gap: 1.8,
+                            gap: 1.2,
                             gridTemplateColumns: {
                                 xs: "1fr",
                                 sm: "repeat(2, minmax(0, 1fr))",
@@ -156,18 +156,18 @@ export default function ProjectsPage() {
                     >
                         {projects.map((p) => (
                             <Card key={p._id} variant="outlined" sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-                                <CardContent sx={{ pb: 1.5, p: { xs: 1.5, md: 2 } }}>
-                                    <Typography variant="h6" sx={{ fontWeight: 700, fontSize: { xs: "1rem", sm: "1.2rem" } }}>
+                                <CardContent sx={{ pb: 1.1, p: { xs: 1.1, md: 1.35 } }}>
+                                    <Typography variant="h6" sx={{ fontWeight: 700, fontSize: { xs: "0.95rem", sm: "1.04rem" } }}>
                                         {p.name || p.key || p._id}
                                     </Typography>
                                     <Typography variant="caption" color="text.secondary" sx={{ wordBreak: "break-all" }}>
                                         {p._id}
                                     </Typography>
-                                    <Typography variant="body2" color="text.secondary" sx={{ mt: 1.2 }}>
+                                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
                                         {p.description || "No description"}
                                     </Typography>
 
-                                    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 1.4 }}>
+                                    <Stack direction="row" spacing={0.7} useFlexGap flexWrap="wrap" sx={{ mt: 0.85 }}>
                                         <Chip
                                             size="small"
                                             label={`${(p.llm_provider || "default").toUpperCase()}${p.llm_model ? ` · ${p.llm_model}` : ""}`}
@@ -180,11 +180,11 @@ export default function ProjectsPage() {
 
                                 <CardActions
                                     sx={{
-                                        px: { xs: 1.5, md: 2 },
-                                        pb: { xs: 1.5, md: 2 },
+                                        px: { xs: 1.1, md: 1.35 },
+                                        pb: { xs: 1.1, md: 1.35 },
                                         mt: "auto",
                                         flexWrap: "wrap",
-                                        gap: 1,
+                                        gap: 0.7,
                                         "& .MuiButton-root": { flex: { xs: 1, sm: "0 0 auto" } },
                                     }}
                                 >

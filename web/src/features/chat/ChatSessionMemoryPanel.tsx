@@ -133,13 +133,13 @@ export function ChatSessionMemoryPanel({
     }
 
     return (
-        <Box sx={{ px: { xs: 1.5, md: 3 }, pt: 1.25 }}>
+        <Box sx={{ px: { xs: 1, md: 2 }, pt: 0.7 }}>
             <Paper
                 variant="outlined"
                 sx={{
-                    p: { xs: 1.2, md: 1.5 },
+                    p: { xs: 0.9, md: 1.1 },
                     maxWidth: 1200,
-                    maxHeight: { xs: "72vh", md: "64vh" },
+                    maxHeight: { xs: "66vh", md: "58vh" },
                     mx: "auto",
                     display: "flex",
                     flexDirection: "column",
@@ -150,10 +150,10 @@ export function ChatSessionMemoryPanel({
                     direction={{ xs: "column", sm: "row" }}
                     justifyContent="space-between"
                     alignItems={{ xs: "flex-start", sm: "center" }}
-                    spacing={1}
+                    spacing={0.7}
                 >
                     <Stack spacing={0.3}>
-                        <Typography variant="overline" color="primary" sx={{ letterSpacing: "0.12em" }}>
+                        <Typography variant="overline" color="primary" sx={{ letterSpacing: "0.1em", fontSize: 10.5 }}>
                             Session Memory
                         </Typography>
                         <Typography variant="caption" color="text.secondary">
@@ -182,11 +182,11 @@ export function ChatSessionMemoryPanel({
                     </Stack>
                 </Stack>
 
-                <Box sx={{ mt: 1, overflow: "auto", pr: { xs: 0.2, sm: 0.5 } }}>
+                <Box sx={{ mt: 0.65, overflow: "auto", pr: { xs: 0.1, sm: 0.35 } }}>
                     <Box
                         sx={{
                             display: "grid",
-                            gap: 1.1,
+                            gap: 0.8,
                             gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
                         }}
                     >
@@ -199,9 +199,9 @@ export function ChatSessionMemoryPanel({
                                     sx={{
                                         border: "1px solid",
                                         borderColor: "divider",
-                                        borderRadius: 1.5,
-                                        p: 1,
-                                        minHeight: 132,
+                                        borderRadius: 1.2,
+                                        p: 0.8,
+                                        minHeight: 112,
                                         display: "flex",
                                         flexDirection: "column",
                                         overflow: "hidden",
@@ -216,8 +216,8 @@ export function ChatSessionMemoryPanel({
                                     {editing ? (
                                         <TextField
                                             multiline
-                                            minRows={4}
-                                            maxRows={10}
+                                            minRows={3}
+                                            maxRows={8}
                                             size="small"
                                             value={value}
                                             onChange={(e) =>
@@ -228,10 +228,10 @@ export function ChatSessionMemoryPanel({
                                             }
                                             placeholder="One item per line"
                                             fullWidth
-                                            sx={{ mt: 0.6 }}
+                                            sx={{ mt: 0.45 }}
                                         />
                                     ) : (
-                                        <Box sx={{ mt: 0.45, overflow: "auto", maxHeight: 220 }}>
+                                        <Box sx={{ mt: 0.35, overflow: "auto", maxHeight: 190 }}>
                                             {items.length ? (
                                                 items.map((item, idx) => (
                                                     <Typography

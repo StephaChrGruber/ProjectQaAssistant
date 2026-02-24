@@ -14,28 +14,29 @@ export function ChatMarkdownContent({ value, isUser }: Props) {
     return (
         <Box
             sx={{
-                "& p": { my: 0.7, lineHeight: 1.55 },
-                "& ul, & ol": { my: 0.7, pl: 2.5 },
-                "& li": { my: 0.3 },
+                fontSize: "0.86rem",
+                "& p": { my: 0.5, lineHeight: 1.48 },
+                "& ul, & ol": { my: 0.5, pl: 2.2 },
+                "& li": { my: 0.2 },
                 "& a": { color: "inherit", textDecoration: "underline" },
                 "& img": {
                     maxWidth: "100%",
                     borderRadius: 1.5,
                     display: "block",
-                    my: 1,
+                    my: 0.75,
                 },
                 "& code": {
                     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                    fontSize: "0.82em",
+                    fontSize: "0.8em",
                     bgcolor: isUser ? "rgba(255,255,255,0.32)" : "rgba(148,163,184,0.16)",
-                    px: 0.5,
+                    px: 0.45,
                     borderRadius: 0.6,
                 },
                 "& pre": {
-                    my: 1,
+                    my: 0.75,
                     overflowX: "auto",
-                    borderRadius: 1.2,
-                    p: 1.1,
+                    borderRadius: 1,
+                    p: 0.9,
                     bgcolor: isUser ? "rgba(0,0,0,0.22)" : "rgba(2,6,23,0.3)",
                 },
                 "& pre code": {
@@ -78,4 +79,3 @@ export function ChatMarkdownContent({ value, isUser }: Props) {
         </Box>
     )
 }
-
