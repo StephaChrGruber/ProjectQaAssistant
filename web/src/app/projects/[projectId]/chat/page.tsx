@@ -1515,7 +1515,9 @@ export default function ProjectChatPage() {
                     hasSelectedChat={Boolean(selectedChatId)}
                     onInputChange={setInput}
                     onPendingAnswerInputChange={setPendingAnswerInput}
-                    onSend={() => void send()}
+                    onSend={(overrideQuestion) =>
+                        void send(overrideQuestion ? { question: overrideQuestion } : undefined)
+                    }
                     onClear={() => void clearChat()}
                     onSubmitPendingAnswer={(answer, pendingQuestionId) =>
                         void send({
