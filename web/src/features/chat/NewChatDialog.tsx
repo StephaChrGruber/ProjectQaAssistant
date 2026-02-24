@@ -7,7 +7,6 @@ import {
     Dialog,
     DialogActions,
     DialogContent,
-    DialogTitle,
     FormControl,
     InputLabel,
     MenuItem,
@@ -17,6 +16,7 @@ import {
 } from "@mui/material"
 import { backendJson } from "@/lib/backend"
 import type { BranchesResponse, LlmProfileDoc } from "@/features/chat/types"
+import AppDialogTitle from "@/components/AppDialogTitle"
 
 type NewChatProject = {
     id: string
@@ -106,13 +106,14 @@ export function NewChatDialog({
 
     return (
         <Dialog open={open} onClose={busy ? undefined : onClose} fullWidth maxWidth="sm">
-            <DialogTitle>Start New Chat</DialogTitle>
+            <AppDialogTitle
+                title="Start New Chat"
+                subtitle="Choose project, branch, and LLM profile for the new conversation."
+                onClose={busy ? undefined : onClose}
+                closeDisabled={busy}
+            />
             <DialogContent>
                 <Stack spacing={1.4} sx={{ mt: 0.2 }}>
-                    <Typography variant="body2" color="text.secondary">
-                        Choose project, branch, and LLM profile for the new conversation.
-                    </Typography>
-
                     {error && <Alert severity="error">{error}</Alert>}
                     {branchesError && <Alert severity="warning">{branchesError}</Alert>}
 
@@ -168,9 +169,6 @@ export function NewChatDialog({
                 </Stack>
             </DialogContent>
             <DialogActions>
-                <Button onClick={onClose} disabled={busy}>
-                    Cancel
-                </Button>
                 <Button
                     variant="contained"
                     onClick={() => onCreate({ projectId, branch, llmProfileId })}

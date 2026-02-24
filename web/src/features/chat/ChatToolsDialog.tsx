@@ -9,7 +9,6 @@ import {
     Dialog,
     DialogActions,
     DialogContent,
-    DialogTitle,
     Divider,
     FormControlLabel,
     List,
@@ -22,6 +21,7 @@ import {
 } from "@mui/material"
 import CheckCircleRounded from "@mui/icons-material/CheckCircleRounded"
 import type { ToolCatalogItem } from "@/features/chat/types"
+import AppDialogTitle from "@/components/AppDialogTitle"
 
 type ChatToolsDialogProps = {
     open: boolean
@@ -70,16 +70,15 @@ export function ChatToolsDialog({
 }: ChatToolsDialogProps) {
     return (
         <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
-            <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
-                <Stack spacing={0.2}>
-                    <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                        Chat Tool Configuration
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
+            <AppDialogTitle
+                title="Chat Tool Configuration"
+                subtitle={
+                    <>
                         Chat: <code>{chatId || "none"}</code>
-                    </Typography>
-                </Stack>
-            </DialogTitle>
+                    </>
+                }
+                onClose={onClose}
+            />
             <DialogContent dividers sx={{ pt: 1.2 }}>
                 {toolsLoading && (
                     <Box sx={{ py: 2 }}>
@@ -188,7 +187,6 @@ export function ChatToolsDialog({
                 </Stack>
             </DialogContent>
             <DialogActions>
-                <Button onClick={onClose}>Close</Button>
                 <Button variant="contained" onClick={() => void onSave()} disabled={toolsSaving || !chatId}>
                     {toolsSaving ? "Saving..." : "Save"}
                 </Button>

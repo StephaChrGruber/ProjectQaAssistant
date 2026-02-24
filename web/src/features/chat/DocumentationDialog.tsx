@@ -8,7 +8,6 @@ import {
     CircularProgress,
     Dialog,
     DialogContent,
-    DialogTitle,
     Divider,
     List,
     ListItemButton,
@@ -17,9 +16,9 @@ import {
     Typography,
 } from "@mui/material"
 import AutoFixHighRounded from "@mui/icons-material/AutoFixHighRounded"
-import CloseRounded from "@mui/icons-material/CloseRounded"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
+import AppDialogTitle from "@/components/AppDialogTitle"
 
 type DocumentationDialogProps = {
     open: boolean
@@ -58,16 +57,15 @@ export function DocumentationDialog({
 }: DocumentationDialogProps) {
     return (
         <Dialog open={open} onClose={onClose} fullWidth maxWidth="lg">
-            <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
-                <Stack spacing={0.2}>
-                    <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                        Project Documentation
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
+            <AppDialogTitle
+                title="Project Documentation"
+                subtitle={
+                    <>
                         Branch: {branch} · Source folder: <code>documentation/</code>
-                    </Typography>
-                </Stack>
-                <Stack direction="row" spacing={1}>
+                    </>
+                }
+                onClose={onClose}
+                rightActions={
                     <Button
                         size="small"
                         variant="contained"
@@ -77,11 +75,8 @@ export function DocumentationDialog({
                     >
                         {docsGenerating ? "Generating..." : "Regenerate"}
                     </Button>
-                    <Button size="small" variant="text" startIcon={<CloseRounded />} onClick={onClose}>
-                        Close
-                    </Button>
-                </Stack>
-            </DialogTitle>
+                }
+            />
             <DialogContent dividers sx={{ p: 0 }}>
                 {(docsLoading || docContentLoading) && (
                     <Box sx={{ px: 2, py: 1 }}>

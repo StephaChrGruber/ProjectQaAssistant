@@ -7,7 +7,6 @@ import {
     Button,
     Dialog,
     DialogContent,
-    DialogTitle,
     Divider,
     MenuItem,
     Select,
@@ -16,6 +15,7 @@ import {
     Typography,
 } from "@mui/material"
 import type { ChatTaskItem } from "@/features/chat/types"
+import AppDialogTitle from "@/components/AppDialogTitle"
 
 type ChatTasksDialogProps = {
     open: boolean
@@ -107,7 +107,7 @@ export function ChatTasksDialog(props: ChatTasksDialogProps) {
 
     return (
         <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
-            <DialogTitle>Chat Tasks</DialogTitle>
+            <AppDialogTitle title="Chat Tasks" onClose={onClose} />
             <DialogContent>
                 <Stack spacing={1.5} sx={{ pt: 0.5 }}>
                     {error ? <Alert severity="error">{error}</Alert> : null}

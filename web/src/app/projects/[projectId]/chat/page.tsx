@@ -9,8 +9,6 @@ import {
     Collapse,
     Dialog,
     DialogContent,
-    DialogTitle,
-    IconButton,
     List,
     ListItemButton,
     ListItemText,
@@ -22,7 +20,6 @@ import FolderRounded from "@mui/icons-material/FolderRounded"
 import DescriptionOutlined from "@mui/icons-material/DescriptionOutlined"
 import ExpandMoreRounded from "@mui/icons-material/ExpandMoreRounded"
 import ChevronRightRounded from "@mui/icons-material/ChevronRightRounded"
-import CloseRounded from "@mui/icons-material/CloseRounded"
 import { backendJson } from "@/lib/backend"
 import {
     ProjectDrawerLayout,
@@ -49,6 +46,7 @@ import { ChatToolEventsBanner } from "@/features/chat/ChatToolEventsBanner"
 import { ChatComposer } from "@/features/chat/ChatComposer"
 import { NewChatDialog } from "@/features/chat/NewChatDialog"
 import { useLocalToolJobWorker } from "@/features/local-tools/useLocalToolJobWorker"
+import AppDialogTitle from "@/components/AppDialogTitle"
 import type {
     AskAgentResponse,
     BranchesResponse,
@@ -1606,16 +1604,7 @@ export default function ProjectChatPage() {
                     fullWidth
                     maxWidth="xl"
                 >
-                    <DialogTitle sx={{ py: 0.9 }}>
-                        <Stack direction="row" justifyContent="space-between" alignItems="center">
-                            <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                                {projectLabel} Settings
-                            </Typography>
-                            <IconButton size="small" onClick={() => setSettingsOpen(false)} aria-label="close settings">
-                                <CloseRounded fontSize="small" />
-                            </IconButton>
-                        </Stack>
-                    </DialogTitle>
+                    <AppDialogTitle title={`${projectLabel} Settings`} onClose={() => setSettingsOpen(false)} />
                     <DialogContent sx={{ p: 0, height: { xs: "76vh", md: "84vh" } }}>
                         <Box
                             component="iframe"

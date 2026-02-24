@@ -7,6 +7,10 @@ import {
     Box,
     Button,
     Container,
+    List,
+    ListItemButton,
+    ListItemIcon,
+    ListItemText,
     LinearProgress,
     Paper,
     Stack,
@@ -14,6 +18,10 @@ import {
     useMediaQuery,
     useTheme,
 } from "@mui/material"
+import DashboardRounded from "@mui/icons-material/DashboardRounded"
+import SmartToyRounded from "@mui/icons-material/SmartToyRounded"
+import AddBoxRounded from "@mui/icons-material/AddBoxRounded"
+import SettingsSuggestRounded from "@mui/icons-material/SettingsSuggestRounded"
 import { backendJson } from "@/lib/backend"
 import PathPickerDialog from "@/components/PathPickerDialog"
 import { AdminWorkflowHeader } from "@/features/admin/projects/AdminWorkflowHeader"
@@ -90,6 +98,7 @@ export default function AdminPage() {
     const [pathPickerTarget, setPathPickerTarget] = useState<"createRepoPath" | "editRepoPath" | null>(null)
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
     const [deleteConfirmKey, setDeleteConfirmKey] = useState("")
+    const [adminSection, setAdminSection] = useState<"overview" | "llm_profiles" | "new_project" | "existing_project">("overview")
 
     const [createForm, setCreateForm] = useState<ProjectForm>(emptyProjectForm())
     const [createGitForm, setCreateGitForm] = useState<GitForm>(emptyGit())
@@ -816,137 +825,183 @@ export default function AdminPage() {
     }
 
     return (
-        <Box sx={{ minHeight: "100vh", py: { xs: 2, md: 3 } }}>
+        <Box sx={{ minHeight: "100vh", py: { xs: 1.2, md: 1.7 } }}>
             <Container maxWidth="xl">
-                <Stack spacing={{ xs: 2, md: 2.5 }}>
-                    <AdminWorkflowHeader />
-
+                <Stack spacing={{ xs: 1.1, md: 1.35 }}>
                     {busy && <LinearProgress />}
                     {error && <Alert severity="error">{error}</Alert>}
                     {notice && <Alert severity="success">{notice}</Alert>}
 
-                    <LlmProfilesCard
-                        llmProfileForm={llmProfileForm}
-                        setLlmProfileForm={setLlmProfileForm}
-                        providerOptions={providerOptions}
-                        applyProviderChangeToLlmProfile={applyProviderChangeToLlmProfile}
-                        loadingLlmOptions={loadingLlmOptions}
-                        loadLlmOptions={loadLlmOptions}
-                        llmOptionsError={llmOptionsError}
-                        llmProfileModelOptions={llmProfileModelOptions}
-                        busy={busy}
-                        editingLlmProfileId={editingLlmProfileId}
-                        llmProfiles={llmProfiles}
-                        saveLlmProfile={saveLlmProfile}
-                        onSelectProfile={(profile) => {
-                            setEditingLlmProfileId(profile.id)
-                            setLlmProfileForm({
-                                name: profile.name || "",
-                                description: profile.description || "",
-                                provider: profile.provider || "ollama",
-                                base_url: profile.base_url || "",
-                                model: profile.model || "",
-                                api_key: profile.api_key || "",
-                                isEnabled: profile.isEnabled !== false,
-                            })
-                        }}
-                        deleteLlmProfile={deleteLlmProfile}
-                        onResetEditing={() => {
-                            setEditingLlmProfileId(null)
-                            setLlmProfileForm(emptyLlmProfileForm())
-                        }}
-                    />
-
                     <Box
                         sx={{
                             display: "grid",
-                            gap: 2.5,
-                            gridTemplateColumns: {
-                                xs: "1fr",
-                                xl: "minmax(360px, 420px) minmax(0, 1fr)",
-                            },
+                            gap: 1.2,
+                            gridTemplateColumns: { xs: "1fr", md: "220px minmax(0, 1fr)" },
+                            alignItems: "start",
                         }}
                     >
-                        <NewProjectWizardCard
-                            compactWizard={compactWizard}
-                            wizardStep={wizardStep}
-                            stepStatus={stepStatus}
-                            canOpenStep={canOpenStep}
-                            setWizardStep={setWizardStep}
-                            createRepoMode={createRepoMode}
-                            setCreateRepoMode={setCreateRepoMode}
-                            setPathPickerTarget={setPathPickerTarget}
-                            createForm={createForm}
-                            setCreateForm={setCreateForm}
-                            createGitForm={createGitForm}
-                            setCreateGitForm={setCreateGitForm}
-                            createBitbucketForm={createBitbucketForm}
-                            setCreateBitbucketForm={setCreateBitbucketForm}
-                            createAzureDevOpsForm={createAzureDevOpsForm}
-                            setCreateAzureDevOpsForm={setCreateAzureDevOpsForm}
-                            createLocalConnectorForm={createLocalConnectorForm}
-                            setCreateLocalConnectorForm={setCreateLocalConnectorForm}
-                            createConfluenceForm={createConfluenceForm}
-                            setCreateConfluenceForm={setCreateConfluenceForm}
-                            createJiraForm={createJiraForm}
-                            setCreateJiraForm={setCreateJiraForm}
-                            createOptionalConnectors={createOptionalConnectors}
-                            createConnectorChoices={createConnectorChoices}
-                            toggleCreateOptionalConnector={toggleCreateOptionalConnector}
-                            llmProfiles={llmProfiles}
-                            providerOptions={providerOptions}
-                            applyProviderChange={applyProviderChange}
-                            loadLlmOptions={loadLlmOptions}
-                            loadingLlmOptions={loadingLlmOptions}
-                            llmOptionsError={llmOptionsError}
-                            defaultBaseUrlForProvider={defaultBaseUrlForProvider}
-                            createModelOptions={createModelOptions}
-                            primaryRepoConnector={primaryRepoConnector}
-                            createRepoBranch={createRepoBranch}
-                            selectedCreateConnectorTypes={selectedCreateConnectorTypes}
-                            ingestOnCreate={ingestOnCreate}
-                            setIngestOnCreate={setIngestOnCreate}
-                            busy={busy}
-                            repoValid={repoValid}
-                            projectValid={projectValid}
-                            llmValid={llmValid}
-                            createProjectFromWizard={createProjectFromWizard}
-                            resetCreateWorkflow={resetCreateWorkflow}
-                            setError={setError}
-                        />
+                        <Paper
+                            variant="outlined"
+                            sx={{
+                                p: 0.6,
+                                borderRadius: 1.5,
+                                position: { md: "sticky" },
+                                top: 12,
+                            }}
+                        >
+                            <Typography variant="caption" color="text.secondary" sx={{ px: 0.9, py: 0.55, display: "block" }}>
+                                Admin Sections
+                            </Typography>
+                            <List dense sx={{ pt: 0.2 }}>
+                                <ListItemButton selected={adminSection === "overview"} onClick={() => setAdminSection("overview")} sx={{ borderRadius: 1.2, mb: 0.2 }}>
+                                    <ListItemIcon sx={{ minWidth: 30 }}>
+                                        <DashboardRounded fontSize="small" />
+                                    </ListItemIcon>
+                                    <ListItemText primary="Overview" />
+                                </ListItemButton>
+                                <ListItemButton selected={adminSection === "llm_profiles"} onClick={() => setAdminSection("llm_profiles")} sx={{ borderRadius: 1.2, mb: 0.2 }}>
+                                    <ListItemIcon sx={{ minWidth: 30 }}>
+                                        <SmartToyRounded fontSize="small" />
+                                    </ListItemIcon>
+                                    <ListItemText primary="LLM Profiles" />
+                                </ListItemButton>
+                                <ListItemButton selected={adminSection === "new_project"} onClick={() => setAdminSection("new_project")} sx={{ borderRadius: 1.2, mb: 0.2 }}>
+                                    <ListItemIcon sx={{ minWidth: 30 }}>
+                                        <AddBoxRounded fontSize="small" />
+                                    </ListItemIcon>
+                                    <ListItemText primary="New Project" />
+                                </ListItemButton>
+                                <ListItemButton selected={adminSection === "existing_project"} onClick={() => setAdminSection("existing_project")} sx={{ borderRadius: 1.2 }}>
+                                    <ListItemIcon sx={{ minWidth: 30 }}>
+                                        <SettingsSuggestRounded fontSize="small" />
+                                    </ListItemIcon>
+                                    <ListItemText primary="Existing Projects" />
+                                </ListItemButton>
+                            </List>
+                        </Paper>
 
-                        <ExistingProjectSetupCard
-                            selectedProjectId={selectedProjectId}
-                            setSelectedProjectId={setSelectedProjectId}
-                            projects={projects}
-                            selectedProject={selectedProject || undefined}
-                            busy={busy}
-                            setDeleteConfirmKey={setDeleteConfirmKey}
-                            setDeleteDialogOpen={setDeleteDialogOpen}
-                            onSaveProject={onSaveProject}
-                            editForm={editForm}
-                            setEditForm={setEditForm}
-                            llmProfiles={llmProfiles}
-                            providerOptions={providerOptions}
-                            applyProviderChange={applyProviderChange}
-                            editModelOptions={editModelOptions}
-                            setPathPickerTarget={setPathPickerTarget}
-                            gitForm={gitForm}
-                            setGitForm={setGitForm}
-                            bitbucketForm={bitbucketForm}
-                            setBitbucketForm={setBitbucketForm}
-                            azureDevOpsForm={azureDevOpsForm}
-                            setAzureDevOpsForm={setAzureDevOpsForm}
-                            localConnectorForm={localConnectorForm}
-                            setLocalConnectorForm={setLocalConnectorForm}
-                            confluenceForm={confluenceForm}
-                            setConfluenceForm={setConfluenceForm}
-                            jiraForm={jiraForm}
-                            setJiraForm={setJiraForm}
-                            saveConnector={saveConnector}
-                            refreshProjects={refreshProjects}
-                            runIngest={runIngest}
-                        />
+                        <Stack spacing={1.15}>
+                            {adminSection === "overview" && <AdminWorkflowHeader />}
+
+                            {adminSection === "llm_profiles" && (
+                                <LlmProfilesCard
+                                    llmProfileForm={llmProfileForm}
+                                    setLlmProfileForm={setLlmProfileForm}
+                                    providerOptions={providerOptions}
+                                    applyProviderChangeToLlmProfile={applyProviderChangeToLlmProfile}
+                                    loadingLlmOptions={loadingLlmOptions}
+                                    loadLlmOptions={loadLlmOptions}
+                                    llmOptionsError={llmOptionsError}
+                                    llmProfileModelOptions={llmProfileModelOptions}
+                                    busy={busy}
+                                    editingLlmProfileId={editingLlmProfileId}
+                                    llmProfiles={llmProfiles}
+                                    saveLlmProfile={saveLlmProfile}
+                                    onSelectProfile={(profile) => {
+                                        setEditingLlmProfileId(profile.id)
+                                        setLlmProfileForm({
+                                            name: profile.name || "",
+                                            description: profile.description || "",
+                                            provider: profile.provider || "ollama",
+                                            base_url: profile.base_url || "",
+                                            model: profile.model || "",
+                                            api_key: profile.api_key || "",
+                                            isEnabled: profile.isEnabled !== false,
+                                        })
+                                    }}
+                                    deleteLlmProfile={deleteLlmProfile}
+                                    onResetEditing={() => {
+                                        setEditingLlmProfileId(null)
+                                        setLlmProfileForm(emptyLlmProfileForm())
+                                    }}
+                                />
+                            )}
+
+                            {adminSection === "new_project" && (
+                                <NewProjectWizardCard
+                                    compactWizard={compactWizard}
+                                    wizardStep={wizardStep}
+                                    stepStatus={stepStatus}
+                                    canOpenStep={canOpenStep}
+                                    setWizardStep={setWizardStep}
+                                    createRepoMode={createRepoMode}
+                                    setCreateRepoMode={setCreateRepoMode}
+                                    setPathPickerTarget={setPathPickerTarget}
+                                    createForm={createForm}
+                                    setCreateForm={setCreateForm}
+                                    createGitForm={createGitForm}
+                                    setCreateGitForm={setCreateGitForm}
+                                    createBitbucketForm={createBitbucketForm}
+                                    setCreateBitbucketForm={setCreateBitbucketForm}
+                                    createAzureDevOpsForm={createAzureDevOpsForm}
+                                    setCreateAzureDevOpsForm={setCreateAzureDevOpsForm}
+                                    createLocalConnectorForm={createLocalConnectorForm}
+                                    setCreateLocalConnectorForm={setCreateLocalConnectorForm}
+                                    createConfluenceForm={createConfluenceForm}
+                                    setCreateConfluenceForm={setCreateConfluenceForm}
+                                    createJiraForm={createJiraForm}
+                                    setCreateJiraForm={setCreateJiraForm}
+                                    createOptionalConnectors={createOptionalConnectors}
+                                    createConnectorChoices={createConnectorChoices}
+                                    toggleCreateOptionalConnector={toggleCreateOptionalConnector}
+                                    llmProfiles={llmProfiles}
+                                    providerOptions={providerOptions}
+                                    applyProviderChange={applyProviderChange}
+                                    loadLlmOptions={loadLlmOptions}
+                                    loadingLlmOptions={loadingLlmOptions}
+                                    llmOptionsError={llmOptionsError}
+                                    defaultBaseUrlForProvider={defaultBaseUrlForProvider}
+                                    createModelOptions={createModelOptions}
+                                    primaryRepoConnector={primaryRepoConnector}
+                                    createRepoBranch={createRepoBranch}
+                                    selectedCreateConnectorTypes={selectedCreateConnectorTypes}
+                                    ingestOnCreate={ingestOnCreate}
+                                    setIngestOnCreate={setIngestOnCreate}
+                                    busy={busy}
+                                    repoValid={repoValid}
+                                    projectValid={projectValid}
+                                    llmValid={llmValid}
+                                    createProjectFromWizard={createProjectFromWizard}
+                                    resetCreateWorkflow={resetCreateWorkflow}
+                                    setError={setError}
+                                />
+                            )}
+
+                            {adminSection === "existing_project" && (
+                                <ExistingProjectSetupCard
+                                    selectedProjectId={selectedProjectId}
+                                    setSelectedProjectId={setSelectedProjectId}
+                                    projects={projects}
+                                    selectedProject={selectedProject || undefined}
+                                    busy={busy}
+                                    setDeleteConfirmKey={setDeleteConfirmKey}
+                                    setDeleteDialogOpen={setDeleteDialogOpen}
+                                    onSaveProject={onSaveProject}
+                                    editForm={editForm}
+                                    setEditForm={setEditForm}
+                                    llmProfiles={llmProfiles}
+                                    providerOptions={providerOptions}
+                                    applyProviderChange={applyProviderChange}
+                                    editModelOptions={editModelOptions}
+                                    setPathPickerTarget={setPathPickerTarget}
+                                    gitForm={gitForm}
+                                    setGitForm={setGitForm}
+                                    bitbucketForm={bitbucketForm}
+                                    setBitbucketForm={setBitbucketForm}
+                                    azureDevOpsForm={azureDevOpsForm}
+                                    setAzureDevOpsForm={setAzureDevOpsForm}
+                                    localConnectorForm={localConnectorForm}
+                                    setLocalConnectorForm={setLocalConnectorForm}
+                                    confluenceForm={confluenceForm}
+                                    setConfluenceForm={setConfluenceForm}
+                                    jiraForm={jiraForm}
+                                    setJiraForm={setJiraForm}
+                                    saveConnector={saveConnector}
+                                    refreshProjects={refreshProjects}
+                                    runIngest={runIngest}
+                                />
+                            )}
+                        </Stack>
                     </Box>
                 </Stack>
 

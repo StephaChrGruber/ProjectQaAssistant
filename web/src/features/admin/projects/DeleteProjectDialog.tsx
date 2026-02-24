@@ -6,12 +6,12 @@ import {
     Dialog,
     DialogActions,
     DialogContent,
-    DialogTitle,
     Stack,
     TextField,
     Typography,
 } from "@mui/material"
 import DeleteForeverRounded from "@mui/icons-material/DeleteForeverRounded"
+import AppDialogTitle from "@/components/AppDialogTitle"
 
 type DeleteProjectDialogProps = {
     open: boolean
@@ -28,7 +28,7 @@ export default function DeleteProjectDialog(props: DeleteProjectDialogProps) {
 
     return (
         <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
-            <DialogTitle>Delete Project</DialogTitle>
+            <AppDialogTitle title="Delete Project" onClose={onClose} closeDisabled={busy} />
             <DialogContent>
                 <Stack spacing={1.5} sx={{ mt: 0.5 }}>
                     <Alert severity="warning">
@@ -48,9 +48,6 @@ export default function DeleteProjectDialog(props: DeleteProjectDialogProps) {
                 </Stack>
             </DialogContent>
             <DialogActions>
-                <Button onClick={onClose} disabled={busy}>
-                    Cancel
-                </Button>
                 <Button
                     color="error"
                     variant="contained"

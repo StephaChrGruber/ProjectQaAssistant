@@ -9,7 +9,6 @@ import {
     Dialog,
     DialogActions,
     DialogContent,
-    DialogTitle,
     List,
     ListItemButton,
     ListItemText,
@@ -27,6 +26,7 @@ import {
     pickLocalRepoSessionFromBrowser,
     setLocalRepoSession,
 } from "@/lib/local-repo-bridge"
+import AppDialogTitle from "@/components/AppDialogTitle"
 
 type DirectoryItem = {
     name: string
@@ -124,7 +124,7 @@ export default function PathPickerDialog({
 
     return (
         <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
-            <DialogTitle>{title}</DialogTitle>
+            <AppDialogTitle title={title} onClose={onClose} />
             <DialogContent>
                 <Stack spacing={1.2} sx={{ mt: 0.5 }}>
                     {error && <Alert severity="error">{error}</Alert>}
@@ -225,7 +225,6 @@ export default function PathPickerDialog({
                 </Stack>
             </DialogContent>
             <DialogActions>
-                <Button onClick={onClose}>Cancel</Button>
                 <Button
                     variant="contained"
                     onClick={() => onPick(effectivePath)}
