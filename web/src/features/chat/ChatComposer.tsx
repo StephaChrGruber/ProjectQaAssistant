@@ -168,7 +168,7 @@ export function ChatComposer({
                                         fullWidth
                                         disabled={sending || !hasSelectedChat}
                                         onKeyDown={(e) => {
-                                            if (e.key === "Enter" && !e.shiftKey) {
+                                            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
                                                 e.preventDefault()
                                                 onSubmitPendingAnswer(pendingAnswerInput, pendingUserQuestion.id)
                                             }
