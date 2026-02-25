@@ -18,7 +18,9 @@ import {
   Typography,
 } from "@mui/material"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { usePathname } from "next/navigation"
 import AppDialogTitle from "@/components/AppDialogTitle"
+import { OPEN_GLOBAL_NOTIFICATIONS_EVENT } from "@/features/notifications/events"
 import { backendJson } from "@/lib/backend"
 import type { ListNotificationsResponse, NotificationDoc } from "@/features/notifications/types"
 
@@ -40,6 +42,7 @@ function formatNotificationTime(iso?: string | null): string {
 }
 
 export default function GlobalNotifications() {
+  const pathname = usePathname()
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -101,6 +104,11 @@ export default function GlobalNotifications() {
   }, [toastCurrent, toastOpen, toastQueue])
 
   const activeCount = useMemo(() => items.filter((x) => !x.dismissed).length, [items])
+  const floatingTriggerHidden = useMemo(() => {
+    const path = String(pathname || "")
+    if (!path.startsWith("/projects/")) return false
+    return path !== "/projects"
+  }, [pathname])
   const visibleItems = useMemo(
     () => (showDismissed ? items : items.filter((item) => !item.dismissed)),
     [items, showDismissed]
@@ -155,39 +163,52 @@ export default function GlobalNotifications() {
     }
   }, [])
 
+  useEffect(() => {
+    const onOpen = () => {
+      setOpen(true)
+      void loadNotifications()
+    }
+    window.addEventListener(OPEN_GLOBAL_NOTIFICATIONS_EVENT, onOpen as EventListener)
+    return () => {
+      window.removeEventListener(OPEN_GLOBAL_NOTIFICATIONS_EVENT, onOpen as EventListener)
+    }
+  }, [loadNotifications])
+
   return (
     <>
-      <Box
-        sx={{
-          position: "fixed",
-          top: { xs: 10, md: 12 },
-          right: { xs: 10, md: 14 },
-          zIndex: (theme) => theme.zIndex.modal + 10,
-        }}
-      >
-        <Paper
-          variant="outlined"
+      {!floatingTriggerHidden ? (
+        <Box
           sx={{
-            borderRadius: 999,
-            bgcolor: "rgba(9, 14, 28, 0.86)",
-            borderColor: "rgba(148,163,184,0.35)",
+            position: "fixed",
+            top: { xs: 10, md: 12 },
+            right: { xs: 10, md: 14 },
+            zIndex: (theme) => theme.zIndex.modal + 10,
           }}
         >
-          <IconButton
-            size="small"
-            color="inherit"
-            onClick={() => {
-              setOpen(true)
-              void loadNotifications()
+          <Paper
+            variant="outlined"
+            sx={{
+              borderRadius: 999,
+              bgcolor: "rgba(9, 14, 28, 0.86)",
+              borderColor: "rgba(148,163,184,0.35)",
             }}
-            aria-label="open notifications"
           >
-            <Badge color="error" badgeContent={activeCount} max={99}>
-              <NotificationsRounded fontSize="small" />
-            </Badge>
-          </IconButton>
-        </Paper>
-      </Box>
+            <IconButton
+              size="small"
+              color="inherit"
+              onClick={() => {
+                setOpen(true)
+                void loadNotifications()
+              }}
+              aria-label="open notifications"
+            >
+              <Badge color="error" badgeContent={activeCount} max={99}>
+                <NotificationsRounded fontSize="small" />
+              </Badge>
+            </IconButton>
+          </Paper>
+        </Box>
+      ) : null}
 
       <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="sm">
         <AppDialogTitle
@@ -308,4 +329,3 @@ export default function GlobalNotifications() {
     </>
   )
 }
-

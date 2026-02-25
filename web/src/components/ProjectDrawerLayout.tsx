@@ -5,12 +5,14 @@ import SettingsRounded from "@mui/icons-material/SettingsRounded"
 import AdminPanelSettingsRounded from "@mui/icons-material/AdminPanelSettingsRounded"
 import FolderRounded from "@mui/icons-material/FolderRounded"
 import AutoModeRounded from "@mui/icons-material/AutoModeRounded"
+import NotificationsRounded from "@mui/icons-material/NotificationsRounded"
 import AddRounded from "@mui/icons-material/AddRounded"
 import MenuRounded from "@mui/icons-material/MenuRounded"
 import ExpandMoreRounded from "@mui/icons-material/ExpandMoreRounded"
 import ChevronRightRounded from "@mui/icons-material/ChevronRightRounded"
 import {
     AppBar,
+    Badge,
     Box,
     Button,
     Chip,
@@ -30,6 +32,8 @@ import {
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useEffect, useMemo, useState } from "react"
+import { requestOpenGlobalNotifications } from "@/features/notifications/events"
+import { backendJson } from "@/lib/backend"
 
 export type DrawerUser = {
     displayName?: string
@@ -110,6 +114,7 @@ export function ProjectDrawerLayout(props: Props) {
     const theme = useTheme()
     const desktop = useMediaQuery(theme.breakpoints.up("md"))
     const [mobileOpen, setMobileOpen] = useState(false)
+    const [activeNotificationCount, setActiveNotificationCount] = useState(0)
 
     const userLabel = useMemo(() => user?.displayName || user?.email || "Developer", [user])
     const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({})
@@ -157,6 +162,35 @@ export function ProjectDrawerLayout(props: Props) {
         if (!title) return "New Conversation"
         return `${title} Conversation`
     }, [projectLabel])
+
+    useEffect(() => {
+        let cancelled = false
+
+        async function loadNotificationsCount() {
+            try {
+                const res = await backendJson<{ active_count?: number }>(
+                    "/api/notifications?include_dismissed=0&limit=1"
+                )
+                if (!cancelled) {
+                    setActiveNotificationCount(Math.max(0, Number(res?.active_count || 0)))
+                }
+            } catch {
+                if (!cancelled) {
+                    setActiveNotificationCount(0)
+                }
+            }
+        }
+
+        void loadNotificationsCount()
+        const timer = window.setInterval(() => {
+            void loadNotificationsCount()
+        }, 10_000)
+
+        return () => {
+            cancelled = true
+            window.clearInterval(timer)
+        }
+    }, [])
 
     const renderChatItem = (chat: DrawerChat, groupProjectId: string) => {
         const selected = chat.chat_id === selectedChatId
@@ -361,6 +395,22 @@ export function ProjectDrawerLayout(props: Props) {
                             <AutoModeRounded fontSize="small" />
                         </ListItemIcon>
                         <ListItemText primary="Automations" />
+                    </ListItemButton>
+
+                    <ListItemButton
+                        onClick={() => requestOpenGlobalNotifications()}
+                        sx={{ borderRadius: 1.7 }}
+                    >
+                        <ListItemIcon sx={{ minWidth: 34 }}>
+                            <Badge
+                                color="error"
+                                badgeContent={activeNotificationCount}
+                                max={99}
+                            >
+                                <NotificationsRounded fontSize="small" />
+                            </Badge>
+                        </ListItemIcon>
+                        <ListItemText primary="Notifications" />
                     </ListItemButton>
 
                     {user?.isGlobalAdmin && (

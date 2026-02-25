@@ -28,6 +28,7 @@ import EditRounded from "@mui/icons-material/EditRounded"
 import DeleteRounded from "@mui/icons-material/DeleteRounded"
 import TipsAndUpdatesRounded from "@mui/icons-material/TipsAndUpdatesRounded"
 import ScienceRounded from "@mui/icons-material/ScienceRounded"
+import PowerSettingsNewRounded from "@mui/icons-material/PowerSettingsNewRounded"
 import { backendJson } from "@/lib/backend"
 import { buildChatPath, saveLastChat } from "@/lib/last-chat"
 import {
@@ -449,6 +450,7 @@ export default function ProjectAutomationsPage() {
           body: JSON.stringify({ enabled: nextEnabled }),
         })
         setAutomations((prev) => prev.map((row) => (row.id === item.id ? { ...row, enabled: nextEnabled } : row)))
+        setNotice(`Automation ${nextEnabled ? "enabled" : "disabled"}: ${item.name}`)
       } catch (err) {
         setError(automationErrText(err))
       } finally {
@@ -675,6 +677,16 @@ export default function ProjectAutomationsPage() {
                             </Typography>
                           ) : null}
                           <Stack direction="row" spacing={0.6} useFlexGap flexWrap="wrap">
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              color={item.enabled ? "warning" : "success"}
+                              startIcon={<PowerSettingsNewRounded />}
+                              onClick={() => void toggleEnabled(item, !item.enabled)}
+                              disabled={saving}
+                            >
+                              {item.enabled ? "Disable" : "Enable"}
+                            </Button>
                             <Button
                               size="small"
                               variant="outlined"
