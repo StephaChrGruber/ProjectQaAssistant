@@ -38,6 +38,7 @@ import {
 } from "@/components/ProjectDrawerLayout"
 import AutomationEditorDialog from "@/features/automations/AutomationEditorDialog"
 import AutomationRunsTimeline from "@/features/automations/AutomationRunsTimeline"
+import { CONDITION_TUTORIAL_LINES, PARAMETER_TUTORIAL_LINES } from "@/features/automations/catalog"
 import {
   automationErrText,
   prettyJson,
@@ -451,6 +452,34 @@ export default function ProjectAutomationsPage() {
           {error && <Alert severity="error">{error}</Alert>}
           {notice && <Alert severity="success">{notice}</Alert>}
           {loading && <Alert severity="info">Loading automations...</Alert>}
+
+          <Paper variant="outlined" sx={{ p: { xs: 1, md: 1.2 }, borderRadius: 1.5 }}>
+            <Stack spacing={0.6}>
+              <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                Automation Tutorial
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                Conditions and action parameters are now guided in the editor.
+              </Typography>
+              <Divider />
+              <Typography variant="caption" sx={{ fontWeight: 700 }}>
+                Conditions
+              </Typography>
+              {CONDITION_TUTORIAL_LINES.map((line) => (
+                <Typography key={line} variant="caption" color="text.secondary">
+                  - {line}
+                </Typography>
+              ))}
+              <Typography variant="caption" sx={{ fontWeight: 700, pt: 0.5 }}>
+                Action parameters
+              </Typography>
+              {PARAMETER_TUTORIAL_LINES.map((line) => (
+                <Typography key={line} variant="caption" color="text.secondary">
+                  - {line}
+                </Typography>
+              ))}
+            </Stack>
+          </Paper>
 
           <Box
             sx={{

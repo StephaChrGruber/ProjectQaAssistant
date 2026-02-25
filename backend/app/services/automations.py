@@ -18,23 +18,44 @@ logger = logging.getLogger(__name__)
 AUTOMATION_EVENT_TYPES = {
     "ask_agent_completed",
     "connector_health_checked",
+    "chat_task_created",
+    "chat_task_updated",
+    "chat_message_appended",
+    "user_input_requested",
+    "ingestion_completed",
+    "documentation_generated",
+    "automation_run_succeeded",
+    "automation_run_failed",
     "manual",
 }
 
 AUTOMATION_ACTION_TYPES = {
     "create_chat_task",
+    "update_chat_task",
     "append_chat_message",
+    "set_chat_title",
     "request_user_input",
     "run_incremental_ingestion",
     "generate_documentation",
+    "dispatch_event",
+    "run_automation",
+    "set_automation_enabled",
+    "upsert_state_value",
 }
 
 AUTOMATION_TRIGGER_TYPES = {
     "event",
     "schedule",
+    "daily",
+    "weekly",
+    "once",
     "manual",
 }
 AUTOMATION_RUN_ACCESS_TYPES = {"member_runnable", "admin_only"}
+
+VALID_STATUS_SET = {"open", "in_progress", "blocked", "done", "cancelled"}
+VALID_WEEKDAYS = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+_EVENT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.:-]{1,63}$")
 
 AUTOMATION_TEMPLATES: list[dict[str, Any]] = [
     {
@@ -190,6 +211,126 @@ AUTOMATION_TEMPLATES: list[dict[str, Any]] = [
         "run_access": "admin_only",
         "tags": ["manual", "documentation"],
     },
+    {
+        "key": "daily-open-task-rollup",
+        "name": "Daily Open Task Rollup",
+        "description": "Creates a daily reminder task with a rollup of current chat context.",
+        "trigger": {"type": "daily", "hour": 9, "minute": 0},
+        "conditions": {"match_mode": "all", "branch_in": ["main"]},
+        "action": {
+            "type": "create_chat_task",
+            "params": {
+                "chat_id": "{{chat_id}}",
+                "title": "Daily project rollup",
+                "details": "Review unresolved points from latest answer:\n\n{{answer}}",
+                "status": "open",
+            },
+        },
+        "cooldown_sec": 0,
+        "run_access": "member_runnable",
+        "tags": ["daily", "tasks"],
+    },
+    {
+        "key": "weekly-release-note",
+        "name": "Weekly Release Note Prompt",
+        "description": "Posts a weekly reminder to collect release notes.",
+        "trigger": {"type": "weekly", "weekdays": ["fri"], "hour": 15, "minute": 0},
+        "conditions": {},
+        "action": {
+            "type": "append_chat_message",
+            "params": {
+                "chat_id": "{{chat_id}}",
+                "role": "assistant",
+                "content": "Weekly reminder: collect release notes and deployment risks.",
+            },
+        },
+        "cooldown_sec": 0,
+        "run_access": "member_runnable",
+        "tags": ["weekly", "communication"],
+    },
+    {
+        "key": "once-cutover-branch",
+        "name": "One-Time Branch Cutover Prompt",
+        "description": "Runs one time at the given timestamp and asks for branch cutover confirmation.",
+        "trigger": {"type": "once", "run_at": "2030-01-01T09:00:00Z"},
+        "conditions": {},
+        "action": {
+            "type": "request_user_input",
+            "params": {
+                "chat_id": "{{chat_id}}",
+                "question": "One-time cutover check: should we proceed with branch cutover?",
+                "answer_mode": "single_choice",
+                "options": ["Proceed", "Delay 1 day", "Cancel"],
+            },
+        },
+        "cooldown_sec": 0,
+        "run_access": "admin_only",
+        "tags": ["once", "release"],
+    },
+    {
+        "key": "auto-close-task-on-grounded-answer",
+        "name": "Close Matching Task On Grounded Answer",
+        "description": "Updates a matching open task when grounded answers are generated.",
+        "trigger": {"type": "event", "event_type": "ask_agent_completed"},
+        "conditions": {"match_mode": "all", "grounded_is": True, "tool_errors_max": 0},
+        "action": {
+            "type": "update_chat_task",
+            "params": {
+                "chat_id": "{{chat_id}}",
+                "task_title_contains": "Investigate",
+                "status": "done",
+                "append_details": True,
+                "details": "Marked done by automation after grounded answer.",
+            },
+        },
+        "cooldown_sec": 120,
+        "run_access": "member_runnable",
+        "tags": ["tasks", "quality"],
+    },
+    {
+        "key": "escalate-on-connector-failure",
+        "name": "Escalate Connector Failure Event",
+        "description": "Dispatches a custom escalation event when connector checks fail repeatedly.",
+        "trigger": {"type": "event", "event_type": "connector_health_checked"},
+        "conditions": {"failed_connectors_min": 1},
+        "action": {
+            "type": "dispatch_event",
+            "params": {
+                "event_type": "ops.alert",
+                "payload": {
+                    "project_id": "{{project_id}}",
+                    "chat_id": "{{chat_id}}",
+                    "failed_connectors": "{{failed_connectors}}",
+                    "total_connectors": "{{total_connectors}}",
+                },
+            },
+        },
+        "cooldown_sec": 300,
+        "run_access": "admin_only",
+        "tags": ["ops", "events"],
+    },
+    {
+        "key": "store-last-answer-snapshot",
+        "name": "Store Last Answer Snapshot",
+        "description": "Persists the latest answer in automation state for reuse.",
+        "trigger": {"type": "event", "event_type": "ask_agent_completed"},
+        "conditions": {},
+        "action": {
+            "type": "upsert_state_value",
+            "params": {
+                "key": "last_answer_snapshot",
+                "value": {
+                    "chat_id": "{{chat_id}}",
+                    "branch": "{{branch}}",
+                    "question": "{{question}}",
+                    "answer": "{{answer}}",
+                },
+            },
+        },
+        "cooldown_sec": 0,
+        "run_access": "member_runnable",
+        "tags": ["state", "memory"],
+    },
 ]
 
 _WORKER_TASK: asyncio.Task[None] | None = None
@@ -204,6 +345,60 @@ def _iso(value: datetime | None) -> str | None:
     if not isinstance(value, datetime):
         return None
     return value.isoformat() + "Z"
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is not None:
+        try:
+            return datetime.utcfromtimestamp(parsed.timestamp())
+        except Exception:
+            return parsed.replace(tzinfo=None)
+    return parsed
+
+
+def _normalize_str_list(raw: Any, *, max_items: int = 24) -> list[str]:
+    if isinstance(raw, str):
+        vals = [s.strip() for s in raw.split(",")]
+    elif isinstance(raw, list):
+        vals = [str(x).strip() for x in raw]
+    else:
+        vals = []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in vals:
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _normalize_event_type(raw: str | None) -> str:
+    event_type = str(raw or "").strip().lower()
+    if not event_type:
+        raise ValueError("trigger.event_type is required")
+    if not _EVENT_NAME_RE.match(event_type):
+        raise ValueError(f"Invalid event name: {event_type}")
+    return event_type
+
+
+def _normalize_weekdays(raw: Any) -> list[str]:
+    tokens = _normalize_str_list(raw, max_items=7)
+    out: list[str] = []
+    for token in tokens:
+        lower = token.lower()
+        if lower in VALID_WEEKDAYS and lower not in out:
+            out.append(lower)
+    return out or ["mon", "tue", "wed", "thu", "fri"]
 
 
 def _serialize_automation(doc: dict[str, Any]) -> dict[str, Any]:
@@ -262,10 +457,38 @@ def _normalize_trigger(raw: dict[str, Any] | None) -> dict[str, Any]:
             "interval_minutes": interval,
         }
 
+    if trigger_type == "daily":
+        hour = max(0, min(int(trigger.get("hour") or 9), 23))
+        minute = max(0, min(int(trigger.get("minute") or 0), 59))
+        return {
+            "type": "daily",
+            "hour": hour,
+            "minute": minute,
+        }
+
+    if trigger_type == "weekly":
+        hour = max(0, min(int(trigger.get("hour") or 9), 23))
+        minute = max(0, min(int(trigger.get("minute") or 0), 59))
+        weekdays = _normalize_weekdays(trigger.get("weekdays"))
+        return {
+            "type": "weekly",
+            "hour": hour,
+            "minute": minute,
+            "weekdays": weekdays,
+        }
+
+    if trigger_type == "once":
+        run_at_raw = str(trigger.get("run_at") or "").strip()
+        run_at = _parse_iso_datetime(run_at_raw)
+        if not run_at:
+            raise ValueError("once trigger requires trigger.run_at as ISO datetime")
+        return {
+            "type": "once",
+            "run_at": _iso(run_at),
+        }
+
     if trigger_type == "event":
-        event_type = str(trigger.get("event_type") or "").strip()
-        if event_type not in AUTOMATION_EVENT_TYPES:
-            raise ValueError(f"Invalid trigger.event_type: {event_type}")
+        event_type = _normalize_event_type(trigger.get("event_type"))
         return {
             "type": "event",
             "event_type": event_type,
@@ -287,19 +510,66 @@ def _normalize_conditions(raw: dict[str, Any] | None) -> dict[str, Any]:
     conditions = raw if isinstance(raw, dict) else {}
     out: dict[str, Any] = {}
 
-    keyword_contains = conditions.get("keyword_contains")
-    if isinstance(keyword_contains, str) and keyword_contains.strip():
-        out["keyword_contains"] = [keyword_contains.strip()]
-    elif isinstance(keyword_contains, list):
-        vals = [str(x).strip() for x in keyword_contains if str(x).strip()]
-        if vals:
-            out["keyword_contains"] = vals[:24]
+    match_mode = str(conditions.get("match_mode") or "all").strip().lower()
+    out["match_mode"] = "any" if match_mode == "any" else "all"
+
+    keyword_contains = _normalize_str_list(conditions.get("keyword_contains"), max_items=24)
+    if keyword_contains:
+        out["keyword_contains"] = keyword_contains
+
+    keyword_excludes = _normalize_str_list(conditions.get("keyword_excludes"), max_items=24)
+    if keyword_excludes:
+        out["keyword_excludes"] = keyword_excludes
+
+    answer_contains = _normalize_str_list(conditions.get("answer_contains"), max_items=24)
+    if answer_contains:
+        out["answer_contains"] = answer_contains
+
+    branch_in = _normalize_str_list(conditions.get("branch_in"), max_items=24)
+    if branch_in:
+        out["branch_in"] = branch_in
+
+    user_in = _normalize_str_list(conditions.get("user_in"), max_items=50)
+    if user_in:
+        out["user_in"] = user_in
 
     if conditions.get("tool_errors_min") is not None:
         out["tool_errors_min"] = max(0, min(int(conditions.get("tool_errors_min") or 0), 1000))
+    if conditions.get("tool_errors_max") is not None:
+        out["tool_errors_max"] = max(0, min(int(conditions.get("tool_errors_max") or 0), 1000))
+    if conditions.get("tool_calls_min") is not None:
+        out["tool_calls_min"] = max(0, min(int(conditions.get("tool_calls_min") or 0), 10_000))
+    if conditions.get("tool_calls_max") is not None:
+        out["tool_calls_max"] = max(0, min(int(conditions.get("tool_calls_max") or 0), 10_000))
+    if conditions.get("sources_count_min") is not None:
+        out["sources_count_min"] = max(0, min(int(conditions.get("sources_count_min") or 0), 10_000))
+    if conditions.get("sources_count_max") is not None:
+        out["sources_count_max"] = max(0, min(int(conditions.get("sources_count_max") or 0), 10_000))
 
     if conditions.get("failed_connectors_min") is not None:
         out["failed_connectors_min"] = max(0, min(int(conditions.get("failed_connectors_min") or 0), 1000))
+    if conditions.get("failed_connectors_max") is not None:
+        out["failed_connectors_max"] = max(0, min(int(conditions.get("failed_connectors_max") or 0), 1000))
+
+    if conditions.get("pending_user_input_is") is not None:
+        out["pending_user_input_is"] = bool(conditions.get("pending_user_input_is"))
+    if conditions.get("grounded_is") is not None:
+        out["grounded_is"] = bool(conditions.get("grounded_is"))
+
+    llm_provider_in = _normalize_str_list(conditions.get("llm_provider_in"), max_items=16)
+    if llm_provider_in:
+        out["llm_provider_in"] = [x.lower() for x in llm_provider_in]
+    llm_model_in = _normalize_str_list(conditions.get("llm_model_in"), max_items=24)
+    if llm_model_in:
+        out["llm_model_in"] = llm_model_in
+
+    question_regex = str(conditions.get("question_regex") or "").strip()
+    if question_regex:
+        try:
+            re.compile(question_regex)
+        except re.error as err:
+            raise ValueError(f"Invalid conditions.question_regex: {err}") from err
+        out["question_regex"] = question_regex
 
     return out
 
@@ -328,10 +598,45 @@ def _coerce_tags(raw: Any) -> list[str]:
 
 
 def _next_scheduled_run(trigger: dict[str, Any], *, base: datetime | None = None) -> datetime | None:
-    if str(trigger.get("type") or "") != "schedule":
+    trigger_type = str(trigger.get("type") or "")
+    now = base or _now()
+
+    if trigger_type == "schedule":
+        interval = max(1, min(int(trigger.get("interval_minutes") or 60), 24 * 30))
+        return now + timedelta(minutes=interval)
+
+    if trigger_type == "daily":
+        hour = max(0, min(int(trigger.get("hour") or 9), 23))
+        minute = max(0, min(int(trigger.get("minute") or 0), 59))
+        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= now:
+            candidate = candidate + timedelta(days=1)
+        return candidate
+
+    if trigger_type == "weekly":
+        hour = max(0, min(int(trigger.get("hour") or 9), 23))
+        minute = max(0, min(int(trigger.get("minute") or 0), 59))
+        weekdays = _normalize_weekdays(trigger.get("weekdays"))
+        day_to_idx = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+        target_idxs = {day_to_idx[item] for item in weekdays if item in day_to_idx}
+        if not target_idxs:
+            target_idxs = {0, 1, 2, 3, 4}
+        for delta in range(0, 8):
+            candidate_day = now + timedelta(days=delta)
+            if candidate_day.weekday() not in target_idxs:
+                continue
+            candidate = candidate_day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if candidate > now:
+                return candidate
         return None
-    interval = max(1, min(int(trigger.get("interval_minutes") or 60), 24 * 30))
-    return (base or _now()) + timedelta(minutes=interval)
+
+    if trigger_type == "once":
+        run_at = _parse_iso_datetime(str(trigger.get("run_at") or ""))
+        if not run_at:
+            return None
+        return run_at if run_at > now else None
+
+    return None
 
 
 async def _resolve_project_role(project_id: str, user_id: str) -> str:
@@ -419,35 +724,105 @@ def _conditions_match(conditions: dict[str, Any], payload: dict[str, Any]) -> bo
         return True
 
     text_blob = _pick_payload_text(payload)
+    checks: list[bool] = []
+
     keywords = conditions.get("keyword_contains")
     if isinstance(keywords, list) and keywords:
-        if not any(str(k).strip().lower() in text_blob for k in keywords):
-            return False
+        checks.append(any(str(k).strip().lower() in text_blob for k in keywords))
 
+    excluded = conditions.get("keyword_excludes")
+    if isinstance(excluded, list) and excluded:
+        checks.append(not any(str(k).strip().lower() in text_blob for k in excluded))
+
+    answer_contains = conditions.get("answer_contains")
+    if isinstance(answer_contains, list) and answer_contains:
+        answer_text = str(payload.get("answer") or "").lower()
+        checks.append(any(str(k).strip().lower() in answer_text for k in answer_contains))
+
+    question_regex = str(conditions.get("question_regex") or "").strip()
+    if question_regex:
+        question = str(payload.get("question") or "")
+        try:
+            checks.append(bool(re.search(question_regex, question, flags=re.IGNORECASE)))
+        except re.error:
+            checks.append(False)
+
+    branch_in = conditions.get("branch_in")
+    if isinstance(branch_in, list) and branch_in:
+        branch = str(payload.get("branch") or "").strip()
+        checks.append(branch in {str(x).strip() for x in branch_in if str(x).strip()})
+
+    user_in = conditions.get("user_in")
+    if isinstance(user_in, list) and user_in:
+        user = str(payload.get("user_id") or "").strip()
+        checks.append(user in {str(x).strip() for x in user_in if str(x).strip()})
+
+    tool_errors = int(payload.get("tool_errors") or 0)
     tool_errors_min = conditions.get("tool_errors_min")
     if tool_errors_min is not None:
-        errors = int(payload.get("tool_errors") or 0)
-        if errors < int(tool_errors_min):
-            return False
+        checks.append(tool_errors >= int(tool_errors_min))
+    tool_errors_max = conditions.get("tool_errors_max")
+    if tool_errors_max is not None:
+        checks.append(tool_errors <= int(tool_errors_max))
 
+    tool_calls = int(payload.get("tool_calls") or 0)
+    tool_calls_min = conditions.get("tool_calls_min")
+    if tool_calls_min is not None:
+        checks.append(tool_calls >= int(tool_calls_min))
+    tool_calls_max = conditions.get("tool_calls_max")
+    if tool_calls_max is not None:
+        checks.append(tool_calls <= int(tool_calls_max))
+
+    sources_count = int(payload.get("sources_count") or 0)
+    sources_count_min = conditions.get("sources_count_min")
+    if sources_count_min is not None:
+        checks.append(sources_count >= int(sources_count_min))
+    sources_count_max = conditions.get("sources_count_max")
+    if sources_count_max is not None:
+        checks.append(sources_count <= int(sources_count_max))
+
+    failed_connectors = int(payload.get("failed_connectors") or 0)
     failed_connectors_min = conditions.get("failed_connectors_min")
     if failed_connectors_min is not None:
-        failed = int(payload.get("failed_connectors") or 0)
-        if failed < int(failed_connectors_min):
-            return False
+        checks.append(failed_connectors >= int(failed_connectors_min))
+    failed_connectors_max = conditions.get("failed_connectors_max")
+    if failed_connectors_max is not None:
+        checks.append(failed_connectors <= int(failed_connectors_max))
 
-    return True
+    if conditions.get("pending_user_input_is") is not None:
+        checks.append(bool(payload.get("pending_user_input")) is bool(conditions.get("pending_user_input_is")))
+    if conditions.get("grounded_is") is not None:
+        checks.append(bool(payload.get("grounded")) is bool(conditions.get("grounded_is")))
+
+    llm_provider_in = conditions.get("llm_provider_in")
+    if isinstance(llm_provider_in, list) and llm_provider_in:
+        provider = str(payload.get("llm_provider") or "").strip().lower()
+        checks.append(provider in {str(x).strip().lower() for x in llm_provider_in if str(x).strip()})
+
+    llm_model_in = conditions.get("llm_model_in")
+    if isinstance(llm_model_in, list) and llm_model_in:
+        model = str(payload.get("llm_model") or "").strip()
+        checks.append(model in {str(x).strip() for x in llm_model_in if str(x).strip()})
+
+    if not checks:
+        return True
+
+    match_mode = str(conditions.get("match_mode") or "all").strip().lower()
+    if match_mode == "any":
+        return any(checks)
+    return all(checks)
 
 
 def _trigger_matches(trigger: dict[str, Any], *, triggered_by: str, event_type: str) -> bool:
     trigger_type = str(trigger.get("type") or "")
     if trigger_type == "manual":
         return triggered_by == "manual"
-    if trigger_type == "schedule":
+    if trigger_type in {"schedule", "daily", "weekly", "once"}:
         return triggered_by == "schedule"
     if trigger_type == "event":
-        expected = str(trigger.get("event_type") or "")
-        return triggered_by == "event" and event_type == expected
+        expected = _normalize_event_type(trigger.get("event_type"))
+        actual = _normalize_event_type(event_type)
+        return triggered_by == "event" and actual == expected
     return False
 
 
@@ -593,7 +968,7 @@ async def update_automation(
     next_doc["updated_by"] = str(user_id or "").strip()
     if not bool(next_doc.get("enabled")):
         next_doc["next_run_at"] = None
-    elif str((next_doc.get("trigger") or {}).get("type") or "") == "schedule":
+    elif str((next_doc.get("trigger") or {}).get("type") or "") in {"schedule", "daily", "weekly", "once"}:
         next_doc["next_run_at"] = _next_scheduled_run(next_doc.get("trigger") or {}, base=now)
 
     await get_db()["automations"].update_one({"_id": existing["_id"]}, {"$set": next_doc})
@@ -670,10 +1045,27 @@ async def _action_create_chat_task(
         "created_at": now_iso,
         "updated_at": now_iso,
     }
-    if doc["status"] not in {"open", "in_progress", "blocked", "done", "cancelled"}:
+    if doc["status"] not in VALID_STATUS_SET:
         doc["status"] = "open"
     res = await get_db()["chat_tasks"].insert_one(doc)
-    return {"task_id": str(res.inserted_id), "title": title, "chat_id": chat_id}
+    task_id = str(res.inserted_id)
+    try:
+        await dispatch_automation_event(
+            project_id,
+            event_type="chat_task_created",
+            payload={
+                "project_id": project_id,
+                "chat_id": chat_id,
+                "task_id": task_id,
+                "task_title": title,
+                "task_status": doc.get("status"),
+                "user_id": str(payload.get("user_id") or ""),
+            },
+            skip_automation_id=str(payload.get("_automation_origin") or ""),
+        )
+    except Exception:
+        logger.exception("automations.action.create_chat_task.dispatch_failed project=%s task_id=%s", project_id, task_id)
+    return {"task_id": task_id, "title": title, "chat_id": chat_id}
 
 
 async def _action_append_chat_message(
@@ -715,6 +1107,26 @@ async def _action_append_chat_message(
     )
     if res.matched_count == 0:
         raise RuntimeError("Chat not found for append_chat_message")
+    try:
+        await dispatch_automation_event(
+            project_id,
+            event_type="chat_message_appended",
+            payload={
+                "project_id": project_id,
+                "chat_id": chat_id,
+                "branch": str(payload.get("branch") or ""),
+                "user_id": str(payload.get("user_id") or ""),
+                "message_role": role,
+                "message_content": content,
+            },
+            skip_automation_id=str(payload.get("_automation_origin") or ""),
+        )
+    except Exception:
+        logger.exception(
+            "automations.action.append_chat_message.dispatch_failed project=%s chat_id=%s",
+            project_id,
+            chat_id,
+        )
     return {"chat_id": chat_id, "role": role, "content_preview": content[:160]}
 
 
@@ -754,6 +1166,27 @@ async def _action_request_user_input(
     )
     if res.matched_count == 0:
         raise RuntimeError("Chat not found for request_user_input action")
+    try:
+        await dispatch_automation_event(
+            project_id,
+            event_type="user_input_requested",
+            payload={
+                "project_id": project_id,
+                "chat_id": chat_id,
+                "pending_question_id": pending_id,
+                "question": question,
+                "answer_mode": answer_mode,
+                "options_count": len(options),
+                "user_id": str(payload.get("user_id") or ""),
+            },
+            skip_automation_id=str(payload.get("_automation_origin") or ""),
+        )
+    except Exception:
+        logger.exception(
+            "automations.action.request_user_input.dispatch_failed project=%s chat_id=%s",
+            project_id,
+            chat_id,
+        )
     return {"chat_id": chat_id, "pending_question_id": pending_id}
 
 
@@ -782,6 +1215,21 @@ async def _action_run_incremental_ingestion(
             "created_at": started_at,
         }
     )
+    try:
+        await dispatch_automation_event(
+            project_id,
+            event_type="ingestion_completed",
+            payload={
+                "project_id": project_id,
+                "mode": "incremental",
+                "requested_connectors": connectors_filter,
+                "stats": stats,
+                "user_id": str(payload.get("user_id") or ""),
+            },
+            skip_automation_id=str(payload.get("_automation_origin") or ""),
+        )
+    except Exception:
+        logger.exception("automations.action.run_incremental_ingestion.dispatch_failed project=%s", project_id)
     return {"mode": "incremental", "requested_connectors": connectors_filter, "stats": stats}
 
 
@@ -796,17 +1244,288 @@ async def _action_generate_documentation(
     branch = str(params.get("branch") or payload.get("branch") or "").strip() or None
     user_id = str(params.get("user_id") or payload.get("user_id") or "automation@system").strip()
     result = await generate_project_documentation(project_id=project_id, branch=branch, user_id=user_id)
+    files_written = result.get("files_written") if isinstance(result.get("files_written"), list) else []
+    try:
+        await dispatch_automation_event(
+            project_id,
+            event_type="documentation_generated",
+            payload={
+                "project_id": project_id,
+                "branch": str(result.get("branch") or ""),
+                "mode": str(result.get("mode") or ""),
+                "files_written_count": len(files_written),
+                "summary": str(result.get("summary") or ""),
+                "user_id": user_id,
+            },
+            skip_automation_id=str(payload.get("_automation_origin") or ""),
+        )
+    except Exception:
+        logger.exception("automations.action.generate_documentation.dispatch_failed project=%s", project_id)
     return {
         "branch": str(result.get("branch") or ""),
         "mode": str(result.get("mode") or ""),
-        "files_written": result.get("files_written") if isinstance(result.get("files_written"), list) else [],
+        "files_written": files_written,
         "summary": str(result.get("summary") or ""),
     }
+
+
+async def _action_update_chat_task(
+    *,
+    project_id: str,
+    action: dict[str, Any],
+    payload: dict[str, Any],
+    started_at: datetime,
+) -> dict[str, Any]:
+    params = _render_template((action.get("params") if isinstance(action.get("params"), dict) else {}), payload)
+    db = get_db()
+    task_id = str(params.get("task_id") or "").strip()
+    chat_id = str(params.get("chat_id") or payload.get("chat_id") or "").strip() or None
+    row: dict[str, Any] | None = None
+    if task_id:
+        q: dict[str, Any] = {"project_id": project_id}
+        if ObjectId.is_valid(task_id):
+            q["_id"] = ObjectId(task_id)
+        else:
+            q["id"] = task_id
+        found = await db["chat_tasks"].find_one(q)
+        row = found if isinstance(found, dict) else None
+    else:
+        title_contains = str(params.get("task_title_contains") or "").strip()
+        if not title_contains:
+            raise RuntimeError("update_chat_task action requires params.task_id or params.task_title_contains")
+        q = {"project_id": project_id, "title": {"$regex": re.escape(title_contains), "$options": "i"}}
+        if chat_id:
+            q["$or"] = [{"chat_id": chat_id}, {"chat_id": None}, {"chat_id": ""}, {"chat_id": {"$exists": False}}]
+        found = await db["chat_tasks"].find_one(q, sort=[("updated_at", -1)])
+        row = found if isinstance(found, dict) else None
+    if not isinstance(row, dict):
+        raise RuntimeError("Task not found for update_chat_task")
+
+    updates: dict[str, Any] = {}
+    if params.get("title") is not None:
+        title = str(params.get("title") or "").strip()
+        if not title:
+            raise RuntimeError("update_chat_task params.title must not be empty")
+        updates["title"] = title
+    if params.get("details") is not None:
+        details = str(params.get("details") or "").strip()
+        if bool(params.get("append_details")) and details:
+            current = str(row.get("details") or "").strip()
+            if current:
+                details = f"{current}\n\n{details}"
+        updates["details"] = details
+    if params.get("status") is not None:
+        status = str(params.get("status") or "").strip().lower()
+        if status not in VALID_STATUS_SET:
+            raise RuntimeError("update_chat_task params.status must be a valid task status")
+        updates["status"] = status
+    if params.get("assignee") is not None:
+        updates["assignee"] = str(params.get("assignee") or "").strip() or None
+    if params.get("due_date") is not None:
+        updates["due_date"] = str(params.get("due_date") or "").strip() or None
+    if not updates:
+        raise RuntimeError("update_chat_task requires at least one mutable field")
+
+    updates["updated_at"] = _iso(started_at)
+    await db["chat_tasks"].update_one({"_id": row["_id"]}, {"$set": updates})
+    task_id_out = str(row.get("_id") or "")
+    try:
+        await dispatch_automation_event(
+            project_id,
+            event_type="chat_task_updated",
+            payload={
+                "project_id": project_id,
+                "chat_id": str(row.get("chat_id") or chat_id or ""),
+                "task_id": task_id_out,
+                "task_status": str(updates.get("status") or row.get("status") or ""),
+                "task_title": str(updates.get("title") or row.get("title") or ""),
+                "user_id": str(payload.get("user_id") or ""),
+            },
+            skip_automation_id=str(payload.get("_automation_origin") or ""),
+        )
+    except Exception:
+        logger.exception("automations.action.update_chat_task.dispatch_failed project=%s task_id=%s", project_id, task_id_out)
+    return {"task_id": task_id_out, "updated_fields": sorted([k for k in updates if k != "updated_at"])}
+
+
+async def _action_set_chat_title(
+    *,
+    project_id: str,
+    action: dict[str, Any],
+    payload: dict[str, Any],
+    started_at: datetime,
+) -> dict[str, Any]:
+    params = _render_template((action.get("params") if isinstance(action.get("params"), dict) else {}), payload)
+    title = str(params.get("title") or "").strip()
+    if not title:
+        raise RuntimeError("set_chat_title action requires params.title")
+    chat_id = str(params.get("chat_id") or payload.get("chat_id") or "").strip()
+    if not chat_id:
+        fallback_chat_id = await _resolve_default_chat_id(project_id)
+        chat_id = fallback_chat_id or ""
+    if not chat_id:
+        raise RuntimeError("set_chat_title action requires chat_id (or an existing chat)")
+    res = await get_db()["chats"].update_one(
+        {"chat_id": chat_id, "project_id": project_id},
+        {"$set": {"title": title, "updated_at": started_at}},
+    )
+    if res.matched_count == 0:
+        raise RuntimeError("Chat not found for set_chat_title")
+    return {"chat_id": chat_id, "title": title}
+
+
+async def _action_dispatch_event(
+    *,
+    project_id: str,
+    action: dict[str, Any],
+    payload: dict[str, Any],
+    started_at: datetime,
+) -> dict[str, Any]:
+    _ = started_at
+    params = _render_template((action.get("params") if isinstance(action.get("params"), dict) else {}), payload)
+    event_type = _normalize_event_type(params.get("event_type"))
+    event_payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+    outgoing = {
+        "project_id": project_id,
+        "chat_id": str(payload.get("chat_id") or ""),
+        "branch": str(payload.get("branch") or ""),
+        "user_id": str(payload.get("user_id") or ""),
+        "source": "automation_dispatch_event_action",
+        **event_payload,
+    }
+    runs = await dispatch_automation_event(
+        project_id,
+        event_type=event_type,
+        payload=outgoing,
+        skip_automation_id=str(payload.get("_automation_origin") or ""),
+    )
+    return {"event_type": event_type, "runs": len(runs)}
+
+
+async def _action_run_automation(
+    *,
+    project_id: str,
+    action: dict[str, Any],
+    payload: dict[str, Any],
+    started_at: datetime,
+    current_automation_id: str,
+) -> dict[str, Any]:
+    _ = started_at
+    params = _render_template((action.get("params") if isinstance(action.get("params"), dict) else {}), payload)
+    target_id = str(params.get("automation_id") or "").strip()
+    target_name = str(params.get("automation_name") or "").strip()
+    if not target_id and not target_name:
+        raise RuntimeError("run_automation action requires params.automation_id or params.automation_name")
+
+    db = get_db()
+    target_doc: dict[str, Any] | None = None
+    if target_id and ObjectId.is_valid(target_id):
+        row = await db["automations"].find_one({"_id": ObjectId(target_id), "project_id": project_id})
+        target_doc = row if isinstance(row, dict) else None
+    elif target_id:
+        row = await db["automations"].find_one({"project_id": project_id, "name": target_id})
+        target_doc = row if isinstance(row, dict) else None
+    if not target_doc and target_name:
+        row = await db["automations"].find_one({"project_id": project_id, "name": target_name})
+        target_doc = row if isinstance(row, dict) else None
+    if not isinstance(target_doc, dict):
+        raise RuntimeError("run_automation target not found")
+
+    target_automation_id = str(target_doc.get("_id") or "")
+    if target_automation_id == current_automation_id:
+        raise RuntimeError("run_automation action cannot target itself")
+
+    depth = max(0, int(payload.get("_automation_depth") or 0))
+    if depth >= 6:
+        raise RuntimeError("run_automation nested depth limit reached")
+    action_payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+    next_payload = {
+        **payload,
+        **action_payload,
+        "_automation_depth": depth + 1,
+        "_automation_origin": str(payload.get("_automation_origin") or current_automation_id),
+    }
+    out = await run_automation(
+        project_id,
+        target_automation_id,
+        triggered_by="manual",
+        event_type="manual",
+        event_payload=next_payload,
+        user_id=str(payload.get("user_id") or ""),
+        dry_run=bool(params.get("dry_run")),
+    )
+    return {"automation_id": target_automation_id, "run_id": str(out.get("id") or ""), "status": str(out.get("status") or "")}
+
+
+async def _action_set_automation_enabled(
+    *,
+    project_id: str,
+    action: dict[str, Any],
+    payload: dict[str, Any],
+    started_at: datetime,
+    current_automation_id: str,
+) -> dict[str, Any]:
+    params = _render_template((action.get("params") if isinstance(action.get("params"), dict) else {}), payload)
+    target_id = str(params.get("automation_id") or "").strip()
+    target_name = str(params.get("automation_name") or "").strip()
+    enabled = bool(params.get("enabled"))
+    if not target_id and not target_name:
+        raise RuntimeError("set_automation_enabled action requires params.automation_id or params.automation_name")
+    q: dict[str, Any] = {"project_id": project_id}
+    if target_id and ObjectId.is_valid(target_id):
+        q["_id"] = ObjectId(target_id)
+    elif target_id:
+        q["name"] = target_id
+    elif target_name:
+        q["name"] = target_name
+
+    row = await get_db()["automations"].find_one(q)
+    if not isinstance(row, dict):
+        raise RuntimeError("set_automation_enabled target not found")
+    row_id = str(row.get("_id") or "")
+    if row_id == current_automation_id:
+        raise RuntimeError("set_automation_enabled cannot target itself")
+
+    trigger = row.get("trigger") if isinstance(row.get("trigger"), dict) else {}
+    next_run_at = _next_scheduled_run(trigger, base=started_at) if enabled else None
+    await get_db()["automations"].update_one(
+        {"_id": row["_id"]},
+        {"$set": {"enabled": enabled, "next_run_at": next_run_at, "updated_at": started_at}},
+    )
+    return {"automation_id": row_id, "enabled": enabled}
+
+
+async def _action_upsert_state_value(
+    *,
+    project_id: str,
+    action: dict[str, Any],
+    payload: dict[str, Any],
+    started_at: datetime,
+) -> dict[str, Any]:
+    params = _render_template((action.get("params") if isinstance(action.get("params"), dict) else {}), payload)
+    key = str(params.get("key") or "").strip()
+    if not key:
+        raise RuntimeError("upsert_state_value action requires params.key")
+    value = params.get("value")
+    await get_db()["automation_state"].update_one(
+        {"project_id": project_id, "key": key},
+        {
+            "$set": {
+                "value": value,
+                "updated_at": started_at,
+                "updated_by": str(payload.get("user_id") or ""),
+            },
+            "$setOnInsert": {"created_at": started_at},
+        },
+        upsert=True,
+    )
+    return {"key": key, "value": value}
 
 
 async def _execute_action(
     *,
     project_id: str,
+    automation_id: str,
     action: dict[str, Any],
     payload: dict[str, Any],
     started_at: datetime,
@@ -814,14 +1533,38 @@ async def _execute_action(
     action_type = str(action.get("type") or "")
     if action_type == "create_chat_task":
         return await _action_create_chat_task(project_id=project_id, action=action, payload=payload, started_at=started_at)
+    if action_type == "update_chat_task":
+        return await _action_update_chat_task(project_id=project_id, action=action, payload=payload, started_at=started_at)
     if action_type == "append_chat_message":
         return await _action_append_chat_message(project_id=project_id, action=action, payload=payload, started_at=started_at)
+    if action_type == "set_chat_title":
+        return await _action_set_chat_title(project_id=project_id, action=action, payload=payload, started_at=started_at)
     if action_type == "request_user_input":
         return await _action_request_user_input(project_id=project_id, action=action, payload=payload, started_at=started_at)
     if action_type == "run_incremental_ingestion":
         return await _action_run_incremental_ingestion(project_id=project_id, action=action, payload=payload, started_at=started_at)
     if action_type == "generate_documentation":
         return await _action_generate_documentation(project_id=project_id, action=action, payload=payload, started_at=started_at)
+    if action_type == "dispatch_event":
+        return await _action_dispatch_event(project_id=project_id, action=action, payload=payload, started_at=started_at)
+    if action_type == "run_automation":
+        return await _action_run_automation(
+            project_id=project_id,
+            action=action,
+            payload=payload,
+            started_at=started_at,
+            current_automation_id=automation_id,
+        )
+    if action_type == "set_automation_enabled":
+        return await _action_set_automation_enabled(
+            project_id=project_id,
+            action=action,
+            payload=payload,
+            started_at=started_at,
+            current_automation_id=automation_id,
+        )
+    if action_type == "upsert_state_value":
+        return await _action_upsert_state_value(project_id=project_id, action=action, payload=payload, started_at=started_at)
     raise RuntimeError(f"Unsupported action type: {action_type}")
 
 
@@ -879,6 +1622,8 @@ async def run_automation(
     payload = dict(event_payload or {})
     payload.setdefault("project_id", project_id)
     payload.setdefault("user_id", str(user_id or "").strip())
+    payload.setdefault("_automation_depth", 0)
+    payload.setdefault("_automation_origin", str(doc.get("_id") or ""))
 
     trigger = doc.get("trigger") if isinstance(doc.get("trigger"), dict) else {}
     force_manual = triggered_by == "manual"
@@ -927,6 +1672,7 @@ async def run_automation(
         try:
             result = await _execute_action(
                 project_id=project_id,
+                automation_id=str(doc.get("_id") or ""),
                 action=action_doc,
                 payload=payload,
                 started_at=started_at,
@@ -957,7 +1703,11 @@ async def run_automation(
             "updated_at": finished_at,
             "run_count": int(doc.get("run_count") or 0) + 1,
         }
-        if str(trigger.get("type") or "") == "schedule" and bool(doc.get("enabled")):
+        trigger_type = str(trigger.get("type") or "")
+        if trigger_type == "once":
+            update_doc["next_run_at"] = None
+            update_doc["enabled"] = False
+        elif trigger_type in {"schedule", "daily", "weekly"} and bool(doc.get("enabled")):
             update_doc["next_run_at"] = _next_scheduled_run(trigger, base=finished_at)
         await get_db()["automations"].update_one({"_id": doc["_id"]}, {"$set": update_doc})
     logger.info(
@@ -968,6 +1718,33 @@ async def run_automation(
         event_type,
         triggered_by,
     )
+    if not dry_run:
+        emitted_event = "automation_run_failed" if status == "failed" else "automation_run_succeeded"
+        try:
+            await dispatch_automation_event(
+                project_id,
+                event_type=emitted_event,
+                payload={
+                    "project_id": project_id,
+                    "automation_id": str(doc.get("_id") or ""),
+                    "automation_name": str(doc.get("name") or ""),
+                    "status": status,
+                    "triggered_by": triggered_by,
+                    "event_type": event_type,
+                    "error": error,
+                    "user_id": str(payload.get("user_id") or ""),
+                    "branch": str(payload.get("branch") or ""),
+                    "chat_id": str(payload.get("chat_id") or ""),
+                },
+                skip_automation_id=str(doc.get("_id") or ""),
+            )
+        except Exception:
+            logger.exception(
+                "automations.run.dispatch_failed project=%s automation_id=%s event=%s",
+                project_id,
+                str(doc.get("_id") or ""),
+                emitted_event,
+            )
     return run_row
 
 
@@ -976,8 +1753,11 @@ async def dispatch_automation_event(
     *,
     event_type: str,
     payload: dict[str, Any] | None = None,
+    skip_automation_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    if event_type not in AUTOMATION_EVENT_TYPES:
+    try:
+        normalized_event_type = _normalize_event_type(event_type)
+    except ValueError:
         return []
     base_payload = dict(payload or {})
     base_payload.setdefault("project_id", project_id)
@@ -986,12 +1766,15 @@ async def dispatch_automation_event(
             "project_id": project_id,
             "enabled": True,
             "trigger.type": "event",
-            "trigger.event_type": event_type,
+            "trigger.event_type": normalized_event_type,
         }
     ).to_list(length=500)
     out: list[dict[str, Any]] = []
+    skip_id = str(skip_automation_id or "").strip()
     for row in rows:
         if not isinstance(row, dict):
+            continue
+        if skip_id and str(row.get("_id") or "") == skip_id:
             continue
         conditions = row.get("conditions") if isinstance(row.get("conditions"), dict) else {}
         if not _conditions_match(conditions, base_payload):
@@ -1001,7 +1784,7 @@ async def dispatch_automation_event(
                 project_id,
                 str(row.get("_id") or ""),
                 triggered_by="event",
-                event_type=event_type,
+                event_type=normalized_event_type,
                 event_payload=base_payload,
             )
             out.append(run_row)
@@ -1010,7 +1793,7 @@ async def dispatch_automation_event(
                 "automations.dispatch_event_failed project=%s automation_id=%s event=%s",
                 project_id,
                 str(row.get("_id") or ""),
-                event_type,
+                normalized_event_type,
             )
     return out
 
@@ -1020,7 +1803,7 @@ async def run_due_scheduled_automations(*, limit: int = 20) -> int:
     rows = await get_db()["automations"].find(
         {
             "enabled": True,
-            "trigger.type": "schedule",
+            "trigger.type": {"$in": ["schedule", "daily", "weekly", "once"]},
             "next_run_at": {"$lte": now},
         }
     ).sort("next_run_at", 1).limit(max(1, min(int(limit or 20), 200))).to_list(length=max(1, min(int(limit or 20), 200)))

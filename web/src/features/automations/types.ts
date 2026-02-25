@@ -1,16 +1,26 @@
 export type AutomationTrigger = {
-  type: "event" | "schedule" | "manual" | string
+  type: "event" | "schedule" | "daily" | "weekly" | "once" | "manual" | string
   event_type?: string
   interval_minutes?: number
+  hour?: number
+  minute?: number
+  weekdays?: string[]
+  run_at?: string
 }
 
 export type AutomationAction = {
   type:
     | "create_chat_task"
+    | "update_chat_task"
     | "append_chat_message"
+    | "set_chat_title"
     | "request_user_input"
     | "run_incremental_ingestion"
     | "generate_documentation"
+    | "dispatch_event"
+    | "run_automation"
+    | "set_automation_enabled"
+    | "upsert_state_value"
     | string
   params?: Record<string, unknown>
 }
