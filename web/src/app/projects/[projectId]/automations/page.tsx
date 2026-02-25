@@ -41,10 +41,14 @@ import AutomationRunsTimeline from "@/features/automations/AutomationRunsTimelin
 import { CONDITION_TUTORIAL_LINES, PARAMETER_TUTORIAL_LINES } from "@/features/automations/catalog"
 import {
   automationErrText,
+  type AutomationPreset,
+  type AutomationPresetVersion,
   prettyJson,
   type AutomationDoc,
   type AutomationRunDoc,
   type AutomationTemplate,
+  type ListAutomationPresetsResponse,
+  type ListAutomationPresetVersionsResponse,
   type ListAutomationsResponse,
   type ListAutomationRunsResponse,
   type ListAutomationTemplatesResponse,
@@ -85,6 +89,7 @@ export default function ProjectAutomationsPage() {
   const [automations, setAutomations] = useState<AutomationDoc[]>([])
   const [runs, setRuns] = useState<AutomationRunDoc[]>([])
   const [templates, setTemplates] = useState<AutomationTemplate[]>([])
+  const [customPresets, setCustomPresets] = useState<AutomationPreset[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -118,14 +123,16 @@ export default function ProjectAutomationsPage() {
   }, [notice])
 
   const loadAutomations = useCallback(async () => {
-    const [automationsRes, runsRes, templatesRes] = await Promise.all([
+    const [automationsRes, runsRes, templatesRes, presetsRes] = await Promise.all([
       backendJson<ListAutomationsResponse>(`/api/projects/${encodeURIComponent(projectId)}/automations?include_disabled=1&limit=300`),
       backendJson<ListAutomationRunsResponse>(`/api/projects/${encodeURIComponent(projectId)}/automations/runs?limit=200`),
       backendJson<ListAutomationTemplatesResponse>(`/api/projects/${encodeURIComponent(projectId)}/automations/templates`),
+      backendJson<ListAutomationPresetsResponse>(`/api/projects/${encodeURIComponent(projectId)}/automations/presets?limit=300`),
     ])
     setAutomations((automationsRes.items || []).filter((x) => x && x.id))
     setRuns((runsRes.items || []).filter((x) => x && x.id))
     setTemplates((templatesRes.items || []).filter((x) => x && x.key))
+    setCustomPresets((presetsRes.items || []).filter((x) => x && x.id))
   }, [projectId])
 
   const loadProjectShell = useCallback(async () => {
@@ -275,6 +282,119 @@ export default function ProjectAutomationsPage() {
       }
     },
     [editingAutomation?.id, editorMode, loadAutomations, projectId]
+  )
+
+  const saveCustomPreset = useCallback(
+    async (payload: {
+      name: string
+      description: string
+      trigger: Record<string, unknown>
+      conditions: Record<string, unknown>
+      action: Record<string, unknown>
+      cooldown_sec: number
+      run_access: "member_runnable" | "admin_only"
+      tags: string[]
+    }) => {
+      setSaving(true)
+      setError(null)
+      try {
+        await backendJson(`/api/projects/${encodeURIComponent(projectId)}/automations/presets`, {
+          method: "POST",
+          body: JSON.stringify(payload),
+        })
+        setNotice("Custom preset saved.")
+        await loadAutomations()
+      } catch (err) {
+        setError(automationErrText(err))
+      } finally {
+        setSaving(false)
+      }
+    },
+    [loadAutomations, projectId]
+  )
+
+  const deleteCustomPreset = useCallback(
+    async (presetId: string) => {
+      setSaving(true)
+      setError(null)
+      try {
+        await backendJson(`/api/projects/${encodeURIComponent(projectId)}/automations/presets/${encodeURIComponent(presetId)}`, {
+          method: "DELETE",
+        })
+        setNotice("Custom preset deleted.")
+        await loadAutomations()
+      } catch (err) {
+        setError(automationErrText(err))
+      } finally {
+        setSaving(false)
+      }
+    },
+    [loadAutomations, projectId]
+  )
+
+  const updateCustomPreset = useCallback(
+    async (
+      presetId: string,
+      payload: {
+        name: string
+        description: string
+        trigger: Record<string, unknown>
+        conditions: Record<string, unknown>
+        action: Record<string, unknown>
+        cooldown_sec: number
+        run_access: "member_runnable" | "admin_only"
+        tags: string[]
+      }
+    ) => {
+      setSaving(true)
+      setError(null)
+      try {
+        await backendJson(`/api/projects/${encodeURIComponent(projectId)}/automations/presets/${encodeURIComponent(presetId)}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        })
+        setNotice("Custom preset updated.")
+        await loadAutomations()
+      } catch (err) {
+        setError(automationErrText(err))
+      } finally {
+        setSaving(false)
+      }
+    },
+    [loadAutomations, projectId]
+  )
+
+  const listCustomPresetVersions = useCallback(
+    async (presetId: string) => {
+      const res = await backendJson<ListAutomationPresetVersionsResponse>(
+        `/api/projects/${encodeURIComponent(projectId)}/automations/presets/${encodeURIComponent(presetId)}/versions?limit=100`
+      )
+      return (res.items || []).filter((x): x is AutomationPresetVersion => Boolean(x && x.id))
+    },
+    [projectId]
+  )
+
+  const rollbackCustomPresetVersion = useCallback(
+    async (presetId: string, versionId: string) => {
+      setSaving(true)
+      setError(null)
+      try {
+        await backendJson(
+          `/api/projects/${encodeURIComponent(projectId)}/automations/presets/${encodeURIComponent(presetId)}/rollback`,
+          {
+            method: "POST",
+            body: JSON.stringify({ version_id: versionId }),
+          }
+        )
+        setNotice("Custom preset rolled back.")
+        await loadAutomations()
+      } catch (err) {
+        setError(automationErrText(err))
+      } finally {
+        setSaving(false)
+      }
+    },
+    [loadAutomations, projectId]
   )
 
   const runAutomationNow = useCallback(
@@ -681,10 +801,16 @@ export default function ProjectAutomationsPage() {
         mode={editorMode}
         initial={editingAutomation}
         template={seedTemplate}
+        customPresets={customPresets}
         saving={saving}
         error={error}
         onClose={() => setEditorOpen(false)}
         onSave={saveAutomation}
+        onSaveCustomPreset={saveCustomPreset}
+        onDeleteCustomPreset={deleteCustomPreset}
+        onUpdateCustomPreset={updateCustomPreset}
+        onLoadCustomPresetVersions={listCustomPresetVersions}
+        onRollbackCustomPresetVersion={rollbackCustomPresetVersion}
       />
 
       <Dialog open={simulateOpen} onClose={() => setSimulateOpen(false)} fullWidth maxWidth="md">

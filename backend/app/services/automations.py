@@ -427,6 +427,77 @@ def _serialize_automation(doc: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _serialize_automation_preset(doc: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(doc.get("_id") or ""),
+        "project_id": str(doc.get("project_id") or ""),
+        "name": str(doc.get("name") or ""),
+        "description": str(doc.get("description") or ""),
+        "trigger": doc.get("trigger") if isinstance(doc.get("trigger"), dict) else {},
+        "conditions": doc.get("conditions") if isinstance(doc.get("conditions"), dict) else {},
+        "action": doc.get("action") if isinstance(doc.get("action"), dict) else {},
+        "cooldown_sec": int(doc.get("cooldown_sec") or 0),
+        "run_access": str(doc.get("run_access") or "member_runnable"),
+        "tags": [str(x).strip() for x in (doc.get("tags") or []) if str(x).strip()],
+        "created_by": str(doc.get("created_by") or ""),
+        "updated_by": str(doc.get("updated_by") or ""),
+        "created_at": _iso(doc.get("created_at")) if isinstance(doc.get("created_at"), datetime) else doc.get("created_at"),
+        "updated_at": _iso(doc.get("updated_at")) if isinstance(doc.get("updated_at"), datetime) else doc.get("updated_at"),
+    }
+
+
+def _preset_snapshot(doc: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": str(doc.get("name") or ""),
+        "description": str(doc.get("description") or ""),
+        "trigger": doc.get("trigger") if isinstance(doc.get("trigger"), dict) else {},
+        "conditions": doc.get("conditions") if isinstance(doc.get("conditions"), dict) else {},
+        "action": doc.get("action") if isinstance(doc.get("action"), dict) else {},
+        "cooldown_sec": int(doc.get("cooldown_sec") or 0),
+        "run_access": str(doc.get("run_access") or "member_runnable"),
+        "tags": [str(x).strip() for x in (doc.get("tags") or []) if str(x).strip()],
+    }
+
+
+def _serialize_automation_preset_version(doc: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(doc.get("_id") or ""),
+        "project_id": str(doc.get("project_id") or ""),
+        "preset_id": str(doc.get("preset_id") or ""),
+        "change_type": str(doc.get("change_type") or ""),
+        "note": str(doc.get("note") or ""),
+        "meta": doc.get("meta") if isinstance(doc.get("meta"), dict) else {},
+        "snapshot": doc.get("snapshot") if isinstance(doc.get("snapshot"), dict) else {},
+        "created_by": str(doc.get("created_by") or ""),
+        "created_at": _iso(doc.get("created_at")) if isinstance(doc.get("created_at"), datetime) else doc.get("created_at"),
+    }
+
+
+async def _insert_custom_preset_version(
+    *,
+    project_id: str,
+    preset_id: str,
+    snapshot: dict[str, Any],
+    created_by: str,
+    change_type: str,
+    note: str = "",
+    meta: dict[str, Any] | None = None,
+) -> None:
+    now = _now()
+    await get_db()["automation_preset_versions"].insert_one(
+        {
+            "project_id": project_id,
+            "preset_id": preset_id,
+            "change_type": str(change_type or "").strip() or "update",
+            "note": str(note or "").strip(),
+            "meta": dict(meta or {}),
+            "snapshot": snapshot,
+            "created_by": str(created_by or "").strip(),
+            "created_at": now,
+        }
+    )
+
+
 def _serialize_run(doc: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(doc.get("_id") or ""),
@@ -833,6 +904,249 @@ async def list_automation_templates() -> list[dict[str, Any]]:
         row["run_access"] = _normalize_run_access(str(row.get("run_access") or "member_runnable"))
         out.append(row)
     return out
+
+
+async def list_custom_automation_presets(
+    project_id: str,
+    *,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(int(limit or 200), 1000))
+    rows = (
+        await get_db()["automation_presets"]
+        .find({"project_id": project_id})
+        .sort("updated_at", -1)
+        .limit(safe_limit)
+        .to_list(length=safe_limit)
+    )
+    return [_serialize_automation_preset(row) for row in rows if isinstance(row, dict)]
+
+
+async def create_custom_automation_preset(
+    project_id: str,
+    *,
+    user_id: str,
+    name: str,
+    description: str = "",
+    trigger: dict[str, Any] | None = None,
+    conditions: dict[str, Any] | None = None,
+    action: dict[str, Any] | None = None,
+    cooldown_sec: int = 0,
+    run_access: str = "member_runnable",
+    tags: list[str] | None = None,
+) -> dict[str, Any]:
+    clean_name = str(name or "").strip()
+    if not clean_name:
+        raise ValueError("name is required")
+    normalized_trigger = _normalize_trigger(trigger)
+    normalized_action = _normalize_action(action)
+    normalized_conditions = _normalize_conditions(conditions)
+    normalized_run_access = _normalize_run_access(run_access)
+    safe_cooldown = max(0, min(int(cooldown_sec or 0), 24 * 3600))
+    safe_tags = _coerce_tags(tags or [])
+    now = _now()
+    doc = {
+        "project_id": project_id,
+        "name": clean_name,
+        "description": str(description or "").strip(),
+        "trigger": normalized_trigger,
+        "conditions": normalized_conditions,
+        "action": normalized_action,
+        "cooldown_sec": safe_cooldown,
+        "run_access": normalized_run_access,
+        "tags": safe_tags,
+        "created_by": str(user_id or "").strip(),
+        "updated_by": str(user_id or "").strip(),
+        "created_at": now,
+        "updated_at": now,
+    }
+    res = await get_db()["automation_presets"].insert_one(doc)
+    row = await get_db()["automation_presets"].find_one({"_id": res.inserted_id})
+    if not isinstance(row, dict):
+        raise RuntimeError("Failed to create automation preset")
+    await _insert_custom_preset_version(
+        project_id=project_id,
+        preset_id=str(res.inserted_id),
+        snapshot=_preset_snapshot(row),
+        created_by=str(user_id or "").strip(),
+        change_type="create",
+    )
+    logger.info("automations.presets.create project=%s preset_id=%s", project_id, str(res.inserted_id))
+    return _serialize_automation_preset(row)
+
+
+async def get_custom_automation_preset(project_id: str, preset_id: str) -> dict[str, Any] | None:
+    query: dict[str, Any] = {"project_id": project_id}
+    if ObjectId.is_valid(preset_id):
+        query["_id"] = ObjectId(preset_id)
+    else:
+        return None
+    row = await get_db()["automation_presets"].find_one(query)
+    if not isinstance(row, dict):
+        return None
+    return _serialize_automation_preset(row)
+
+
+async def update_custom_automation_preset(
+    project_id: str,
+    preset_id: str,
+    *,
+    user_id: str,
+    patch: dict[str, Any],
+) -> dict[str, Any]:
+    query: dict[str, Any] = {"project_id": project_id}
+    if ObjectId.is_valid(preset_id):
+        query["_id"] = ObjectId(preset_id)
+    else:
+        raise ValueError("Invalid preset_id")
+
+    existing = await get_db()["automation_presets"].find_one(query)
+    if not isinstance(existing, dict):
+        raise KeyError("Preset not found")
+
+    next_doc = dict(existing)
+    if "name" in patch:
+        clean_name = str(patch.get("name") or "").strip()
+        if not clean_name:
+            raise ValueError("name must not be empty")
+        next_doc["name"] = clean_name
+    if "description" in patch:
+        next_doc["description"] = str(patch.get("description") or "").strip()
+    if "trigger" in patch:
+        next_doc["trigger"] = _normalize_trigger(patch.get("trigger") if isinstance(patch.get("trigger"), dict) else None)
+    if "conditions" in patch:
+        next_doc["conditions"] = _normalize_conditions(
+            patch.get("conditions") if isinstance(patch.get("conditions"), dict) else None
+        )
+    if "action" in patch:
+        next_doc["action"] = _normalize_action(patch.get("action") if isinstance(patch.get("action"), dict) else None)
+    if "cooldown_sec" in patch:
+        next_doc["cooldown_sec"] = max(0, min(int(patch.get("cooldown_sec") or 0), 24 * 3600))
+    if "run_access" in patch:
+        next_doc["run_access"] = _normalize_run_access(str(patch.get("run_access") or "member_runnable"))
+    if "tags" in patch:
+        next_doc["tags"] = _coerce_tags(patch.get("tags") if isinstance(patch.get("tags"), list) else [])
+
+    now = _now()
+    next_doc["updated_at"] = now
+    next_doc["updated_by"] = str(user_id or "").strip()
+
+    await get_db()["automation_presets"].update_one({"_id": existing["_id"]}, {"$set": next_doc})
+    row = await get_db()["automation_presets"].find_one({"_id": existing["_id"]})
+    if not isinstance(row, dict):
+        raise RuntimeError("Automation preset update failed")
+    await _insert_custom_preset_version(
+        project_id=project_id,
+        preset_id=str(existing["_id"]),
+        snapshot=_preset_snapshot(row),
+        created_by=str(user_id or "").strip(),
+        change_type="update",
+    )
+    logger.info("automations.presets.update project=%s preset_id=%s", project_id, preset_id)
+    return _serialize_automation_preset(row)
+
+
+async def delete_custom_automation_preset(project_id: str, preset_id: str) -> bool:
+    query: dict[str, Any] = {"project_id": project_id}
+    if ObjectId.is_valid(preset_id):
+        query["_id"] = ObjectId(preset_id)
+    else:
+        raise ValueError("Invalid preset_id")
+    row = await get_db()["automation_presets"].find_one(query, {"_id": 1})
+    if not isinstance(row, dict):
+        return False
+    await get_db()["automation_presets"].delete_one({"_id": row["_id"]})
+    logger.info("automations.presets.delete project=%s preset_id=%s", project_id, str(row["_id"]))
+    return True
+
+
+async def list_custom_automation_preset_versions(
+    project_id: str,
+    preset_id: str,
+    *,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    if not ObjectId.is_valid(preset_id):
+        raise ValueError("Invalid preset_id")
+    safe_limit = max(1, min(int(limit or 100), 1000))
+    rows = (
+        await get_db()["automation_preset_versions"]
+        .find({"project_id": project_id, "preset_id": str(preset_id)})
+        .sort("created_at", -1)
+        .limit(safe_limit)
+        .to_list(length=safe_limit)
+    )
+    return [_serialize_automation_preset_version(row) for row in rows if isinstance(row, dict)]
+
+
+async def rollback_custom_automation_preset(
+    project_id: str,
+    preset_id: str,
+    *,
+    version_id: str,
+    user_id: str,
+) -> dict[str, Any]:
+    if not ObjectId.is_valid(preset_id):
+        raise ValueError("Invalid preset_id")
+    if not ObjectId.is_valid(version_id):
+        raise ValueError("Invalid version_id")
+
+    preset_row = await get_db()["automation_presets"].find_one({"project_id": project_id, "_id": ObjectId(preset_id)})
+    if not isinstance(preset_row, dict):
+        raise KeyError("Preset not found")
+
+    version_row = await get_db()["automation_preset_versions"].find_one(
+        {"project_id": project_id, "preset_id": str(preset_id), "_id": ObjectId(version_id)}
+    )
+    if not isinstance(version_row, dict):
+        raise KeyError("Preset version not found")
+
+    snapshot = version_row.get("snapshot") if isinstance(version_row.get("snapshot"), dict) else {}
+    restored_doc = {
+        "name": str(snapshot.get("name") or "").strip(),
+        "description": str(snapshot.get("description") or "").strip(),
+        "trigger": _normalize_trigger(snapshot.get("trigger") if isinstance(snapshot.get("trigger"), dict) else None),
+        "conditions": _normalize_conditions(
+            snapshot.get("conditions") if isinstance(snapshot.get("conditions"), dict) else None
+        ),
+        "action": _normalize_action(snapshot.get("action") if isinstance(snapshot.get("action"), dict) else None),
+        "cooldown_sec": max(0, min(int(snapshot.get("cooldown_sec") or 0), 24 * 3600)),
+        "run_access": _normalize_run_access(str(snapshot.get("run_access") or "member_runnable")),
+        "tags": _coerce_tags(snapshot.get("tags") if isinstance(snapshot.get("tags"), list) else []),
+    }
+    if not restored_doc["name"]:
+        raise RuntimeError("Preset version snapshot is invalid (missing name)")
+
+    now = _now()
+    await get_db()["automation_presets"].update_one(
+        {"_id": preset_row["_id"]},
+        {
+            "$set": {
+                **restored_doc,
+                "updated_by": str(user_id or "").strip(),
+                "updated_at": now,
+            }
+        },
+    )
+    next_row = await get_db()["automation_presets"].find_one({"_id": preset_row["_id"]})
+    if not isinstance(next_row, dict):
+        raise RuntimeError("Preset rollback failed")
+    await _insert_custom_preset_version(
+        project_id=project_id,
+        preset_id=str(preset_row["_id"]),
+        snapshot=_preset_snapshot(next_row),
+        created_by=str(user_id or "").strip(),
+        change_type="rollback",
+        note=f"Rolled back to version {version_id}",
+        meta={"rolled_back_to_version_id": version_id},
+    )
+    logger.info(
+        "automations.presets.rollback project=%s preset_id=%s version_id=%s",
+        project_id,
+        preset_id,
+        version_id,
+    )
+    return _serialize_automation_preset(next_row)
 
 
 async def list_automations(

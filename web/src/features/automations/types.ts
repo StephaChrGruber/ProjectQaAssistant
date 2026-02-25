@@ -73,6 +73,42 @@ export type AutomationTemplate = {
   tags?: string[]
 }
 
+export type AutomationPreset = {
+  id: string
+  project_id: string
+  name: string
+  description?: string
+  trigger: AutomationTrigger
+  conditions?: Record<string, unknown>
+  action: AutomationAction
+  cooldown_sec?: number
+  run_access?: "member_runnable" | "admin_only" | string
+  tags?: string[]
+  created_at?: string
+  updated_at?: string
+}
+
+export type AutomationPresetVersion = {
+  id: string
+  project_id: string
+  preset_id: string
+  change_type: "create" | "update" | "rollback" | string
+  note?: string
+  meta?: Record<string, unknown>
+  snapshot: {
+    name?: string
+    description?: string
+    trigger?: AutomationTrigger
+    conditions?: Record<string, unknown>
+    action?: AutomationAction
+    cooldown_sec?: number
+    run_access?: "member_runnable" | "admin_only" | string
+    tags?: string[]
+  }
+  created_by?: string
+  created_at?: string
+}
+
 export type ListAutomationsResponse = {
   project_id: string
   total: number
@@ -93,6 +129,19 @@ export type ListAutomationRunsResponse = {
 export type ListAutomationTemplatesResponse = {
   project_id: string
   items: AutomationTemplate[]
+}
+
+export type ListAutomationPresetsResponse = {
+  project_id: string
+  total: number
+  items: AutomationPreset[]
+}
+
+export type ListAutomationPresetVersionsResponse = {
+  project_id: string
+  preset_id: string
+  total: number
+  items: AutomationPresetVersion[]
 }
 
 export function automationErrText(err: unknown): string {

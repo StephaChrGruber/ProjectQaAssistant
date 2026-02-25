@@ -44,6 +44,16 @@ async def init_db():
     await db["automations"].create_index([("project_id", 1), ("updated_at", -1)], name="automations_project_recent")
     await db["automations"].create_index([("project_id", 1), ("enabled", 1), ("next_run_at", 1)], name="automations_project_schedule")
     await db["automations"].create_index([("project_id", 1), ("trigger.type", 1), ("trigger.event_type", 1)], name="automations_project_event")
+    await db["automation_presets"].create_index([("project_id", 1), ("updated_at", -1)], name="automation_presets_project_recent")
+    await db["automation_presets"].create_index([("project_id", 1), ("name", 1)], name="automation_presets_project_name")
+    await db["automation_preset_versions"].create_index(
+        [("project_id", 1), ("preset_id", 1), ("created_at", -1)],
+        name="automation_preset_versions_preset_recent",
+    )
+    await db["automation_preset_versions"].create_index(
+        [("project_id", 1), ("created_at", -1)],
+        name="automation_preset_versions_project_recent",
+    )
     await db["automation_runs"].create_index([("project_id", 1), ("started_at", -1)], name="automation_runs_project_recent")
     await db["automation_runs"].create_index([("project_id", 1), ("automation_id", 1), ("started_at", -1)], name="automation_runs_automation_recent")
 

@@ -26,6 +26,28 @@ export type ActionDefinition = {
   defaults: Record<string, unknown>
 }
 
+export type ConditionPreset = {
+  key: string
+  label: string
+  description: string
+  values: Record<string, unknown>
+}
+
+export type TriggerPreset = {
+  key: string
+  label: string
+  description: string
+  trigger: Record<string, unknown>
+}
+
+export type ActionPreset = {
+  key: string
+  label: string
+  description: string
+  actionType: string
+  params: Record<string, unknown>
+}
+
 export const EVENT_OPTIONS: CatalogOption[] = [
   { value: "ask_agent_completed", label: "Agent answer completed", description: "Fires after an ask-agent response is written." },
   { value: "connector_health_checked", label: "Connector health checked", description: "Fires after connector health status is refreshed." },
@@ -47,6 +69,51 @@ export const TRIGGER_OPTIONS: CatalogOption[] = [
   { value: "weekly", label: "Weekly", description: "Run on selected weekdays at a fixed UTC time." },
   { value: "once", label: "One-time", description: "Run once at a specific UTC datetime and then disable." },
   { value: "manual", label: "Manual", description: "Run only when user/LLM explicitly executes it." },
+]
+
+export const TRIGGER_PRESETS: TriggerPreset[] = [
+  {
+    key: "manual-on-demand",
+    label: "Manual on demand",
+    description: "Run only when explicitly triggered by user/LLM.",
+    trigger: { type: "manual" },
+  },
+  {
+    key: "event-agent-completed",
+    label: "On agent answer completed",
+    description: "Run after each ask_agent completion event.",
+    trigger: { type: "event", event_type: "ask_agent_completed" },
+  },
+  {
+    key: "event-connector-health",
+    label: "On connector health checked",
+    description: "Run when connector health check event is dispatched.",
+    trigger: { type: "event", event_type: "connector_health_checked" },
+  },
+  {
+    key: "interval-15m",
+    label: "Every 15 minutes",
+    description: "Interval schedule with 15 minute frequency.",
+    trigger: { type: "schedule", interval_minutes: 15 },
+  },
+  {
+    key: "interval-1h",
+    label: "Hourly",
+    description: "Interval schedule with 60 minute frequency.",
+    trigger: { type: "schedule", interval_minutes: 60 },
+  },
+  {
+    key: "daily-0900",
+    label: "Daily at 09:00 UTC",
+    description: "Runs once per day at 09:00 UTC.",
+    trigger: { type: "daily", hour: 9, minute: 0 },
+  },
+  {
+    key: "weekly-mon-0900",
+    label: "Weekly Mon 09:00 UTC",
+    description: "Runs on Mondays at 09:00 UTC.",
+    trigger: { type: "weekly", weekdays: ["mon"], hour: 9, minute: 0 },
+  },
 ]
 
 export const ACTION_DEFINITIONS: ActionDefinition[] = [
@@ -221,6 +288,88 @@ export const ACTION_DEFINITIONS: ActionDefinition[] = [
   },
 ]
 
+export const ACTION_PRESETS: ActionPreset[] = [
+  {
+    key: "create-investigation-task",
+    label: "Create investigation task",
+    description: "Creates an open follow-up task in the current chat.",
+    actionType: "create_chat_task",
+    params: {
+      title: "Investigate automation event",
+      details: "Triggered from {{event_type}}. Question: {{question}}",
+      status: "open",
+      chat_id: "{{chat_id}}",
+    },
+  },
+  {
+    key: "ask-clarification",
+    label: "Ask for clarification",
+    description: "Requests user input with single-choice options.",
+    actionType: "request_user_input",
+    params: {
+      chat_id: "{{chat_id}}",
+      question: "Do you want me to continue with this approach?",
+      answer_mode: "single_choice",
+      options: ["Continue", "Adjust plan", "Stop"],
+    },
+  },
+  {
+    key: "append-note",
+    label: "Append chat note",
+    description: "Posts an assistant note into current chat.",
+    actionType: "append_chat_message",
+    params: {
+      chat_id: "{{chat_id}}",
+      role: "assistant",
+      content: "Automation executed successfully.",
+    },
+  },
+  {
+    key: "generate-main-docs",
+    label: "Generate docs on main",
+    description: "Runs documentation generation for main branch.",
+    actionType: "generate_documentation",
+    params: {
+      branch: "main",
+    },
+  },
+  {
+    key: "run-ingestion",
+    label: "Run ingestion",
+    description: "Runs incremental ingestion for all configured connectors.",
+    actionType: "run_incremental_ingestion",
+    params: {
+      connectors: [],
+    },
+  },
+  {
+    key: "dispatch-ops-alert",
+    label: "Dispatch ops.alert event",
+    description: "Dispatches a custom ops.alert automation event.",
+    actionType: "dispatch_event",
+    params: {
+      event_type: "ops.alert",
+      payload: {
+        message: "Automation raised an operations alert.",
+        chat_id: "{{chat_id}}",
+      },
+    },
+  },
+  {
+    key: "close-investigation-task",
+    label: "Close matching investigation task",
+    description: "Marks latest matching investigation task as done.",
+    actionType: "update_chat_task",
+    params: {
+      chat_id: "{{chat_id}}",
+      task_title_contains: "Investigate",
+      status: "done",
+      append_details: true,
+      details: "Closed by automation.",
+    },
+  },
+]
+
 export const CONDITION_TUTORIAL_LINES = [
   "Conditions are evaluated against the trigger payload.",
   "match_mode = all: every configured condition must be true.",
@@ -232,6 +381,67 @@ export const PARAMETER_TUTORIAL_LINES = [
   "You can use template placeholders in string fields: {{chat_id}}, {{branch}}, {{question}}, {{answer}}, {{tool_errors}}.",
   "Use CSV fields for simple lists, JSON fields for structured payloads.",
   "Advanced JSON overrides the guided form if enabled.",
+]
+
+export const CONDITION_PRESETS: ConditionPreset[] = [
+  {
+    key: "tool-errors",
+    label: "On tool errors",
+    description: "Trigger when at least one tool error happened.",
+    values: { match_mode: "all", tool_errors_min: 1 },
+  },
+  {
+    key: "grounded-answer",
+    label: "Grounded answers only",
+    description: "Only run when answer grounding succeeded and no tool errors happened.",
+    values: { match_mode: "all", grounded_is: true, tool_errors_max: 0 },
+  },
+  {
+    key: "ungrounded-answer",
+    label: "Ungrounded answers",
+    description: "Only run when answer grounding failed.",
+    values: { match_mode: "all", grounded_is: false },
+  },
+  {
+    key: "connector-degraded",
+    label: "Connector degraded",
+    description: "Run when one or more connectors are failing.",
+    values: { match_mode: "all", failed_connectors_min: 1 },
+  },
+  {
+    key: "followup-pending",
+    label: "User input pending",
+    description: "Only run when the chat is waiting for user input.",
+    values: { match_mode: "all", pending_user_input_is: true },
+  },
+  {
+    key: "urgent-keywords",
+    label: "Urgent keyword match",
+    description: "Question/answer mentions urgent triage words.",
+    values: {
+      match_mode: "any",
+      keyword_contains: ["urgent", "blocker", "critical", "p1"],
+      answer_contains: ["urgent", "blocker", "critical", "p1"],
+    },
+  },
+  {
+    key: "main-branch-only",
+    label: "Main branch only",
+    description: "Restrict to main branch runs.",
+    values: { match_mode: "all", branch_in: ["main"] },
+  },
+  {
+    key: "heavy-tool-usage",
+    label: "Heavy tool usage",
+    description: "Run only when many tools were used.",
+    values: { match_mode: "all", tool_calls_min: 8 },
+  },
+  {
+    key: "openai-only",
+    label: "OpenAI provider only",
+    description: "Run only for OpenAI-based answers.",
+    values: { match_mode: "all", llm_provider_in: ["openai"] },
+  },
 ]
 
 export function getActionDefinition(actionType: string): ActionDefinition {
