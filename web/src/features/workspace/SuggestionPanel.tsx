@@ -23,7 +23,7 @@ export function SuggestionPanel({
   onSuggestNow,
 }: SuggestionPanelProps) {
   return (
-    <Stack sx={{ borderLeft: "1px solid", borderColor: "divider", minHeight: 0, p: 1.1 }} spacing={1.1}>
+    <Stack sx={{ borderLeft: "1px solid", borderColor: "divider", minHeight: 0, height: "100%", p: 1.1 }} spacing={1.1}>
       <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.04em" }}>
         AI SUGGESTIONS
       </Typography>

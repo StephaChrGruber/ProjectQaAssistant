@@ -546,7 +546,7 @@ export function WorkspaceShell({
   return (
     <Dialog open={open} onClose={onClose} fullScreen>
       <AppDialogTitle title={`${projectLabel} Workspace`} onClose={onClose} />
-      <DialogContent sx={{ p: 0, height: "calc(100vh - 64px)", display: "flex", flexDirection: "column" }}>
+      <DialogContent sx={{ p: 0, height: "calc(100vh - 64px)", minHeight: 0, display: "flex", flexDirection: "column" }}>
         {(loadingTree || busyOpenFile || savingFile || suggesting || applyingPatch) && <LinearProgress />}
 
         <Stack direction="row" spacing={1} alignItems="center" sx={{ px: 1.1, py: 0.8, borderBottom: "1px solid", borderColor: "divider" }}>
@@ -598,8 +598,8 @@ export function WorkspaceShell({
           </Box>
         )}
 
-        <Grid container sx={{ flex: 1, minHeight: 0 }}>
-          <Grid size={{ xs: 12, md: 3 }} sx={{ minHeight: 0 }}>
+        <Grid container sx={{ flex: 1, minHeight: 0, height: "100%", overflow: "hidden" }}>
+          <Grid size={{ xs: 12, md: 3 }} sx={{ minHeight: 0, height: { xs: 240, md: "100%" }, display: "flex", flexDirection: "column", overflow: "hidden" }}>
             <FileTreePane
               nodes={treeNodes}
               expandedFolders={expandedFolders}
@@ -610,7 +610,18 @@ export function WorkspaceShell({
               }}
             />
           </Grid>
-          <Grid size={{ xs: 12, md: 7 }} sx={{ minHeight: 0, borderRight: { md: "1px solid" }, borderColor: "divider" }}>
+          <Grid
+            size={{ xs: 12, md: 7 }}
+            sx={{
+              minHeight: 0,
+              height: { xs: 420, md: "100%" },
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+              borderRight: { md: "1px solid" },
+              borderColor: "divider",
+            }}
+          >
             <EditorTabs
               tabs={tabs}
               activePath={activePath}
@@ -628,7 +639,7 @@ export function WorkspaceShell({
               }
             />
           </Grid>
-          <Grid size={{ xs: 12, md: 2 }} sx={{ minHeight: 0 }}>
+          <Grid size={{ xs: 12, md: 2 }} sx={{ minHeight: 0, height: { xs: 220, md: "100%" }, display: "flex", flexDirection: "column", overflow: "hidden" }}>
             <SuggestionPanel
               intent={intent}
               enableIdleSuggest={idleSuggest}

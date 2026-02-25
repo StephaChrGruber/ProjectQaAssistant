@@ -66,7 +66,7 @@ export function FileTreePane({
     })
 
   return (
-    <Box sx={{ borderRight: "1px solid", borderColor: "divider", minHeight: 0, overflow: "auto" }}>
+    <Box sx={{ borderRight: "1px solid", borderColor: "divider", minHeight: 0, height: "100%", overflow: "auto" }}>
       <Typography variant="caption" color="text.secondary" sx={{ px: 1.2, py: 0.8, display: "block", letterSpacing: "0.04em" }}>
         FILES
       </Typography>

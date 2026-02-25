@@ -42,7 +42,7 @@ export function EditorTabs({
   const activeTab = tabs.find((tab) => tab.path === activePath) || null
 
   return (
-    <Stack sx={{ minHeight: 0, flex: 1 }}>
+    <Stack sx={{ minHeight: 0, flex: 1, height: "100%" }}>
       <Box sx={{ borderBottom: "1px solid", borderColor: "divider", display: "flex", alignItems: "center", minHeight: 36 }}>
         <Tabs
           value={activePath || false}
