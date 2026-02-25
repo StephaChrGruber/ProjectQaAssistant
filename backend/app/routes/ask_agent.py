@@ -19,6 +19,7 @@ from ..services.hierarchical_memory import (
     derive_task_state,
     persist_hierarchical_memory,
 )
+from ..services.workspace import assemble_workspace_context, workspace_context_to_text
 from .ask_agent_clarification import (
     as_text as _as_text,
     derive_goal_id as _derive_goal_id,
@@ -84,6 +85,7 @@ class AskReq(BaseModel):
     pending_question_id: str | None = None
     pending_answer: str | None = None
     dry_run: bool | None = None
+    workspace_context: dict[str, Any] | None = None
 
 
 async def _load_project_doc(project_id: str) -> dict[str, Any]:
@@ -485,6 +487,28 @@ async def ask_agent(req: AskReq):
             "Use this evidence directly when relevant:\n\n"
             f"{req.local_repo_context.strip()}"
         )
+    if isinstance(req.workspace_context, dict):
+        try:
+            assembled = await assemble_workspace_context(
+                project_id=req.project_id,
+                branch=req.branch,
+                user_id=req.user,
+                chat_id=chat_id,
+                payload=req.workspace_context,
+            )
+            workspace_text = workspace_context_to_text(assembled)
+            if workspace_text:
+                effective_question = (
+                    f"{effective_question}\n\n"
+                    "Current editor workspace context:\n\n"
+                    f"{workspace_text}"
+                )
+        except Exception:
+            logger.exception(
+                "ask_agent.workspace_context_failed project=%s chat_id=%s",
+                req.project_id,
+                chat_id,
+            )
 
     active_llm = {
         "base_url": req.llm_base_url or defaults["llm_base_url"],

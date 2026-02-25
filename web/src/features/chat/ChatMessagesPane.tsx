@@ -35,6 +35,9 @@ type ChatMessagesPaneProps = {
     expandedSourceMessages: Record<string, boolean>
     onToggleSourceList: (messageKey: string) => void
     onSourceClick: (src: ChatAnswerSource) => void | Promise<void>
+    onOpenInWorkspace?: (fallbackPath?: string | null) => void
+    onReviewMessagePatch?: (messageKey: string, message: string, fallbackPath?: string | null) => void
+    onApplyMessagePatch?: (messageKey: string, message: string, fallbackPath?: string | null) => void
     scrollRef: RefObject<HTMLDivElement | null>
 }
 
@@ -54,6 +57,9 @@ export function ChatMessagesPane({
     expandedSourceMessages,
     onToggleSourceList,
     onSourceClick,
+    onOpenInWorkspace,
+    onReviewMessagePatch,
+    onApplyMessagePatch,
     scrollRef,
 }: ChatMessagesPaneProps) {
     const shouldVirtualize = messages.length > VIRTUALIZE_THRESHOLD
@@ -157,6 +163,7 @@ export function ChatMessagesPane({
                     const sources = !isUser && m.role === "assistant" ? (m.meta?.sources || []) : []
                     const messageKey = `${m.ts || "na"}-${idx}`
                     const sourceExpanded = Boolean(expandedSourceMessages[messageKey])
+                    const firstSourcePath = sources.find((s) => Boolean(String(s.path || "").trim()))?.path || null
                     return (
                         <Box key={messageKey} sx={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start" }}>
                             <Paper
@@ -196,6 +203,29 @@ export function ChatMessagesPane({
                                                 borderColor: "divider",
                                             }}
                                         >
+                                            <Stack direction="row" spacing={0.6} sx={{ mb: 0.35 }} useFlexGap flexWrap="wrap">
+                                                <Button
+                                                    variant="outlined"
+                                                    size="small"
+                                                    onClick={() => onOpenInWorkspace?.(firstSourcePath)}
+                                                >
+                                                    Open in Workspace
+                                                </Button>
+                                                <Button
+                                                    variant="outlined"
+                                                    size="small"
+                                                    onClick={() => onReviewMessagePatch?.(messageKey, m.content || "", firstSourcePath)}
+                                                >
+                                                    Review Patch
+                                                </Button>
+                                                <Button
+                                                    variant="outlined"
+                                                    size="small"
+                                                    onClick={() => onApplyMessagePatch?.(messageKey, m.content || "", firstSourcePath)}
+                                                >
+                                                    Apply Selected
+                                                </Button>
+                                            </Stack>
                                             <Button
                                                 variant="text"
                                                 size="small"

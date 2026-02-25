@@ -22,6 +22,23 @@ export type ProjectDoc = {
   llm_provider?: string
   llm_model?: string
   llm_profile_id?: string
+  feature_flags?: {
+    workspace_docked_v2?: boolean
+    workspace_inline_ai?: boolean
+    workspace_diagnostics?: boolean
+    workspace_chat_patch_apply?: boolean
+    [key: string]: unknown
+  }
+  extra?: {
+    feature_flags?: {
+      workspace_docked_v2?: boolean
+      workspace_inline_ai?: boolean
+      workspace_diagnostics?: boolean
+      workspace_chat_patch_apply?: boolean
+      [key: string]: unknown
+    }
+    [key: string]: unknown
+  }
 }
 
 export type MeResponse = {

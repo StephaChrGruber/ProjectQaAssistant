@@ -74,6 +74,8 @@ from ..models.tools import (
     RequestUserInputResponse,
     ReadChatMessagesRequest,
     ReadChatMessagesResponse,
+    WorkspaceGetContextRequest,
+    WorkspaceGetContextResponse,
     ReadDocsFile,
     ReadDocsFolderRequest,
     ReadDocsFolderResponse,
@@ -104,6 +106,7 @@ from ..models.tools import (
     WriteDocumentationFileResponse,
 )
 from ..services.documentation import DocumentationError, generate_project_documentation
+from ..services.workspace import assemble_workspace_context, workspace_context_to_text
 from ..services.automations import (
     create_automation as create_automation_service,
     delete_automation as delete_automation_service,
@@ -2927,6 +2930,23 @@ async def read_chat_messages(req: ReadChatMessagesRequest) -> ReadChatMessagesRe
         total_messages=total_messages,
         returned_messages=len(selected),
         messages=selected,
+    )
+
+
+async def workspace_get_context(req: WorkspaceGetContextRequest) -> WorkspaceGetContextResponse:
+    branch = str(req.branch or "main").strip() or "main"
+    user = str(req.user or "").strip() or "dev@local"
+    context = await assemble_workspace_context(
+        project_id=req.project_id,
+        branch=branch,
+        user_id=user,
+        chat_id=(str(req.chat_id or "").strip() or None),
+        payload=None,
+    )
+    return WorkspaceGetContextResponse(
+        found=True,
+        context=context,
+        context_text=workspace_context_to_text(context),
     )
 
 

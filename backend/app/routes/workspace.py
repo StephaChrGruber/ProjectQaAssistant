@@ -9,15 +9,43 @@ from pydantic import BaseModel, Field
 from ..services.workspace import (
     WorkspaceError,
     apply_patch,
+    assemble_workspace_context,
     build_patch_preview,
+    create_file,
+    create_folder,
+    get_latest_workspace_diagnostics,
     delete_file,
     get_draft,
     get_workspace_capabilities,
     list_tree,
+    move_path,
+    normalize_patch_payload,
     read_file,
+    rename_path,
+    run_workspace_diagnostics,
     save_draft,
+    suggest_inline,
     suggest_patch,
+    workspace_context_to_text,
     write_file,
+)
+from ..models.tools import (
+    GitCommitRequest,
+    GitFetchRequest,
+    GitPullRequest,
+    GitPushRequest,
+    GitStageFilesRequest,
+    GitStatusRequest,
+    GitUnstageFilesRequest,
+)
+from ..rag.tool_exec import (
+    git_commit,
+    git_fetch,
+    git_pull,
+    git_push,
+    git_stage_files,
+    git_status,
+    git_unstage_files,
 )
 
 router = APIRouter(prefix="/projects", tags=["workspace"])
@@ -53,8 +81,20 @@ class WorkspaceSuggestReq(BaseModel):
     primary_path: str
     paths: list[str] = Field(default_factory=list)
     selected_text: str | None = None
+    cursor: dict[str, int] | None = None
+    scope: str | None = "open_tabs"
     intent: str | None = None
     max_context_chars: int = 130000
+    llm_profile_id: str | None = None
+
+
+class WorkspaceInlineSuggestReq(BaseModel):
+    branch: str = "main"
+    chat_id: str | None = None
+    path: str
+    cursor: dict[str, int] | None = None
+    selected_text: str | None = None
+    intent: str | None = None
     llm_profile_id: str | None = None
 
 
@@ -78,6 +118,106 @@ class WorkspacePatchApplyReq(BaseModel):
     chat_id: str | None = None
     patch: dict[str, Any]
     selection: list[PatchSelectionItem] = Field(default_factory=list)
+
+
+class WorkspacePatchNormalizeReq(BaseModel):
+    branch: str = "main"
+    chat_id: str | None = None
+    content: str
+    fallback_path: str | None = None
+
+
+class WorkspaceCreateFileReq(BaseModel):
+    branch: str = "main"
+    chat_id: str | None = None
+    path: str
+    content: str = ""
+    overwrite: bool = False
+
+
+class WorkspaceCreateFolderReq(BaseModel):
+    branch: str = "main"
+    chat_id: str | None = None
+    path: str
+
+
+class WorkspaceRenamePathReq(BaseModel):
+    branch: str = "main"
+    chat_id: str | None = None
+    path: str
+    new_path: str
+    overwrite: bool = False
+
+
+class WorkspaceMovePathReq(BaseModel):
+    branch: str = "main"
+    chat_id: str | None = None
+    src_path: str
+    dest_path: str
+    overwrite: bool = False
+
+
+class WorkspaceDiagnosticsRunReq(BaseModel):
+    branch: str = "main"
+    chat_id: str | None = None
+    target: str = "active_file"
+    paths: list[str] = Field(default_factory=list)
+    command: str | None = None
+    timeout_sec: int = 240
+    max_output_chars: int = 60000
+
+
+class WorkspaceContextReq(BaseModel):
+    branch: str = "main"
+    chat_id: str | None = None
+    active_path: str | None = None
+    active_preview: str | None = None
+    open_tabs: list[str] = Field(default_factory=list)
+    dirty_paths: list[str] = Field(default_factory=list)
+    draft_previews: list[dict[str, str]] = Field(default_factory=list)
+    cursor: dict[str, int] | None = None
+
+
+class WorkspaceGitStatusReq(BaseModel):
+    branch: str = "main"
+
+
+class WorkspaceGitStageReq(BaseModel):
+    branch: str = "main"
+    paths: list[str] = Field(default_factory=list)
+    all: bool = False
+
+
+class WorkspaceGitUnstageReq(BaseModel):
+    branch: str = "main"
+    paths: list[str] = Field(default_factory=list)
+    all: bool = False
+
+
+class WorkspaceGitCommitReq(BaseModel):
+    branch: str = "main"
+    message: str
+    all: bool = False
+    amend: bool = False
+
+
+class WorkspaceGitFetchReq(BaseModel):
+    branch: str = "main"
+    remote: str = "origin"
+    prune: bool = False
+
+
+class WorkspaceGitPullReq(BaseModel):
+    branch: str = "main"
+    remote: str = "origin"
+    rebase: bool = False
+
+
+class WorkspaceGitPushReq(BaseModel):
+    branch: str = "main"
+    remote: str = "origin"
+    set_upstream: bool = False
+    force_with_lease: bool = False
 
 
 @router.get("/{project_id}/workspace/capabilities")
@@ -261,8 +401,34 @@ async def workspace_suggest(
             paths=req.paths,
             intent=req.intent,
             selected_text=req.selected_text,
+            cursor=req.cursor,
+            scope=req.scope,
             llm_profile_id=req.llm_profile_id,
             max_context_chars=req.max_context_chars,
+        )
+    except WorkspaceError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@router.post("/{project_id}/workspace/suggest-inline")
+async def workspace_suggest_inline(
+    project_id: str,
+    req: WorkspaceInlineSuggestReq,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+    try:
+        return await suggest_inline(
+            project_id=project_id,
+            branch=req.branch,
+            user_id=x_dev_user,
+            chat_id=req.chat_id,
+            path=req.path,
+            cursor=req.cursor,
+            selected_text=req.selected_text,
+            intent=req.intent,
+            llm_profile_id=req.llm_profile_id,
         )
     except WorkspaceError as err:
         raise HTTPException(status_code=400, detail=str(err))
@@ -307,4 +473,326 @@ async def workspace_patch_apply(
             raise HTTPException(status_code=409, detail=out)
         return out
     except WorkspaceError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@router.post("/{project_id}/workspace/patch/normalize")
+async def workspace_patch_normalize(
+    project_id: str,
+    req: WorkspacePatchNormalizeReq,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+    try:
+        return await normalize_patch_payload(
+            project_id=project_id,
+            branch=req.branch,
+            user_id=x_dev_user,
+            chat_id=req.chat_id,
+            content=req.content,
+            fallback_path=req.fallback_path,
+        )
+    except WorkspaceError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@router.post("/{project_id}/workspace/file/create")
+async def workspace_file_create(
+    project_id: str,
+    req: WorkspaceCreateFileReq,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+    try:
+        return await create_file(
+            project_id=project_id,
+            branch=req.branch,
+            user_id=x_dev_user,
+            chat_id=req.chat_id,
+            path=req.path,
+            content=req.content,
+            overwrite=bool(req.overwrite),
+        )
+    except WorkspaceError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@router.post("/{project_id}/workspace/folder/create")
+async def workspace_folder_create(
+    project_id: str,
+    req: WorkspaceCreateFolderReq,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+    try:
+        return await create_folder(
+            project_id=project_id,
+            branch=req.branch,
+            user_id=x_dev_user,
+            chat_id=req.chat_id,
+            path=req.path,
+        )
+    except WorkspaceError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@router.post("/{project_id}/workspace/file/rename")
+async def workspace_file_rename(
+    project_id: str,
+    req: WorkspaceRenamePathReq,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+    try:
+        return await rename_path(
+            project_id=project_id,
+            branch=req.branch,
+            user_id=x_dev_user,
+            chat_id=req.chat_id,
+            path=req.path,
+            new_path=req.new_path,
+            overwrite=bool(req.overwrite),
+        )
+    except WorkspaceError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@router.post("/{project_id}/workspace/file/move")
+async def workspace_file_move(
+    project_id: str,
+    req: WorkspaceMovePathReq,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+    try:
+        return await move_path(
+            project_id=project_id,
+            branch=req.branch,
+            user_id=x_dev_user,
+            chat_id=req.chat_id,
+            src_path=req.src_path,
+            dest_path=req.dest_path,
+            overwrite=bool(req.overwrite),
+        )
+    except WorkspaceError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@router.post("/{project_id}/workspace/diagnostics/run")
+async def workspace_diagnostics_run(
+    project_id: str,
+    req: WorkspaceDiagnosticsRunReq,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+    try:
+        return await run_workspace_diagnostics(
+            project_id=project_id,
+            branch=req.branch,
+            user_id=x_dev_user,
+            chat_id=req.chat_id,
+            target=req.target,
+            paths=req.paths,
+            command=req.command,
+            timeout_sec=req.timeout_sec,
+            max_output_chars=req.max_output_chars,
+        )
+    except WorkspaceError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@router.get("/{project_id}/workspace/diagnostics/latest")
+async def workspace_diagnostics_latest(
+    project_id: str,
+    branch: str = "main",
+    chat_id: str | None = None,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+    try:
+        return await get_latest_workspace_diagnostics(
+            project_id=project_id,
+            branch=branch,
+            user_id=x_dev_user,
+            chat_id=chat_id,
+        )
+    except WorkspaceError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@router.post("/{project_id}/workspace/context")
+async def workspace_context_collect(
+    project_id: str,
+    req: WorkspaceContextReq,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+    context = await assemble_workspace_context(
+        project_id=project_id,
+        branch=req.branch,
+        user_id=x_dev_user,
+        chat_id=req.chat_id,
+        payload={
+            "active_path": req.active_path,
+            "active_preview": req.active_preview,
+            "open_tabs": req.open_tabs,
+            "dirty_paths": req.dirty_paths,
+            "draft_previews": req.draft_previews,
+            "cursor": req.cursor,
+        },
+    )
+    return {
+        "context": context,
+        "context_text": workspace_context_to_text(context),
+    }
+
+
+@router.post("/{project_id}/workspace/git/status")
+async def workspace_git_status(
+    project_id: str,
+    req: WorkspaceGitStatusReq,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+    try:
+        return await git_status(
+            GitStatusRequest(
+                project_id=project_id,
+                branch=req.branch,
+            )
+        )
+    except Exception as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@router.post("/{project_id}/workspace/git/stage")
+async def workspace_git_stage(
+    project_id: str,
+    req: WorkspaceGitStageReq,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+    try:
+        return await git_stage_files(
+            GitStageFilesRequest(
+                project_id=project_id,
+                paths=req.paths,
+                all=bool(req.all),
+            )
+        )
+    except Exception as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@router.post("/{project_id}/workspace/git/unstage")
+async def workspace_git_unstage(
+    project_id: str,
+    req: WorkspaceGitUnstageReq,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+    try:
+        return await git_unstage_files(
+            GitUnstageFilesRequest(
+                project_id=project_id,
+                paths=req.paths,
+                all=bool(req.all),
+            )
+        )
+    except Exception as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@router.post("/{project_id}/workspace/git/commit")
+async def workspace_git_commit(
+    project_id: str,
+    req: WorkspaceGitCommitReq,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+    try:
+        return await git_commit(
+            GitCommitRequest(
+                project_id=project_id,
+                message=req.message,
+                all=bool(req.all),
+                amend=bool(req.amend),
+            )
+        )
+    except Exception as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@router.post("/{project_id}/workspace/git/fetch")
+async def workspace_git_fetch(
+    project_id: str,
+    req: WorkspaceGitFetchReq,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+    try:
+        return await git_fetch(
+            GitFetchRequest(
+                project_id=project_id,
+                remote=req.remote,
+                prune=bool(req.prune),
+            )
+        )
+    except Exception as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@router.post("/{project_id}/workspace/git/pull")
+async def workspace_git_pull(
+    project_id: str,
+    req: WorkspaceGitPullReq,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+    try:
+        return await git_pull(
+            GitPullRequest(
+                project_id=project_id,
+                remote=req.remote,
+                branch=req.branch,
+                rebase=bool(req.rebase),
+            )
+        )
+    except Exception as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@router.post("/{project_id}/workspace/git/push")
+async def workspace_git_push(
+    project_id: str,
+    req: WorkspaceGitPushReq,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+    try:
+        return await git_push(
+            GitPushRequest(
+                project_id=project_id,
+                remote=req.remote,
+                branch=req.branch,
+                set_upstream=bool(req.set_upstream),
+                force_with_lease=bool(req.force_with_lease),
+            )
+        )
+    except Exception as err:
         raise HTTPException(status_code=400, detail=str(err))

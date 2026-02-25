@@ -48,6 +48,7 @@ import { ChatToolEventsBanner } from "@/features/chat/ChatToolEventsBanner"
 import { ChatComposer } from "@/features/chat/ChatComposer"
 import { NewChatDialog } from "@/features/chat/NewChatDialog"
 import { useLocalToolJobWorker } from "@/features/local-tools/useLocalToolJobWorker"
+import { WorkspaceDockLayout } from "@/features/workspace/WorkspaceDockLayout"
 import AppDialogTitle from "@/components/AppDialogTitle"
 import type {
     AskAgentResponse,
@@ -127,6 +128,18 @@ function equalStringArrays(a: string[], b: string[]): boolean {
     return true
 }
 
+function equalDraftPreviews(
+    a: Array<{ path: string; preview: string }>,
+    b: Array<{ path: string; preview: string }>
+): boolean {
+    if (a.length !== b.length) return false
+    for (let i = 0; i < a.length; i += 1) {
+        if (a[i]?.path !== b[i]?.path) return false
+        if (a[i]?.preview !== b[i]?.preview) return false
+    }
+    return true
+}
+
 export default function ProjectChatPage() {
     const { projectId } = useParams<{ projectId: string }>()
     const router = useRouter()
@@ -197,16 +210,28 @@ export default function ProjectChatPage() {
     const [newChatError, setNewChatError] = useState<string | null>(null)
     const [settingsOpen, setSettingsOpen] = useState(false)
     const [workspaceOpen, setWorkspaceOpen] = useState(false)
+    const [workspaceDockWidth, setWorkspaceDockWidth] = useState(620)
     const [workspaceRequestedPath, setWorkspaceRequestedPath] = useState<string | null>(null)
     const [workspaceRequestedAction, setWorkspaceRequestedAction] = useState<"suggest" | "apply-last" | null>(null)
+    const [workspaceRequestedPatchContent, setWorkspaceRequestedPatchContent] = useState<string | null>(null)
+    const [workspaceRequestedPatchFallbackPath, setWorkspaceRequestedPatchFallbackPath] = useState<string | null>(null)
+    const [workspaceRequestedPatchAutoApply, setWorkspaceRequestedPatchAutoApply] = useState(false)
     const [workspaceDirtyCount, setWorkspaceDirtyCount] = useState(0)
     const [workspaceDirtyPaths, setWorkspaceDirtyPaths] = useState<string[]>([])
+    const [workspaceActivePath, setWorkspaceActivePath] = useState<string | null>(null)
+    const [workspaceOpenTabs, setWorkspaceOpenTabs] = useState<string[]>([])
+    const [workspaceActivePreview, setWorkspaceActivePreview] = useState<string | null>(null)
+    const [workspaceDraftPreviews, setWorkspaceDraftPreviews] = useState<Array<{ path: string; preview: string }>>([])
+    const [workspaceCursor, setWorkspaceCursor] = useState<{ line: number; column: number } | null>(null)
     const [pendingConversationSwitch, setPendingConversationSwitch] = useState<PendingConversationSwitch | null>(null)
     const [switchingConversation, setSwitchingConversation] = useState(false)
     const workspaceDraftActionsRef = useRef<{ stashAll: () => Promise<void>; discardAll: () => void } | null>(null)
     const handleWorkspaceRequestHandled = useCallback(() => {
         setWorkspaceRequestedPath(null)
         setWorkspaceRequestedAction(null)
+        setWorkspaceRequestedPatchContent(null)
+        setWorkspaceRequestedPatchFallbackPath(null)
+        setWorkspaceRequestedPatchAutoApply(false)
     }, [])
     const handleWorkspaceDraftStateChange = useCallback((state: { dirtyCount: number; paths: string[] }) => {
         setWorkspaceDirtyCount((prev) => (prev === state.dirtyCount ? prev : state.dirtyCount))
@@ -219,6 +244,29 @@ export default function ProjectChatPage() {
         []
     )
     const handleWorkspaceClose = useCallback(() => setWorkspaceOpen(false), [])
+    const handleWorkspaceContextChange = useCallback(
+        (state: {
+            activePath: string | null
+            openTabs: string[]
+            dirtyPaths: string[]
+            activePreview: string | null
+            draftPreviews: Array<{ path: string; preview: string }>
+            cursor: { line: number; column: number } | null
+        }) => {
+            setWorkspaceActivePath((prev) => (prev === state.activePath ? prev : state.activePath))
+            setWorkspaceOpenTabs((prev) => (equalStringArrays(prev, state.openTabs) ? prev : state.openTabs))
+            setWorkspaceDirtyPaths((prev) => (equalStringArrays(prev, state.dirtyPaths) ? prev : state.dirtyPaths))
+            setWorkspaceActivePreview((prev) => (prev === (state.activePreview || null) ? prev : (state.activePreview || null)))
+            setWorkspaceDraftPreviews((prev) =>
+                equalDraftPreviews(prev, state.draftPreviews || []) ? prev : (state.draftPreviews || [])
+            )
+            const nextCursor = state.cursor || null
+            setWorkspaceCursor((prev) =>
+                prev?.line === nextCursor?.line && prev?.column === nextCursor?.column ? prev : nextCursor
+            )
+        },
+        []
+    )
 
     const scrollRef = useRef<HTMLDivElement | null>(null)
     const projectLabel = useMemo(() => project?.name || project?.key || projectId, [project, projectId])
@@ -227,6 +275,18 @@ export default function ProjectChatPage() {
         () => isBrowserLocalRepoPath((project?.repo_path || "").trim()),
         [project?.repo_path]
     )
+    const workspaceFlags = useMemo(() => {
+        const rootFlags = (project?.feature_flags || {}) as Record<string, unknown>
+        const extraFlags = ((project?.extra as { feature_flags?: Record<string, unknown> } | undefined)?.feature_flags ||
+            {}) as Record<string, unknown>
+        const flags = { ...extraFlags, ...rootFlags }
+        return {
+            docked: flags.workspace_docked_v2 !== false,
+            inlineAi: flags.workspace_inline_ai !== false,
+            diagnostics: flags.workspace_diagnostics !== false,
+            chatPatchApply: flags.workspace_chat_patch_apply !== false,
+        }
+    }, [project?.extra, project?.feature_flags])
     const docsTree = useMemo(() => buildDocTree(docsFiles), [docsFiles])
     const enabledToolCount = useMemo(() => toolEnabledSet.size, [toolEnabledSet])
     const selectedLlmProfile = useMemo(
@@ -332,6 +392,28 @@ export default function ProjectChatPage() {
     useEffect(() => {
         setPendingAnswerInput("")
     }, [pendingUserQuestion?.id])
+
+    useEffect(() => {
+        try {
+            const key = `pqa.workspace.dock.width.${projectId}`
+            const raw = window.localStorage.getItem(key)
+            const num = Number(raw || "")
+            if (Number.isFinite(num) && num >= 360 && num <= 980) {
+                setWorkspaceDockWidth(num)
+            }
+        } catch {
+            // ignore persistence failures
+        }
+    }, [projectId])
+
+    useEffect(() => {
+        try {
+            const key = `pqa.workspace.dock.width.${projectId}`
+            window.localStorage.setItem(key, String(Math.max(360, Math.min(980, workspaceDockWidth))))
+        } catch {
+            // ignore persistence failures
+        }
+    }, [projectId, workspaceDockWidth])
 
     const syncUrl = useCallback(
         (chatId: string, activeBranch: string) => {
@@ -1271,6 +1353,16 @@ export default function ProjectChatPage() {
                         top_k: 8,
                         question: effectiveQuestion,
                         local_repo_context: localRepoContext,
+                        workspace_context: workspaceOpen
+                            ? {
+                                  active_path: workspaceActivePath,
+                                  active_preview: workspaceActivePreview,
+                                  open_tabs: workspaceOpenTabs,
+                                  dirty_paths: workspaceDirtyPaths,
+                                  draft_previews: workspaceDraftPreviews,
+                                  cursor: workspaceCursor,
+                              }
+                            : null,
                         llm_profile_id: selectedLlmProfileId || null,
                         pending_question_id: activePending ? opts?.pendingQuestionId || activePending.id : null,
                         pending_answer: activePending ? pendingAnswer : null,
@@ -1316,6 +1408,13 @@ export default function ProjectChatPage() {
             sending,
             touchChatLocally,
             userId,
+            workspaceActivePath,
+            workspaceActivePreview,
+            workspaceCursor,
+            workspaceDraftPreviews,
+            workspaceDirtyPaths,
+            workspaceOpen,
+            workspaceOpenTabs,
         ]
     )
 
@@ -1502,6 +1601,47 @@ export default function ProjectChatPage() {
         [loadDocumentationList]
     )
 
+    const openInWorkspaceFromMessage = useCallback((fallbackPath?: string | null) => {
+        const path = String(fallbackPath || "").trim().replace(/^\.?\//, "")
+        if (path) {
+            setWorkspaceRequestedPath(path)
+            setWorkspaceRequestedAction(null)
+        }
+        setWorkspaceOpen(true)
+    }, [])
+
+    const reviewMessagePatch = useCallback(
+        (_messageKey: string, message: string, fallbackPath?: string | null) => {
+            if (!workspaceFlags.chatPatchApply) {
+                setError("Chat patch apply is disabled by project feature flags.")
+                return
+            }
+            const raw = String(message || "").trim()
+            if (!raw) return
+            setWorkspaceRequestedPatchContent(raw)
+            setWorkspaceRequestedPatchFallbackPath(String(fallbackPath || "").trim() || null)
+            setWorkspaceRequestedPatchAutoApply(false)
+            setWorkspaceOpen(true)
+        },
+        [workspaceFlags.chatPatchApply]
+    )
+
+    const applyMessagePatchFromBubble = useCallback(
+        (_messageKey: string, message: string, fallbackPath?: string | null) => {
+            if (!workspaceFlags.chatPatchApply) {
+                setError("Chat patch apply is disabled by project feature flags.")
+                return
+            }
+            const raw = String(message || "").trim()
+            if (!raw) return
+            setWorkspaceRequestedPatchContent(raw)
+            setWorkspaceRequestedPatchFallbackPath(String(fallbackPath || "").trim() || null)
+            setWorkspaceRequestedPatchAutoApply(true)
+            setWorkspaceOpen(true)
+        },
+        [workspaceFlags.chatPatchApply]
+    )
+
     const generateDocumentation = useCallback(async (opts?: { silent?: boolean }) => {
         if (!opts?.silent) {
             setDocsOpen(true)
@@ -1584,6 +1724,70 @@ export default function ProjectChatPage() {
         }
     }, [branch, browserLocalRepoMode, loadDocumentationList, projectId])
 
+    const chatMainPane = (
+        <>
+            <ChatMessagesPane
+                booting={booting}
+                loadingMessages={loadingMessages}
+                sending={sending}
+                messages={messages}
+                expandedSourceMessages={expandedSourceMessages}
+                onToggleSourceList={toggleSourceList}
+                onSourceClick={handleAnswerSourceClick}
+                onOpenInWorkspace={openInWorkspaceFromMessage}
+                onReviewMessagePatch={reviewMessagePatch}
+                onApplyMessagePatch={applyMessagePatchFromBubble}
+                scrollRef={scrollRef}
+            />
+
+            <ChatComposer
+                pendingUserQuestion={pendingUserQuestion}
+                pendingAnswerInput={pendingAnswerInput}
+                input={input}
+                sending={sending}
+                hasSelectedChat={Boolean(selectedChatId)}
+                onInputChange={setInput}
+                onPendingAnswerInputChange={setPendingAnswerInput}
+                onSend={(overrideQuestion) =>
+                    void send(overrideQuestion ? { question: overrideQuestion } : undefined)
+                }
+                onClear={() => void clearChat()}
+                onSubmitPendingAnswer={(answer, pendingQuestionId) =>
+                    void send({
+                        question: answer,
+                        pendingAnswer: answer,
+                        pendingQuestionId,
+                        clearComposer: false,
+                    })
+                }
+            />
+        </>
+    )
+
+    const workspacePanel = (
+        <WorkspaceShell
+            open={workspaceOpen}
+            docked={workspaceFlags.docked}
+            allowInlineAi={workspaceFlags.inlineAi}
+            allowDiagnostics={workspaceFlags.diagnostics}
+            projectId={projectId}
+            projectLabel={projectLabel}
+            branch={branch}
+            chatId={selectedChatId}
+            userId={userId}
+            requestOpenPath={workspaceRequestedPath}
+            requestAction={workspaceRequestedAction}
+            requestPatchContent={workspaceRequestedPatchContent}
+            requestPatchFallbackPath={workspaceRequestedPatchFallbackPath}
+            requestPatchAutoApply={workspaceRequestedPatchAutoApply}
+            onRequestHandled={handleWorkspaceRequestHandled}
+            onDraftStateChange={handleWorkspaceDraftStateChange}
+            onContextChange={handleWorkspaceContextChange}
+            onRegisterDraftActions={handleWorkspaceRegisterDraftActions}
+            onClose={handleWorkspaceClose}
+        />
+    )
+
     return (
         <ProjectDrawerLayout
             projectId={projectId}
@@ -1660,38 +1864,20 @@ export default function ProjectChatPage() {
                     />
                 )}
 
-                <ChatMessagesPane
-                    booting={booting}
-                    loadingMessages={loadingMessages}
-                    sending={sending}
-                    messages={messages}
-                    expandedSourceMessages={expandedSourceMessages}
-                    onToggleSourceList={toggleSourceList}
-                    onSourceClick={handleAnswerSourceClick}
-                    scrollRef={scrollRef}
-                />
-
-                <ChatComposer
-                    pendingUserQuestion={pendingUserQuestion}
-                    pendingAnswerInput={pendingAnswerInput}
-                    input={input}
-                    sending={sending}
-                    hasSelectedChat={Boolean(selectedChatId)}
-                    onInputChange={setInput}
-                    onPendingAnswerInputChange={setPendingAnswerInput}
-                    onSend={(overrideQuestion) =>
-                        void send(overrideQuestion ? { question: overrideQuestion } : undefined)
-                    }
-                    onClear={() => void clearChat()}
-                    onSubmitPendingAnswer={(answer, pendingQuestionId) =>
-                        void send({
-                            question: answer,
-                            pendingAnswer: answer,
-                            pendingQuestionId,
-                            clearComposer: false,
-                        })
-                    }
-                />
+                {workspaceFlags.docked ? (
+                    <WorkspaceDockLayout
+                        open={workspaceOpen}
+                        width={workspaceDockWidth}
+                        onWidthChange={setWorkspaceDockWidth}
+                        left={chatMainPane}
+                        right={workspacePanel}
+                    />
+                ) : (
+                    <>
+                        {chatMainPane}
+                        {workspacePanel}
+                    </>
+                )}
 
                 <ChatToolsDialog
                     open={toolsOpen}
@@ -1748,21 +1934,6 @@ export default function ProjectChatPage() {
                     onRegenerate={() => generateDocumentation()}
                     onDocsErrorClose={() => setDocsError(null)}
                     onDocsNoticeClose={() => setDocsNotice(null)}
-                />
-
-                <WorkspaceShell
-                    open={workspaceOpen}
-                    projectId={projectId}
-                    projectLabel={projectLabel}
-                    branch={branch}
-                    chatId={selectedChatId}
-                    userId={userId}
-                    requestOpenPath={workspaceRequestedPath}
-                    requestAction={workspaceRequestedAction}
-                    onRequestHandled={handleWorkspaceRequestHandled}
-                    onDraftStateChange={handleWorkspaceDraftStateChange}
-                    onRegisterDraftActions={handleWorkspaceRegisterDraftActions}
-                    onClose={handleWorkspaceClose}
                 />
 
                 <NewChatDialog

@@ -15,6 +15,10 @@ DEFAULT_FEATURE_FLAGS: dict[str, bool] = {
     "dry_run_tools_default": False,
     "require_approval_for_write_tools": False,
     "workspace_v1": True,
+    "workspace_docked_v2": True,
+    "workspace_inline_ai": True,
+    "workspace_diagnostics": True,
+    "workspace_chat_patch_apply": True,
 }
 
 

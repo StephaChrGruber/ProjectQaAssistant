@@ -2162,6 +2162,28 @@ async def apply_patch(
         "conflict_count": len(conflicts),
         "ok": len(conflicts) == 0,
     }
+    try:
+        db = get_db()
+        await db["workspace_patch_runs"].insert_one(
+            {
+                "project_id": project_id,
+                "branch": branch,
+                "chat_id": chat_id,
+                "user_id": user_id,
+                "applied": applied,
+                "conflicts": conflicts,
+                "applied_count": len(applied),
+                "conflict_count": len(conflicts),
+                "created_at": datetime.utcnow(),
+            }
+        )
+    except Exception:
+        logger.exception(
+            "workspace.patch_apply.persist_failed project=%s branch=%s chat=%s",
+            project_id,
+            branch,
+            chat_id or "",
+        )
     logger.info(
         "workspace.patch_apply.done project=%s branch=%s chat=%s applied=%s conflicts=%s",
         project_id,
@@ -2292,6 +2314,8 @@ async def suggest_patch(
     paths: list[str],
     intent: str | None,
     selected_text: str | None,
+    cursor: dict[str, int] | None = None,
+    scope: str | None = None,
     llm_profile_id: str | None = None,
     max_context_chars: int = MAX_SUGGEST_CONTEXT_CHARS,
 ) -> dict[str, Any]:
@@ -2353,6 +2377,9 @@ async def suggest_patch(
 
     user_intent = str(intent or "").strip() or "Improve the code quality and keep behavior stable unless explicitly asked otherwise."
     selected = str(selected_text or "").strip()
+    scope_mode = str(scope or "").strip().lower() or "open_tabs"
+    cursor_line = int((cursor or {}).get("line") or 0) if isinstance(cursor, dict) else 0
+    cursor_col = int((cursor or {}).get("column") or 0) if isinstance(cursor, dict) else 0
 
     system_prompt = (
         "You are a precise code editing assistant. "
@@ -2374,6 +2401,9 @@ async def suggest_patch(
         f"project_id={pid}\n"
         f"branch={safe_branch}\n"
         f"primary_path={safe_primary}\n"
+        f"scope={scope_mode}\n"
+        f"cursor_line={cursor_line}\n"
+        f"cursor_col={cursor_col}\n"
         f"intent={user_intent}\n"
         f"selected_text={selected or '<none>'}\n\n"
         "Repository context:\n"
@@ -2467,3 +2497,758 @@ async def suggest_patch(
         int((patch_preview or {}).get("changed_hunks") or 0),
     )
     return out
+
+
+def _extract_fenced_code_blocks(raw: str) -> list[dict[str, str]]:
+    blocks: list[dict[str, str]] = []
+    text = str(raw or "")
+    for m in re.finditer(r"```([A-Za-z0-9_+-]*)\n([\s\S]*?)```", text):
+        language = str(m.group(1) or "").strip().lower()
+        content = str(m.group(2) or "")
+        blocks.append({"language": language, "content": content})
+    return blocks
+
+
+def _parse_hunk_header(header: str) -> tuple[int, int, int, int]:
+    # @@ -a,b +c,d @@
+    m = re.search(r"@@\s*-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s*@@", header)
+    if not m:
+        raise WorkspaceError("Invalid unified diff hunk header")
+    old_start = int(m.group(1))
+    old_count = int(m.group(2) or "1")
+    new_start = int(m.group(3))
+    new_count = int(m.group(4) or "1")
+    return old_start, old_count, new_start, new_count
+
+
+def _parse_unified_diff_sections(diff_text: str) -> list[dict[str, Any]]:
+    sections: list[dict[str, Any]] = []
+    lines = str(diff_text or "").splitlines()
+    i = 0
+    current: dict[str, Any] | None = None
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith("+++ "):
+            raw = line.removeprefix("+++ ").strip()
+            path = raw
+            if path.startswith("b/"):
+                path = path[2:]
+            path = path.strip()
+            if path and path != "/dev/null":
+                current = {"path": _normalize_rel_path(path), "hunks": []}
+                sections.append(current)
+            i += 1
+            continue
+        if line.startswith("@@ ") and current is not None:
+            header = line
+            body: list[str] = []
+            i += 1
+            while i < len(lines):
+                body_line = lines[i]
+                if body_line.startswith("@@ ") or body_line.startswith("diff --git ") or body_line.startswith("--- ") or body_line.startswith("+++ "):
+                    break
+                body.append(body_line)
+                i += 1
+            old_start, old_count, new_start, new_count = _parse_hunk_header(header)
+            current["hunks"].append(
+                {
+                    "header": header,
+                    "old_start": old_start,
+                    "old_count": old_count,
+                    "new_start": new_start,
+                    "new_count": new_count,
+                    "body": body,
+                }
+            )
+            continue
+        i += 1
+    return [s for s in sections if isinstance(s.get("hunks"), list) and s.get("hunks")]
+
+
+def _apply_unified_hunks_to_text(original: str, hunks: list[dict[str, Any]]) -> str:
+    src = str(original or "").splitlines(keepends=False)
+    out: list[str] = []
+    cursor = 0
+    for h in hunks:
+        old_start = max(1, int(h.get("old_start") or 1))
+        target_index = max(0, old_start - 1)
+        if target_index > len(src):
+            target_index = len(src)
+        out.extend(src[cursor:target_index])
+        cursor = target_index
+        body = h.get("body") if isinstance(h.get("body"), list) else []
+        for raw in body:
+            line = str(raw or "")
+            if line.startswith("\\ No newline at end of file"):
+                continue
+            if line.startswith(" "):
+                if cursor < len(src):
+                    out.append(src[cursor])
+                else:
+                    out.append(line[1:])
+                cursor += 1
+                continue
+            if line.startswith("-"):
+                cursor += 1
+                continue
+            if line.startswith("+"):
+                out.append(line[1:])
+                continue
+            # Unknown marker; treat as context.
+            if cursor < len(src):
+                out.append(src[cursor])
+                cursor += 1
+            else:
+                out.append(line)
+    out.extend(src[cursor:])
+    return "\n".join(out)
+
+
+async def normalize_patch_payload(
+    *,
+    project_id: str,
+    branch: str,
+    user_id: str,
+    chat_id: str | None,
+    content: str,
+    fallback_path: str | None = None,
+) -> dict[str, Any]:
+    raw = str(content or "").strip()
+    if not raw:
+        raise WorkspaceError("normalize patch content is empty")
+    safe_branch = str(branch or "main").strip() or "main"
+
+    # 1) JSON payload support.
+    parsed = _extract_json_obj(raw)
+    if parsed:
+        payload = parsed.get("patch") if isinstance(parsed.get("patch"), dict) else parsed
+        files_raw = payload.get("files") if isinstance(payload, dict) else None
+        if isinstance(files_raw, list) and files_raw:
+            files_input: list[dict[str, Any]] = []
+            for row in files_raw:
+                if not isinstance(row, dict):
+                    continue
+                path_raw = str(row.get("path") or row.get("file") or "").strip()
+                if not path_raw:
+                    continue
+                path = _normalize_rel_path(path_raw)
+                target = str(row.get("target_content") or row.get("content") or "")
+                if not target and isinstance(row.get("unified_diff"), str):
+                    # Diff-only file cannot be reliably applied without parsing at this stage.
+                    continue
+                original = ""
+                try:
+                    read_out = await read_file(
+                        project_id=project_id,
+                        branch=safe_branch,
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        path=path,
+                        max_chars=160_000,
+                        allow_large=True,
+                    )
+                    original = str(read_out.get("content") or "")
+                except Exception:
+                    original = ""
+                files_input.append({"path": path, "original_content": original, "target_content": target})
+            if files_input:
+                patch = build_patch_preview(files_input)
+                return {"kind": "json", "patch": patch}
+
+    # 2) Unified diff payload.
+    if "diff --git " in raw or "\n@@ " in raw or raw.startswith("@@ "):
+        sections = _parse_unified_diff_sections(raw)
+        if sections:
+            files_input: list[dict[str, Any]] = []
+            for section in sections:
+                path = _normalize_rel_path(str(section.get("path") or ""))
+                original = ""
+                try:
+                    read_out = await read_file(
+                        project_id=project_id,
+                        branch=safe_branch,
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        path=path,
+                        max_chars=220_000,
+                        allow_large=True,
+                    )
+                    original = str(read_out.get("content") or "")
+                except Exception:
+                    original = ""
+                target = _apply_unified_hunks_to_text(original, section.get("hunks") if isinstance(section.get("hunks"), list) else [])
+                files_input.append({"path": path, "original_content": original, "target_content": target})
+            patch = build_patch_preview(files_input)
+            return {"kind": "unified_diff", "patch": patch}
+
+    # 3) Fenced code block support.
+    blocks = _extract_fenced_code_blocks(raw)
+    if blocks:
+        chosen = next((b for b in blocks if b.get("language") != "diff"), blocks[0])
+        target = str(chosen.get("content") or "")
+        selected_path = str(fallback_path or "").strip()
+        if not selected_path:
+            p_match = re.search(r"(?:^|\n)\s*(?:path|file)\s*:\s*([^\n]+)", raw, flags=re.IGNORECASE)
+            if p_match:
+                selected_path = str(p_match.group(1) or "").strip()
+        if not selected_path:
+            raise WorkspaceError("normalize patch needs fallback_path when message has no path")
+        safe_path = _normalize_rel_path(selected_path)
+        original = ""
+        try:
+            read_out = await read_file(
+                project_id=project_id,
+                branch=safe_branch,
+                user_id=user_id,
+                chat_id=chat_id,
+                path=safe_path,
+                max_chars=220_000,
+                allow_large=True,
+            )
+            original = str(read_out.get("content") or "")
+        except Exception:
+            original = ""
+        patch = build_patch_preview([{"path": safe_path, "original_content": original, "target_content": target}])
+        return {"kind": "fenced_code", "patch": patch}
+
+    raise WorkspaceError("Could not normalize patch payload. Provide JSON patch, unified diff, or fenced code block.")
+
+
+async def suggest_inline(
+    *,
+    project_id: str,
+    branch: str,
+    user_id: str,
+    chat_id: str | None,
+    path: str,
+    cursor: dict[str, int] | None,
+    selected_text: str | None,
+    intent: str | None,
+    llm_profile_id: str | None = None,
+) -> dict[str, Any]:
+    safe_path = _normalize_rel_path(path)
+    safe_branch = str(branch or "main").strip() or "main"
+    file_doc = await read_file(
+        project_id=project_id,
+        branch=safe_branch,
+        user_id=user_id,
+        chat_id=chat_id,
+        path=safe_path,
+        max_chars=180_000,
+        allow_large=False,
+    )
+    content = str(file_doc.get("content") or "")
+    lines = content.splitlines()
+    line = max(1, int((cursor or {}).get("line") or 1)) if isinstance(cursor, dict) else 1
+    col = max(1, int((cursor or {}).get("column") or 1)) if isinstance(cursor, dict) else 1
+    line = min(line, max(1, len(lines)))
+    current_line = lines[line - 1] if lines else ""
+    left = current_line[: max(0, col - 1)]
+    right = current_line[max(0, col - 1) :]
+    nearby_start = max(0, line - 25)
+    nearby_end = min(len(lines), line + 25)
+    nearby = "\n".join(lines[nearby_start:nearby_end])
+
+    project = await _project_doc(project_id)
+    llm_cfg = await resolve_project_llm_config(project, override_profile_id=(llm_profile_id or None))
+    llm_base = str(llm_cfg.get("llm_base_url") or "").strip() or None
+    llm_api_key = str(llm_cfg.get("llm_api_key") or "").strip() or None
+    llm_model = str(llm_cfg.get("llm_model") or "").strip() or None
+
+    prompt = (
+        "Provide ONLY the continuation text to insert at cursor. No markdown, no backticks, no explanations.\n"
+        f"path={safe_path}\n"
+        f"intent={str(intent or '').strip() or '<none>'}\n"
+        f"selected_text={str(selected_text or '').strip() or '<none>'}\n"
+        f"cursor_line={line}\n"
+        f"cursor_column={col}\n"
+        f"line_left={left}\n"
+        f"line_right={right}\n\n"
+        "Nearby code:\n"
+        f"```text\n{nearby}\n```"
+    )
+    raw = _llm_chat_once(
+        messages=[
+            {"role": "system", "content": "You are an inline code completion engine."},
+            {"role": "user", "content": prompt},
+        ],
+        llm_base_url=llm_base,
+        llm_api_key=llm_api_key,
+        llm_model=llm_model,
+        max_tokens=220,
+    )
+    suggestion = str(raw or "").strip()
+    suggestion = re.sub(r"^```[a-zA-Z0-9_+-]*\n?", "", suggestion).strip()
+    suggestion = re.sub(r"\n?```$", "", suggestion).strip()
+    if not suggestion:
+        suggestion = ""
+    if len(suggestion) > 1800:
+        suggestion = suggestion[:1800]
+    return {
+        "project_id": project_id,
+        "branch": safe_branch,
+        "path": safe_path,
+        "cursor": {"line": line, "column": col},
+        "suggestion": suggestion,
+    }
+
+
+async def create_file(
+    *,
+    project_id: str,
+    branch: str,
+    user_id: str,
+    chat_id: str | None,
+    path: str,
+    content: str = "",
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    safe_path = _normalize_rel_path(path)
+    existing = None
+    try:
+        existing = await read_file(
+            project_id=project_id,
+            branch=branch,
+            user_id=user_id,
+            chat_id=chat_id,
+            path=safe_path,
+            max_chars=1000,
+            allow_large=False,
+        )
+    except Exception:
+        existing = None
+    if existing and not overwrite:
+        raise WorkspaceError(f"File already exists: {safe_path}")
+    out = await write_file(
+        project_id=project_id,
+        branch=branch,
+        user_id=user_id,
+        chat_id=chat_id,
+        path=safe_path,
+        content=str(content or ""),
+        expected_hash=str(existing.get("content_hash") or "") if existing else None,
+    )
+    out["created"] = True
+    return out
+
+
+async def create_folder(
+    *,
+    project_id: str,
+    branch: str,
+    user_id: str,
+    chat_id: str | None,
+    path: str,
+) -> dict[str, Any]:
+    safe = str(path or "").strip().replace("\\", "/").strip("/")
+    if not safe:
+        raise WorkspaceError("folder path is required")
+    if any(part in {"", ".", ".."} for part in safe.split("/")):
+        raise WorkspaceError("Invalid folder path")
+    marker = f"{safe}/.gitkeep"
+    out = await create_file(
+        project_id=project_id,
+        branch=branch,
+        user_id=user_id,
+        chat_id=chat_id,
+        path=marker,
+        content="",
+        overwrite=True,
+    )
+    return {"path": safe, "marker": marker, "mode": out.get("mode"), "created": True}
+
+
+async def move_path(
+    *,
+    project_id: str,
+    branch: str,
+    user_id: str,
+    chat_id: str | None,
+    src_path: str,
+    dest_path: str,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    src = _normalize_rel_path(src_path)
+    dest = _normalize_rel_path(dest_path)
+    if src == dest:
+        return {"path": src, "mode": "unchanged", "moved": False}
+    source = await read_file(
+        project_id=project_id,
+        branch=branch,
+        user_id=user_id,
+        chat_id=chat_id,
+        path=src,
+        max_chars=300_000,
+        allow_large=True,
+    )
+    target_exists = None
+    try:
+        target_exists = await read_file(
+            project_id=project_id,
+            branch=branch,
+            user_id=user_id,
+            chat_id=chat_id,
+            path=dest,
+            max_chars=1000,
+            allow_large=False,
+        )
+    except Exception:
+        target_exists = None
+    if target_exists and not overwrite:
+        raise WorkspaceError(f"Destination file already exists: {dest}")
+    write_out = await write_file(
+        project_id=project_id,
+        branch=branch,
+        user_id=user_id,
+        chat_id=chat_id,
+        path=dest,
+        content=str(source.get("content") or ""),
+        expected_hash=str(target_exists.get("content_hash") or "") if target_exists else None,
+    )
+    await delete_file(
+        project_id=project_id,
+        branch=branch,
+        user_id=user_id,
+        chat_id=chat_id,
+        path=src,
+        ignore_missing=False,
+    )
+    return {
+        "src_path": src,
+        "dest_path": dest,
+        "mode": write_out.get("mode"),
+        "moved": True,
+        "content_hash": write_out.get("content_hash"),
+    }
+
+
+async def rename_path(
+    *,
+    project_id: str,
+    branch: str,
+    user_id: str,
+    chat_id: str | None,
+    path: str,
+    new_path: str,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    return await move_path(
+        project_id=project_id,
+        branch=branch,
+        user_id=user_id,
+        chat_id=chat_id,
+        src_path=path,
+        dest_path=new_path,
+        overwrite=overwrite,
+    )
+
+
+def _parse_diagnostic_markers(output: str) -> list[dict[str, Any]]:
+    markers: list[dict[str, Any]] = []
+    text = str(output or "")
+    for line in text.splitlines():
+        m = re.search(r"(?P<path>[^\s:][^:]*):(?P<line>\d+):(?:(?P<col>\d+):)?\s*(?P<sev>error|warning|info)\b", line, flags=re.IGNORECASE)
+        if not m:
+            continue
+        markers.append(
+            {
+                "path": str(m.group("path") or "").strip().replace("\\", "/"),
+                "line": int(m.group("line") or 1),
+                "column": int(m.group("col") or 1),
+                "severity": str(m.group("sev") or "info").lower(),
+                "message": line.strip(),
+            }
+        )
+    return markers[:600]
+
+
+async def run_workspace_diagnostics(
+    *,
+    project_id: str,
+    branch: str,
+    user_id: str,
+    chat_id: str | None,
+    target: str = "active_file",
+    paths: list[str] | None = None,
+    command: str | None = None,
+    timeout_sec: int = 240,
+    max_output_chars: int = 60_000,
+) -> dict[str, Any]:
+    from ..models.tools import RunTestsRequest
+    from ..rag.tool_exec import run_tests
+
+    safe_branch = str(branch or "main").strip() or "main"
+    req = RunTestsRequest(
+        project_id=project_id,
+        branch=safe_branch,
+        command=(str(command or "").strip() or None),
+        timeout_sec=max(10, min(int(timeout_sec or 240), 1200)),
+        max_output_chars=max(2000, min(int(max_output_chars or 60_000), 200_000)),
+    )
+    result = await run_tests(req)
+    markers = _parse_diagnostic_markers(result.output)
+    out = {
+        "project_id": project_id,
+        "branch": safe_branch,
+        "chat_id": chat_id,
+        "target": str(target or "active_file"),
+        "paths": [str(p or "") for p in (paths or []) if str(p or "").strip()],
+        "command": result.command,
+        "success": bool(result.success),
+        "exit_code": int(result.exit_code),
+        "output": result.output,
+        "truncated": bool(result.truncated),
+        "markers": markers,
+        "markers_count": len(markers),
+        "created_at": datetime.utcnow().replace(tzinfo=timezone.utc).isoformat(),
+    }
+    try:
+        db = get_db()
+        await db["workspace_diagnostics_runs"].insert_one(
+            {
+                **out,
+                "user_id": user_id,
+                "created_at_dt": datetime.utcnow(),
+            }
+        )
+    except Exception:
+        logger.exception(
+            "workspace.diagnostics.persist_failed project=%s branch=%s chat=%s",
+            project_id,
+            safe_branch,
+            chat_id or "",
+        )
+    return out
+
+
+async def get_latest_workspace_diagnostics(
+    *,
+    project_id: str,
+    branch: str,
+    user_id: str,
+    chat_id: str | None,
+) -> dict[str, Any]:
+    db = get_db()
+    q: dict[str, Any] = {
+        "project_id": project_id,
+        "branch": str(branch or "main").strip() or "main",
+        "user_id": user_id,
+    }
+    if str(chat_id or "").strip():
+        q["chat_id"] = chat_id
+    row = await db["workspace_diagnostics_runs"].find_one(q, sort=[("created_at_dt", -1)])
+    if not row:
+        return {
+            "found": False,
+            "project_id": project_id,
+            "branch": q["branch"],
+            "chat_id": chat_id,
+        }
+    return {
+        "found": True,
+        "project_id": project_id,
+        "branch": row.get("branch"),
+        "chat_id": row.get("chat_id"),
+        "target": row.get("target"),
+        "paths": row.get("paths") or [],
+        "command": row.get("command"),
+        "success": bool(row.get("success")),
+        "exit_code": int(row.get("exit_code") or 0),
+        "output": str(row.get("output") or ""),
+        "truncated": bool(row.get("truncated")),
+        "markers": row.get("markers") or [],
+        "markers_count": int(row.get("markers_count") or 0),
+        "created_at": row.get("created_at"),
+    }
+
+
+def _trim_workspace_context_text(text: str, max_chars: int = 4200) -> str:
+    raw = str(text or "").strip()
+    if len(raw) <= max_chars:
+        return raw
+    return raw[: max_chars - 18] + "\n... (truncated)\n"
+
+
+def _preview_text(value: str, max_chars: int = 320) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [ln.rstrip() for ln in text.split("\n")]
+    compact = "\n".join(lines).strip()
+    if len(compact) <= max_chars:
+        return compact
+    return compact[: max(0, max_chars - 15)] + "... (truncated)"
+
+
+async def assemble_workspace_context(
+    *,
+    project_id: str,
+    branch: str,
+    user_id: str,
+    chat_id: str | None,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    safe_branch = str(branch or "main").strip() or "main"
+    active_path = _normalize_rel_path(str((payload or {}).get("active_path") or "")) if str((payload or {}).get("active_path") or "").strip() else None
+    active_preview = _preview_text(str((payload or {}).get("active_preview") or ""), max_chars=900)
+    if not active_preview:
+        active_preview = None
+    cursor_raw = (payload or {}).get("cursor")
+    cursor: dict[str, Any] | None = None
+    if isinstance(cursor_raw, dict):
+        try:
+            line = max(1, int(cursor_raw.get("line") or 1))
+            column = max(1, int(cursor_raw.get("column") or 1))
+            cursor = {"line": line, "column": column}
+        except Exception:
+            cursor = None
+    open_tabs = []
+    for raw in ((payload or {}).get("open_tabs") or []):
+        p = str(raw or "").strip()
+        if not p:
+            continue
+        try:
+            open_tabs.append(_normalize_rel_path(p))
+        except Exception:
+            continue
+        if len(open_tabs) >= 30:
+            break
+
+    dirty_paths = []
+    for raw in ((payload or {}).get("dirty_paths") or []):
+        p = str(raw or "").strip()
+        if not p:
+            continue
+        try:
+            dirty_paths.append(_normalize_rel_path(p))
+        except Exception:
+            continue
+        if len(dirty_paths) >= 60:
+            break
+
+    draft_previews: list[dict[str, str]] = []
+    payload_draft_previews = (payload or {}).get("draft_previews")
+    if isinstance(payload_draft_previews, list):
+        for row in payload_draft_previews:
+            if not isinstance(row, dict):
+                continue
+            raw_path = str(row.get("path") or "").strip()
+            if not raw_path:
+                continue
+            try:
+                safe_path = _normalize_rel_path(raw_path)
+            except Exception:
+                continue
+            preview = _preview_text(str(row.get("preview") or ""), max_chars=500)
+            if not preview:
+                continue
+            draft_previews.append({"path": safe_path, "preview": preview})
+            if len(draft_previews) >= 16:
+                break
+
+    db = get_db()
+    if not dirty_paths and str(chat_id or "").strip():
+        q = {
+            "project_id": project_id,
+            "branch": safe_branch,
+            "chat_id": str(chat_id).strip(),
+            "user_id": str(user_id or "").strip(),
+        }
+        rows = await db["workspace_drafts"].find(q, {"path": 1, "updated_at": 1}).sort("updated_at", -1).to_list(length=80)
+        dirty_paths = [str(r.get("path") or "").strip() for r in rows if str(r.get("path") or "").strip()]
+    if not draft_previews and str(chat_id or "").strip():
+        q = {
+            "project_id": project_id,
+            "branch": safe_branch,
+            "chat_id": str(chat_id).strip(),
+            "user_id": str(user_id or "").strip(),
+        }
+        rows = await db["workspace_drafts"].find(q, {"path": 1, "content": 1, "updated_at": 1}).sort("updated_at", -1).to_list(length=20)
+        for row in rows:
+            path = str(row.get("path") or "").strip()
+            content = str(row.get("content") or "")
+            if not path or not content:
+                continue
+            draft_previews.append({"path": path, "preview": _preview_text(content, max_chars=500)})
+            if len(draft_previews) >= 12:
+                break
+
+    recent_patches: list[dict[str, Any]] = []
+    if str(chat_id or "").strip():
+        patch_rows = await db["workspace_patch_runs"].find(
+            {"project_id": project_id, "branch": safe_branch, "chat_id": str(chat_id).strip()},
+            {"applied": 1, "applied_count": 1, "conflict_count": 1, "created_at": 1},
+        ).sort("created_at", -1).to_list(length=8)
+        for row in patch_rows:
+            recent_patches.append(
+                {
+                    "applied_count": int(row.get("applied_count") or 0),
+                    "conflict_count": int(row.get("conflict_count") or 0),
+                    "paths": [str(x.get("path") or "").strip() for x in (row.get("applied") or []) if isinstance(x, dict)],
+                    "created_at": str(row.get("created_at") or ""),
+                }
+            )
+
+    context = {
+        "project_id": project_id,
+        "branch": safe_branch,
+        "chat_id": chat_id,
+        "active_path": active_path,
+        "active_preview": active_preview,
+        "cursor": cursor,
+        "open_tabs": open_tabs,
+        "dirty_paths": dirty_paths,
+        "draft_previews": draft_previews,
+        "recent_patches": recent_patches,
+    }
+    return context
+
+
+def workspace_context_to_text(context: dict[str, Any]) -> str:
+    if not isinstance(context, dict):
+        return ""
+    lines: list[str] = ["Workspace context (editor state):"]
+    active = str(context.get("active_path") or "").strip()
+    if active:
+        lines.append(f"- active_path: {active}")
+    active_preview = str(context.get("active_preview") or "").strip()
+    if active_preview:
+        lines.append("- active_preview:")
+        lines.append(f"  {active_preview}")
+    cursor = context.get("cursor") if isinstance(context.get("cursor"), dict) else None
+    if cursor:
+        lines.append(
+            f"- cursor: line={int(cursor.get('line') or 1)} col={int(cursor.get('column') or 1)}"
+        )
+    open_tabs = [str(x or "").strip() for x in (context.get("open_tabs") or []) if str(x or "").strip()]
+    if open_tabs:
+        lines.append(f"- open_tabs ({len(open_tabs)}):")
+        for path in open_tabs[:20]:
+            lines.append(f"  - {path}")
+    dirty = [str(x or "").strip() for x in (context.get("dirty_paths") or []) if str(x or "").strip()]
+    if dirty:
+        lines.append(f"- dirty_paths ({len(dirty)}):")
+        for path in dirty[:30]:
+            lines.append(f"  - {path}")
+    draft_previews = context.get("draft_previews") if isinstance(context.get("draft_previews"), list) else []
+    if draft_previews:
+        lines.append(f"- draft_previews ({len(draft_previews)}):")
+        for row in draft_previews[:10]:
+            if not isinstance(row, dict):
+                continue
+            path = str(row.get("path") or "").strip()
+            preview = str(row.get("preview") or "").strip()
+            if not path:
+                continue
+            lines.append(f"  - {path}")
+            if preview:
+                lines.append(f"    {preview}")
+    recent = context.get("recent_patches") if isinstance(context.get("recent_patches"), list) else []
+    if recent:
+        lines.append(f"- recent_patch_runs ({len(recent)}):")
+        for row in recent[:5]:
+            if not isinstance(row, dict):
+                continue
+            paths = [str(p or "").strip() for p in (row.get("paths") or []) if str(p or "").strip()]
+            lines.append(
+                f"  - applied={int(row.get('applied_count') or 0)} conflicts={int(row.get('conflict_count') or 0)} paths={', '.join(paths[:8])}"
+            )
+    return _trim_workspace_context_text("\n".join(lines))

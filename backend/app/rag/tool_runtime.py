@@ -62,6 +62,7 @@ from ..models.tools import (
     UpdateAutomationRequest,
     UpdateChatTaskRequest,
     WriteDocumentationFileRequest,
+    WorkspaceGetContextRequest,
 )
 from .tool_exec import (
     compare_branches,
@@ -94,6 +95,7 @@ from .tool_exec import (
     open_file,
     request_user_input,
     read_chat_messages,
+    workspace_get_context,
     read_docs_folder,
     repo_grep,
     repo_tree,
@@ -391,6 +393,8 @@ class ToolRuntime:
             return (bool(caps.get("jira_configured")), "jira_connector_not_configured" if not caps.get("jira_configured") else "")
 
         if name in {"request_user_input", "read_chat_messages"}:
+            return (bool(caps.get("has_chat")), "chat_context_missing" if not caps.get("has_chat") else "")
+        if name == "workspace_get_context":
             return (bool(caps.get("has_chat")), "chat_context_missing" if not caps.get("has_chat") else "")
 
         if spec.origin == "custom" and str(spec.runtime or "").strip() == "local_typescript":
@@ -1156,6 +1160,18 @@ def build_default_tool_runtime(
             description="Reads recent messages from the current chat (for conversational context).",
             model=ReadChatMessagesRequest,
             handler=read_chat_messages,
+            timeout_sec=20,
+            rate_limit_per_min=120,
+            max_retries=1,
+            cache_ttl_sec=5,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="workspace_get_context",
+            description="Returns active workspace context (open tabs, dirty drafts, recent patch runs).",
+            model=WorkspaceGetContextRequest,
+            handler=workspace_get_context,
             timeout_sec=20,
             rate_limit_per_min=120,
             max_retries=1,

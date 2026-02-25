@@ -429,6 +429,19 @@ class ReadChatMessagesResponse(BaseModel):
     messages: List[ChatMessageItem] = Field(default_factory=list)
 
 
+class WorkspaceGetContextRequest(BaseModel):
+    project_id: str
+    branch: Optional[str] = None
+    chat_id: Optional[str] = None
+    user: Optional[str] = None
+
+
+class WorkspaceGetContextResponse(BaseModel):
+    found: bool = True
+    context: Dict[str, Any] = Field(default_factory=dict)
+    context_text: str = ""
+
+
 class ListToolsRequest(BaseModel):
     include_unavailable: bool = False
     include_parameters: bool = False

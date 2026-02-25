@@ -1,7 +1,7 @@
 "use client"
 
-import { Fragment } from "react"
-import { Box, Collapse, List, ListItemButton, ListItemText, Typography } from "@mui/material"
+import { Fragment, useEffect, useMemo, useRef, useState } from "react"
+import { Box, Button, Collapse, List, ListItemButton, ListItemText, Stack, TextField, Typography } from "@mui/material"
 import FolderRounded from "@mui/icons-material/FolderRounded"
 import DescriptionRounded from "@mui/icons-material/DescriptionRounded"
 import ExpandMoreRounded from "@mui/icons-material/ExpandMoreRounded"
@@ -14,6 +14,10 @@ type FileTreePaneProps = {
   selectedPath: string | null
   onToggleFolder: (path: string) => void
   onOpenFile: (path: string) => void
+  onCreateFile?: (path: string) => void
+  onCreateFolder?: (path: string) => void
+  onRenamePath?: (path: string, nextPath: string) => void
+  onDeletePath?: (path: string) => void
 }
 
 export function FileTreePane({
@@ -22,7 +26,44 @@ export function FileTreePane({
   selectedPath,
   onToggleFolder,
   onOpenFile,
+  onCreateFile,
+  onCreateFolder,
+  onRenamePath,
+  onDeletePath,
 }: FileTreePaneProps) {
+  const [query, setQuery] = useState("")
+  const searchRef = useRef<HTMLInputElement | null>(null)
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "p") {
+        ev.preventDefault()
+        searchRef.current?.focus()
+      }
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [])
+
+  const visibleNodes = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return nodes
+    const filter = (items: WorkspaceTreeNode[]): WorkspaceTreeNode[] => {
+      const out: WorkspaceTreeNode[] = []
+      for (const node of items) {
+        if (node.kind === "file") {
+          if (node.path.toLowerCase().includes(q)) out.push(node)
+          continue
+        }
+        const children = filter(node.children || [])
+        if (node.path.toLowerCase().includes(q) || children.length) {
+          out.push({ ...node, children })
+        }
+      }
+      return out
+    }
+    return filter(nodes)
+  }, [nodes, query])
+
   const renderNodes = (items: WorkspaceTreeNode[], depth = 0) =>
     items.map((node) => {
       if (node.kind === "folder") {
@@ -67,11 +108,72 @@ export function FileTreePane({
 
   return (
     <Box sx={{ borderRight: "1px solid", borderColor: "divider", minHeight: 0, height: "100%", overflow: "auto" }}>
-      <Typography variant="caption" color="text.secondary" sx={{ px: 1.2, py: 0.8, display: "block", letterSpacing: "0.04em" }}>
+      <Typography variant="caption" color="text.secondary" sx={{ px: 1.2, py: 0.6, display: "block", letterSpacing: "0.04em" }}>
         FILES
       </Typography>
+      <Box sx={{ px: 1, pb: 0.8 }}>
+        <TextField
+          inputRef={searchRef}
+          size="small"
+          placeholder="Quick file search (Ctrl/Cmd+P)"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          fullWidth
+        />
+        <Stack direction="row" spacing={0.6} sx={{ mt: 0.6 }} useFlexGap flexWrap="wrap">
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={() => {
+              const name = window.prompt("New file path", selectedPath ? selectedPath.replace(/[^/]+$/, "") : "")
+              const value = String(name || "").trim()
+              if (value) onCreateFile?.(value)
+            }}
+          >
+            New File
+          </Button>
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={() => {
+              const name = window.prompt("New folder path", selectedPath ? selectedPath.replace(/[^/]+$/, "") : "")
+              const value = String(name || "").trim()
+              if (value) onCreateFolder?.(value)
+            }}
+          >
+            New Folder
+          </Button>
+          <Button
+            size="small"
+            variant="outlined"
+            disabled={!selectedPath}
+            onClick={() => {
+              if (!selectedPath) return
+              const next = window.prompt("Rename/move to", selectedPath)
+              const value = String(next || "").trim()
+              if (value && value !== selectedPath) onRenamePath?.(selectedPath, value)
+            }}
+          >
+            Rename/Move
+          </Button>
+          <Button
+            size="small"
+            variant="outlined"
+            color="error"
+            disabled={!selectedPath}
+            onClick={() => {
+              if (!selectedPath) return
+              if (window.confirm(`Delete ${selectedPath}?`)) {
+                onDeletePath?.(selectedPath)
+              }
+            }}
+          >
+            Delete
+          </Button>
+        </Stack>
+      </Box>
       <List dense disablePadding>
-        {renderNodes(nodes)}
+        {renderNodes(visibleNodes)}
       </List>
     </Box>
   )
