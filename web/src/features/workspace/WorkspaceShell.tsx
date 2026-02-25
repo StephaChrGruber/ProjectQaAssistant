@@ -89,10 +89,21 @@ export function WorkspaceShell({
   const idleTimerRef = useRef<number | null>(null)
   const tabsRef = useRef<WorkspaceOpenTab[]>([])
   const previousBranchRef = useRef<string>(branch)
+  const draftStateSignatureRef = useRef<string>("")
+  const onDraftStateChangeRef = useRef(onDraftStateChange)
+  const onRegisterDraftActionsRef = useRef(onRegisterDraftActions)
 
   const treeNodes = useMemo(() => buildWorkspaceTree(tree?.entries || []), [tree?.entries])
   const selectedTab = useMemo(() => tabs.find((tab) => tab.path === activePath) || null, [tabs, activePath])
   const isConflictError = useCallback((msg: string) => msg.includes("conflict:file_changed_since_load"), [])
+
+  useEffect(() => {
+    onDraftStateChangeRef.current = onDraftStateChange
+  }, [onDraftStateChange])
+
+  useEffect(() => {
+    onRegisterDraftActionsRef.current = onRegisterDraftActions
+  }, [onRegisterDraftActions])
 
   const resetWorkspaceState = useCallback(() => {
     setTabs([])
@@ -284,15 +295,16 @@ export function WorkspaceShell({
 
   useEffect(() => {
     tabsRef.current = tabs
-    if (!onDraftStateChange) return
     const dirty = tabs.filter((tab) => tab.dirty || tab.draftDirty).map((tab) => tab.path)
-    onDraftStateChange({ dirtyCount: dirty.length, paths: dirty })
-  }, [onDraftStateChange, tabs])
+    const signature = `${dirty.length}:${dirty.join("\n")}`
+    if (signature === draftStateSignatureRef.current) return
+    draftStateSignatureRef.current = signature
+    onDraftStateChangeRef.current?.({ dirtyCount: dirty.length, paths: dirty })
+  }, [tabs])
 
   useEffect(() => {
-    if (!onRegisterDraftActions) return
-    onRegisterDraftActions({ stashAll: stashAllDrafts, discardAll: discardAllDrafts })
-  }, [discardAllDrafts, onRegisterDraftActions, stashAllDrafts])
+    onRegisterDraftActionsRef.current?.({ stashAll: stashAllDrafts, discardAll: discardAllDrafts })
+  }, [discardAllDrafts, stashAllDrafts])
 
   const saveActiveFile = useCallback(async () => {
     if (!selectedTab) return

@@ -119,6 +119,14 @@ type PendingConversationSwitch = {
     targetChatId: string
 }
 
+function equalStringArrays(a: string[], b: string[]): boolean {
+    if (a.length !== b.length) return false
+    for (let i = 0; i < a.length; i += 1) {
+        if (a[i] !== b[i]) return false
+    }
+    return true
+}
+
 export default function ProjectChatPage() {
     const { projectId } = useParams<{ projectId: string }>()
     const router = useRouter()
@@ -196,6 +204,21 @@ export default function ProjectChatPage() {
     const [pendingConversationSwitch, setPendingConversationSwitch] = useState<PendingConversationSwitch | null>(null)
     const [switchingConversation, setSwitchingConversation] = useState(false)
     const workspaceDraftActionsRef = useRef<{ stashAll: () => Promise<void>; discardAll: () => void } | null>(null)
+    const handleWorkspaceRequestHandled = useCallback(() => {
+        setWorkspaceRequestedPath(null)
+        setWorkspaceRequestedAction(null)
+    }, [])
+    const handleWorkspaceDraftStateChange = useCallback((state: { dirtyCount: number; paths: string[] }) => {
+        setWorkspaceDirtyCount((prev) => (prev === state.dirtyCount ? prev : state.dirtyCount))
+        setWorkspaceDirtyPaths((prev) => (equalStringArrays(prev, state.paths) ? prev : state.paths))
+    }, [])
+    const handleWorkspaceRegisterDraftActions = useCallback(
+        (actions: { stashAll: () => Promise<void>; discardAll: () => void }) => {
+            workspaceDraftActionsRef.current = actions
+        },
+        []
+    )
+    const handleWorkspaceClose = useCallback(() => setWorkspaceOpen(false), [])
 
     const scrollRef = useRef<HTMLDivElement | null>(null)
     const projectLabel = useMemo(() => project?.name || project?.key || projectId, [project, projectId])
@@ -1736,18 +1759,10 @@ export default function ProjectChatPage() {
                     userId={userId}
                     requestOpenPath={workspaceRequestedPath}
                     requestAction={workspaceRequestedAction}
-                    onRequestHandled={() => {
-                        setWorkspaceRequestedPath(null)
-                        setWorkspaceRequestedAction(null)
-                    }}
-                    onDraftStateChange={({ dirtyCount, paths }) => {
-                        setWorkspaceDirtyCount(dirtyCount)
-                        setWorkspaceDirtyPaths(paths)
-                    }}
-                    onRegisterDraftActions={(actions) => {
-                        workspaceDraftActionsRef.current = actions
-                    }}
-                    onClose={() => setWorkspaceOpen(false)}
+                    onRequestHandled={handleWorkspaceRequestHandled}
+                    onDraftStateChange={handleWorkspaceDraftStateChange}
+                    onRegisterDraftActions={handleWorkspaceRegisterDraftActions}
+                    onClose={handleWorkspaceClose}
                 />
 
                 <NewChatDialog
