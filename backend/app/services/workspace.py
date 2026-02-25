@@ -229,6 +229,12 @@ def _looks_binary_bytes(raw: bytes) -> bool:
     sample = raw[:8192]
     if b"\x00" in sample:
         return True
+    # If the sample is valid UTF-8, treat it as text.
+    try:
+        sample.decode("utf-8")
+        return False
+    except UnicodeDecodeError:
+        pass
     text_range = bytes(bytearray({7, 8, 9, 10, 12, 13, 27} | set(range(0x20, 0x7F))))
     non_text = sample.translate(None, text_range)
     return (len(non_text) / max(1, len(sample))) > 0.30

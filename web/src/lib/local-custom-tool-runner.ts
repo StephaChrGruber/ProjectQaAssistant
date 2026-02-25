@@ -86,6 +86,43 @@ function createLocalRepoHelpers(projectId: string) {
         }
     }
 
+    function resolveReadablePath(path: string): string {
+        ensureSnapshot()
+        const norm = normalizeRepoPath(path)
+        if (!norm) throw new Error("readFile(path): path is required")
+
+        const files = snapshot!.files || []
+        if (files.some((row) => row.path === norm)) {
+            return norm
+        }
+
+        const hasSlash = norm.includes("/")
+        // For short names like "agent2.py", allow unique suffix resolution.
+        if (!hasSlash) {
+            const suffixMatches = files.filter((row) => row.path === norm || row.path.endsWith(`/${norm}`))
+            if (suffixMatches.length === 1) {
+                return suffixMatches[0].path
+            }
+            if (suffixMatches.length > 1) {
+                const preview = suffixMatches.slice(0, 8).map((row) => row.path).join(", ")
+                throw new Error(
+                    `File path is ambiguous in browser-local snapshot: ${norm}. ` +
+                        `Use a repository-relative path. Matches: ${preview}${suffixMatches.length > 8 ? ", ..." : ""}`
+                )
+            }
+        }
+
+        const containsMatches = files
+            .filter((row) => row.path.toLowerCase().includes(norm.toLowerCase()))
+            .slice(0, 8)
+            .map((row) => row.path)
+        const hint =
+            containsMatches.length > 0
+                ? ` Closest matches: ${containsMatches.join(", ")}${containsMatches.length >= 8 ? ", ..." : ""}`
+                : ""
+        throw new Error(`File not found in browser-local snapshot: ${norm}.${hint}`)
+    }
+
     async function requireWritableRootHandle(): Promise<FileSystemDirectoryHandle> {
         await restoreLocalRepoSession(projectId)
         const rootHandle = getLocalRepoRootHandle(projectId)
@@ -117,8 +154,7 @@ function createLocalRepoHelpers(projectId: string) {
         },
         readFile(path: string, maxChars = 200_000): string {
             ensureSnapshot()
-            const norm = normalizeRepoPath(path)
-            if (!norm) throw new Error("readFile(path): path is required")
+            const norm = resolveReadablePath(path)
             const f = snapshot!.files.find((row) => row.path === norm)
             if (!f) throw new Error(`File not found in browser-local snapshot: ${norm}`)
             const body = f.content || ""
