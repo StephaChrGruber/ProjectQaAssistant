@@ -6,8 +6,10 @@ import dynamic from "next/dynamic"
 import {
     Alert,
     Box,
+    Button,
     Collapse,
     Dialog,
+    DialogActions,
     DialogContent,
     List,
     ListItemButton,
@@ -84,6 +86,7 @@ import {
     isDocumentationPath,
     makeChatId,
 } from "@/features/chat/utils"
+import { shouldPromptConversationSwitch } from "@/features/chat/conversation-switch"
 
 const ChatToolsDialog = dynamic(
     () => import("@/features/chat/ChatToolsDialog").then((m) => m.ChatToolsDialog),
@@ -104,6 +107,17 @@ const ChatSessionMemoryPanel = dynamic(
     () => import("@/features/chat/ChatSessionMemoryPanel").then((m) => m.ChatSessionMemoryPanel),
     { ssr: false }
 )
+
+const WorkspaceShell = dynamic(
+    () => import("@/features/workspace/WorkspaceShell").then((m) => m.WorkspaceShell),
+    { ssr: false }
+)
+
+type PendingConversationSwitch = {
+    targetProjectId: string
+    targetBranch: string
+    targetChatId: string
+}
 
 export default function ProjectChatPage() {
     const { projectId } = useParams<{ projectId: string }>()
@@ -174,6 +188,14 @@ export default function ProjectChatPage() {
     const [creatingNewChat, setCreatingNewChat] = useState(false)
     const [newChatError, setNewChatError] = useState<string | null>(null)
     const [settingsOpen, setSettingsOpen] = useState(false)
+    const [workspaceOpen, setWorkspaceOpen] = useState(false)
+    const [workspaceRequestedPath, setWorkspaceRequestedPath] = useState<string | null>(null)
+    const [workspaceRequestedAction, setWorkspaceRequestedAction] = useState<"suggest" | "apply-last" | null>(null)
+    const [workspaceDirtyCount, setWorkspaceDirtyCount] = useState(0)
+    const [workspaceDirtyPaths, setWorkspaceDirtyPaths] = useState<string[]>([])
+    const [pendingConversationSwitch, setPendingConversationSwitch] = useState<PendingConversationSwitch | null>(null)
+    const [switchingConversation, setSwitchingConversation] = useState(false)
+    const workspaceDraftActionsRef = useRef<{ stashAll: () => Promise<void>; discardAll: () => void } | null>(null)
 
     const scrollRef = useRef<HTMLDivElement | null>(null)
     const projectLabel = useMemo(() => project?.name || project?.key || projectId, [project, projectId])
@@ -834,28 +856,92 @@ export default function ProjectChatPage() {
         void restoreLocalRepoSession(projectId)
     }, [browserLocalRepoMode, projectId])
 
-    const onSelectChat = useCallback(
-        (chat: DrawerChat, chatProjectId: string) => {
-            const targetBranch = (chat.branch || branch || "main").trim() || "main"
-            const path = buildChatPath(chatProjectId, targetBranch, chat.chat_id)
+    const applyConversationSwitch = useCallback(
+        (targetProjectId: string, targetBranch: string, targetChatId: string) => {
+            const path = buildChatPath(targetProjectId, targetBranch, targetChatId)
             saveLastChat({
-                projectId: chatProjectId,
+                projectId: targetProjectId,
                 branch: targetBranch,
-                chatId: chat.chat_id,
+                chatId: targetChatId,
                 path,
                 ts: Date.now(),
             })
 
-            if (chatProjectId !== projectId) {
+            if (targetProjectId !== projectId) {
                 router.push(path)
                 return
             }
 
             setBranch(targetBranch)
-            setSelectedChatId(chat.chat_id)
+            setSelectedChatId(targetChatId)
             setMessages([])
+            touchChatLocally(targetChatId, "")
+            void loadChats(targetBranch, targetChatId)
+            router.push(path)
         },
-        [branch, projectId, router]
+        [loadChats, projectId, router, touchChatLocally]
+    )
+
+    const maybePromptConversationSwitch = useCallback(
+        (next: PendingConversationSwitch) => {
+            if (
+                shouldPromptConversationSwitch({
+                    currentProjectId: projectId,
+                    currentBranch: branch,
+                    nextProjectId: next.targetProjectId,
+                    nextBranch: next.targetBranch,
+                    dirtyDraftCount: workspaceDirtyCount,
+                })
+            ) {
+                setPendingConversationSwitch(next)
+                return true
+            }
+            return false
+        },
+        [branch, projectId, workspaceDirtyCount]
+    )
+
+    const resolvePendingConversationSwitch = useCallback(
+        async (mode: "stash" | "discard" | "cancel") => {
+            const pending = pendingConversationSwitch
+            if (!pending) return
+            if (mode === "cancel") {
+                setPendingConversationSwitch(null)
+                return
+            }
+            setSwitchingConversation(true)
+            setError(null)
+            try {
+                if (mode === "stash") {
+                    await workspaceDraftActionsRef.current?.stashAll()
+                } else {
+                    workspaceDraftActionsRef.current?.discardAll()
+                }
+                setPendingConversationSwitch(null)
+                applyConversationSwitch(pending.targetProjectId, pending.targetBranch, pending.targetChatId)
+            } catch (err) {
+                setError(errText(err))
+            } finally {
+                setSwitchingConversation(false)
+            }
+        },
+        [applyConversationSwitch, pendingConversationSwitch]
+    )
+
+    const onSelectChat = useCallback(
+        (chat: DrawerChat, chatProjectId: string) => {
+            const targetBranch = (chat.branch || branch || "main").trim() || "main"
+            const next: PendingConversationSwitch = {
+                targetProjectId: chatProjectId,
+                targetBranch,
+                targetChatId: chat.chat_id,
+            }
+            if (maybePromptConversationSwitch(next)) {
+                return
+            }
+            applyConversationSwitch(next.targetProjectId, next.targetBranch, next.targetChatId)
+        },
+        [applyConversationSwitch, branch, maybePromptConversationSwitch]
     )
 
     const onNewChat = useCallback(() => {
@@ -898,21 +984,22 @@ export default function ProjectChatPage() {
                     ts: Date.now(),
                 })
                 setNewChatOpen(false)
-                if (targetProjectId === projectId) {
-                    setBranch(targetBranch)
-                    setSelectedChatId(chatId)
-                    setMessages([])
-                    touchChatLocally(chatId, "")
-                    await loadChats(targetBranch, chatId)
+                const next: PendingConversationSwitch = {
+                    targetProjectId,
+                    targetBranch,
+                    targetChatId: chatId,
                 }
-                router.push(path)
+                if (maybePromptConversationSwitch(next)) {
+                    return
+                }
+                applyConversationSwitch(next.targetProjectId, next.targetBranch, next.targetChatId)
             } catch (err) {
                 setNewChatError(errText(err))
             } finally {
                 setCreatingNewChat(false)
             }
         },
-        [loadChats, projectId, router, touchChatLocally, userId]
+        [applyConversationSwitch, maybePromptConversationSwitch, userId]
     )
 
     const toggleToolEnabled = useCallback((toolName: string) => {
@@ -1060,6 +1147,54 @@ export default function ProjectChatPage() {
         [branch, browserLocalRepoMode, projectId]
     )
 
+    const handleWorkspaceSlashCommand = useCallback(
+        (text: string): boolean => {
+            const raw = String(text || "").trim()
+            if (!raw.startsWith("/")) return false
+
+            const openMatch = raw.match(/^\/open\s+(.+)$/i)
+            if (openMatch) {
+                const path = String(openMatch[1] || "").trim().replace(/^\.?\//, "")
+                if (path) {
+                    setWorkspaceRequestedPath(path)
+                    setWorkspaceRequestedAction(null)
+                    setWorkspaceOpen(true)
+                    setDocsNotice(`Opened workspace file request: ${path}`)
+                }
+                return true
+            }
+
+            if (/^\/suggest\b/i.test(raw)) {
+                setWorkspaceRequestedAction("suggest")
+                setWorkspaceRequestedPath(null)
+                setWorkspaceOpen(true)
+                return true
+            }
+
+            if (/^\/apply-last\b/i.test(raw)) {
+                setWorkspaceRequestedAction("apply-last")
+                setWorkspaceRequestedPath(null)
+                setWorkspaceOpen(true)
+                return true
+            }
+
+            const diffMatch = raw.match(/^\/diff\s+(.+)$/i)
+            if (diffMatch) {
+                const path = String(diffMatch[1] || "").trim().replace(/^\.?\//, "")
+                if (path) {
+                    setWorkspaceRequestedPath(path)
+                    setWorkspaceRequestedAction(null)
+                    setWorkspaceOpen(true)
+                    setDocsNotice(`Opened workspace for diff review target: ${path}`)
+                }
+                return true
+            }
+
+            return false
+        },
+        []
+    )
+
     const send = useCallback(
         async (opts?: { question?: string; pendingAnswer?: string; pendingQuestionId?: string; clearComposer?: boolean }) => {
             const q = String(opts?.question ?? input).trim()
@@ -1067,6 +1202,10 @@ export default function ProjectChatPage() {
             const pendingAnswer = String(opts?.pendingAnswer ?? (activePending ? q : "")).trim()
             const optimisticUserText = pendingAnswer || q
             if (!optimisticUserText || sending || !selectedChatId) return
+            if (!activePending && handleWorkspaceSlashCommand(optimisticUserText)) {
+                setInput("")
+                return
+            }
 
             const userTs = new Date().toISOString()
             setSending(true)
@@ -1145,6 +1284,7 @@ export default function ProjectChatPage() {
             branch,
             input,
             maybeAutoGenerateDocsFromQuestion,
+            handleWorkspaceSlashCommand,
             pendingUserQuestion,
             project?.repo_path,
             projectId,
@@ -1459,6 +1599,7 @@ export default function ProjectChatPage() {
                     onOpenTools={() => void openToolDialog()}
                     onOpenTasks={() => void openTasksDialog()}
                     onOpenDocs={openDocumentationViewer}
+                    onOpenWorkspace={() => setWorkspaceOpen(true)}
                     onGenerateDocs={() => void generateDocumentation()}
                     onToggleSessionMemory={() => setSessionMemoryOpen((v) => !v)}
                 />
@@ -1586,6 +1727,29 @@ export default function ProjectChatPage() {
                     onDocsNoticeClose={() => setDocsNotice(null)}
                 />
 
+                <WorkspaceShell
+                    open={workspaceOpen}
+                    projectId={projectId}
+                    projectLabel={projectLabel}
+                    branch={branch}
+                    chatId={selectedChatId}
+                    userId={userId}
+                    requestOpenPath={workspaceRequestedPath}
+                    requestAction={workspaceRequestedAction}
+                    onRequestHandled={() => {
+                        setWorkspaceRequestedPath(null)
+                        setWorkspaceRequestedAction(null)
+                    }}
+                    onDraftStateChange={({ dirtyCount, paths }) => {
+                        setWorkspaceDirtyCount(dirtyCount)
+                        setWorkspaceDirtyPaths(paths)
+                    }}
+                    onRegisterDraftActions={(actions) => {
+                        workspaceDraftActionsRef.current = actions
+                    }}
+                    onClose={() => setWorkspaceOpen(false)}
+                />
+
                 <NewChatDialog
                     open={newChatOpen}
                     projects={newChatProjectOptions}
@@ -1599,6 +1763,53 @@ export default function ProjectChatPage() {
                         void createNewChat(input)
                     }}
                 />
+
+                <Dialog
+                    open={Boolean(pendingConversationSwitch)}
+                    onClose={() => {
+                        if (!switchingConversation) {
+                            void resolvePendingConversationSwitch("cancel")
+                        }
+                    }}
+                    fullWidth
+                    maxWidth="sm"
+                >
+                    <AppDialogTitle title="Unsaved Workspace Drafts" onClose={() => void resolvePendingConversationSwitch("cancel")} />
+                    <DialogContent sx={{ pt: 1 }}>
+                        <Typography variant="body2" color="text.secondary">
+                            You have {workspaceDirtyCount} unsaved workspace draft{workspaceDirtyCount === 1 ? "" : "s"}.
+                            Choose how to proceed before switching project or branch.
+                        </Typography>
+                        {workspaceDirtyPaths.length > 0 && (
+                            <Paper variant="outlined" sx={{ mt: 1, p: 1, maxHeight: 180, overflow: "auto" }}>
+                                <Typography variant="caption" color="text.secondary">
+                                    Dirty files
+                                </Typography>
+                                <List dense disablePadding>
+                                    {workspaceDirtyPaths.slice(0, 20).map((path) => (
+                                        <ListItemButton key={path} sx={{ px: 0.5 }}>
+                                            <ListItemText
+                                                primary={path}
+                                                primaryTypographyProps={{ variant: "caption", noWrap: true }}
+                                            />
+                                        </ListItemButton>
+                                    ))}
+                                </List>
+                            </Paper>
+                        )}
+                    </DialogContent>
+                    <DialogActions sx={{ px: 2, pb: 1.5 }}>
+                        <Button size="small" onClick={() => void resolvePendingConversationSwitch("cancel")} disabled={switchingConversation}>
+                            Cancel
+                        </Button>
+                        <Button size="small" variant="outlined" onClick={() => void resolvePendingConversationSwitch("discard")} disabled={switchingConversation}>
+                            Discard & Switch
+                        </Button>
+                        <Button size="small" variant="contained" onClick={() => void resolvePendingConversationSwitch("stash")} disabled={switchingConversation}>
+                            Stash Drafts & Switch
+                        </Button>
+                    </DialogActions>
+                </Dialog>
 
                 <Dialog
                     open={settingsOpen}

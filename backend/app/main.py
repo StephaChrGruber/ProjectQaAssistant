@@ -26,6 +26,7 @@ from .routes.notifications import router as notifications_router
 from .routes.projects import router as projects_router
 from .routes.qa import router as qa_router
 from .routes.tools import router as tools_router
+from .routes.workspace import router as workspace_router
 from .services.automations import start_automation_worker, stop_automation_worker
 from .settings import settings
 
@@ -105,6 +106,7 @@ app.include_router(ask_agent_router)
 app.include_router(chat_router)
 app.include_router(ask_stream_router)
 app.include_router(projects_router)
+app.include_router(workspace_router)
 app.include_router(tools_router)
 app.include_router(chats_router)
 app.include_router(custom_tools_router)

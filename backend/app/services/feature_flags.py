@@ -14,6 +14,7 @@ DEFAULT_FEATURE_FLAGS: dict[str, bool] = {
     "enable_memory_controls": True,
     "dry_run_tools_default": False,
     "require_approval_for_write_tools": False,
+    "workspace_v1": True,
 }
 
 

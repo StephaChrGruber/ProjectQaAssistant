@@ -79,6 +79,26 @@ export function ChatComposer({
                 description: "Insert a quote block",
                 template: "> __CURSOR__",
             },
+            {
+                command: "open",
+                description: "Open a file in workspace (/open <path>)",
+                template: "/open __CURSOR__",
+            },
+            {
+                command: "suggest",
+                description: "Generate workspace suggestion now",
+                template: "/suggest",
+            },
+            {
+                command: "apply-last",
+                description: "Apply last workspace suggestion patch",
+                template: "/apply-last",
+            },
+            {
+                command: "diff",
+                description: "Open workspace for diff target (/diff <path>)",
+                template: "/diff __CURSOR__",
+            },
         ],
         [codeLanguage]
     )

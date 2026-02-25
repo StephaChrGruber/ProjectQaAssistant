@@ -1,11 +1,16 @@
 "use client"
 
 import {
+    ensureLocalRepoWritePermission,
+    getLocalRepoRootHandle,
     getLocalRepoSnapshot,
     localRepoGitCheckoutBranch,
     localRepoGitCreateBranch,
     localRepoGitListBranches,
+    restoreLocalRepoSession,
+    setLocalRepoSession,
 } from "@/lib/local-repo-bridge"
+import { ensureDirectoryPath } from "@/lib/local-repo/docs-write"
 
 export type LocalToolJobPayload = {
     id: string
@@ -69,12 +74,29 @@ function matchesGlob(path: string, glob?: string): boolean {
 }
 
 function createLocalRepoHelpers(projectId: string) {
-    const snapshot = getLocalRepoSnapshot(projectId)
+    let snapshot = getLocalRepoSnapshot(projectId)
+
+    function normalizeRepoPath(path: string): string {
+        return String(path || "").trim().replaceAll("\\", "/").replace(/^\.?\//, "").replace(/^\/+/, "")
+    }
 
     function ensureSnapshot() {
         if (!snapshot) {
             throw new Error("No browser-local repository snapshot is available for this project on this device.")
         }
+    }
+
+    async function requireWritableRootHandle(): Promise<FileSystemDirectoryHandle> {
+        await restoreLocalRepoSession(projectId)
+        const rootHandle = getLocalRepoRootHandle(projectId)
+        if (!rootHandle) {
+            throw new Error("No writable local repository handle available. Re-pick folder with 'Pick From This Device'.")
+        }
+        const granted = await ensureLocalRepoWritePermission(projectId)
+        if (!granted) {
+            throw new Error("Write permission to local repository folder was denied.")
+        }
+        return rootHandle
     }
 
     return {
@@ -95,13 +117,87 @@ function createLocalRepoHelpers(projectId: string) {
         },
         readFile(path: string, maxChars = 200_000): string {
             ensureSnapshot()
-            const norm = String(path || "").trim().replaceAll("\\", "/").replace(/^\.?\//, "")
+            const norm = normalizeRepoPath(path)
             if (!norm) throw new Error("readFile(path): path is required")
             const f = snapshot!.files.find((row) => row.path === norm)
             if (!f) throw new Error(`File not found in browser-local snapshot: ${norm}`)
             const body = f.content || ""
             if (body.length <= maxChars) return body
             return `${body.slice(0, maxChars)}\n... (truncated)`
+        },
+        async writeFile(path: string, content: string): Promise<{ path: string; bytesWritten: number }> {
+            const norm = normalizeRepoPath(path)
+            if (!norm) throw new Error("writeFile(path): path is required")
+
+            const rootHandle = await requireWritableRootHandle()
+            const parts = norm.split("/").filter(Boolean)
+            const fileName = parts.pop()
+            if (!fileName) throw new Error("writeFile(path): invalid target path")
+            const dir = await ensureDirectoryPath(rootHandle, parts)
+            const fileHandle = await dir.getFileHandle(fileName, { create: true })
+            const writable = await fileHandle.createWritable()
+            const normalizedContent = String(content || "").replaceAll("\r\n", "\n")
+            await writable.write(normalizedContent)
+            await writable.close()
+
+            const currentSnapshot = snapshot || getLocalRepoSnapshot(projectId)
+            if (currentSnapshot) {
+                const files = [...(currentSnapshot.files || [])]
+                const idx = files.findIndex((row) => row.path === norm)
+                const nextFile = { path: norm, content: normalizedContent }
+                if (idx >= 0) files[idx] = nextFile
+                else files.push(nextFile)
+
+                const nextSnapshot = {
+                    rootName: currentSnapshot.rootName,
+                    files,
+                    indexedAt: new Date().toISOString(),
+                }
+                setLocalRepoSession(projectId, { snapshot: nextSnapshot, rootHandle })
+                snapshot = nextSnapshot
+            }
+
+            return {
+                path: norm,
+                bytesWritten: normalizedContent.length,
+            }
+        },
+        async deleteFile(path: string): Promise<{ path: string; deleted: boolean }> {
+            const norm = normalizeRepoPath(path)
+            if (!norm) throw new Error("deleteFile(path): path is required")
+
+            const rootHandle = await requireWritableRootHandle()
+            const parts = norm.split("/").filter(Boolean)
+            const fileName = parts.pop()
+            if (!fileName) throw new Error("deleteFile(path): invalid target path")
+
+            let dir: FileSystemDirectoryHandle = rootHandle
+            for (const part of parts) {
+                try {
+                    dir = await dir.getDirectoryHandle(part)
+                } catch {
+                    return { path: norm, deleted: false }
+                }
+            }
+
+            try {
+                await dir.removeEntry(fileName)
+            } catch {
+                return { path: norm, deleted: false }
+            }
+
+            const currentSnapshot = snapshot || getLocalRepoSnapshot(projectId)
+            if (currentSnapshot) {
+                const files = [...(currentSnapshot.files || [])].filter((row) => row.path !== norm)
+                const nextSnapshot = {
+                    rootName: currentSnapshot.rootName,
+                    files,
+                    indexedAt: new Date().toISOString(),
+                }
+                setLocalRepoSession(projectId, { snapshot: nextSnapshot, rootHandle })
+                snapshot = nextSnapshot
+            }
+            return { path: norm, deleted: true }
         },
         grep(pattern: string, options?: GrepOptions): GrepHit[] {
             ensureSnapshot()

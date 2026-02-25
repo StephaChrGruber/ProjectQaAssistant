@@ -31,6 +31,59 @@ async def tools_catalog(project_id: Optional[str] = None):
     return {"tools": runtime.catalog()}
 
 
+@router.get("/tools/catalog/availability")
+async def tools_catalog_availability(
+    project_id: str,
+    branch: str = "main",
+    chat_id: Optional[str] = None,
+    user: Optional[str] = None,
+):
+    runtime = await build_runtime_for_project(project_id)
+    user_id = (user or "dev@local").strip() or "dev@local"
+    ctx = ToolContext(
+        project_id=project_id,
+        branch=(branch or "main").strip() or "main",
+        user_id=user_id,
+        chat_id=(chat_id or None),
+        policy={},
+    )
+    policy = runtime._policy_dict(ctx)
+    rows: list[dict] = []
+
+    for item in runtime.catalog():
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        spec = runtime._tools.get(name)
+        if not spec:
+            continue
+
+        allowed, reason = runtime._is_tool_allowed(name, spec, policy)
+        if allowed:
+            cap_allowed, cap_reason = await runtime._tool_capability_allowed(name, spec, ctx)
+            if not cap_allowed:
+                allowed = False
+                reason = cap_reason
+
+        row = dict(item)
+        row["available"] = bool(allowed)
+        if not allowed:
+            row["blocked_reason"] = str(reason or "unavailable")
+        rows.append(row)
+
+    rows.sort(key=lambda x: str(x.get("name") or ""))
+    blocked = [x for x in rows if not bool(x.get("available"))]
+    return {
+        "project_id": project_id,
+        "branch": ctx.branch,
+        "chat_id": ctx.chat_id,
+        "user": ctx.user_id,
+        "available_count": len(rows) - len(blocked),
+        "blocked_count": len(blocked),
+        "tools": rows,
+    }
+
+
 @router.get("/projects/{project_id}/metadata", response_model=ProjectMetadataResponse)
 async def get_project_metadata(project_id: str, request: Request):
     db = get_db(request)
