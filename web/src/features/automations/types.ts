@@ -21,6 +21,7 @@ export type AutomationAction = {
     | "run_automation"
     | "set_automation_enabled"
     | "upsert_state_value"
+    | "create_notification"
     | string
   params?: Record<string, unknown>
 }

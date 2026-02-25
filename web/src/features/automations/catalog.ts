@@ -286,6 +286,39 @@ export const ACTION_DEFINITIONS: ActionDefinition[] = [
     ],
     defaults: { key: "", value: {} },
   },
+  {
+    type: "create_notification",
+    label: "Create notification",
+    description: "Creates an in-app notification visible in the global notification center.",
+    fields: [
+      { key: "title", label: "Notification title", type: "text", required: true, placeholder: "Automation attention required" },
+      { key: "message", label: "Message", type: "multiline", placeholder: "More context for the user." },
+      {
+        key: "severity",
+        label: "Severity",
+        type: "select",
+        options: [
+          { value: "info", label: "info", description: "Informational" },
+          { value: "success", label: "success", description: "Success" },
+          { value: "warning", label: "warning", description: "Warning" },
+          { value: "error", label: "error", description: "Error" },
+        ],
+      },
+      { key: "user_id", label: "User ID (optional)", type: "text", placeholder: "{{user_id}}" },
+      { key: "source", label: "Source tag (optional)", type: "text", placeholder: "automation.action" },
+      { key: "event_type", label: "Event type (optional)", type: "text", placeholder: "{{event_type}}" },
+      { key: "data", label: "Extra data (JSON)", type: "json" },
+    ],
+    defaults: {
+      title: "Automation notification",
+      message: "Automation fired and created this notification.",
+      severity: "info",
+      user_id: "{{user_id}}",
+      source: "automation.action",
+      event_type: "{{event_type}}",
+      data: {},
+    },
+  },
 ]
 
 export const ACTION_PRESETS: ActionPreset[] = [
@@ -352,6 +385,22 @@ export const ACTION_PRESETS: ActionPreset[] = [
       payload: {
         message: "Automation raised an operations alert.",
         chat_id: "{{chat_id}}",
+      },
+    },
+  },
+  {
+    key: "notify-user",
+    label: "Create in-app notification",
+    description: "Creates a global in-app notification popup for the current user.",
+    actionType: "create_notification",
+    params: {
+      title: "Automation update",
+      message: "Automation fired from {{event_type}} in {{branch}}.",
+      severity: "info",
+      user_id: "{{user_id}}",
+      data: {
+        chat_id: "{{chat_id}}",
+        branch: "{{branch}}",
       },
     },
   },

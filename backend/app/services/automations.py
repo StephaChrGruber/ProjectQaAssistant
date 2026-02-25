@@ -12,6 +12,7 @@ from ..db import get_db
 from ..models.base_mongo_models import Project
 from ..rag.ingest import ingest_project
 from ..services.documentation import generate_project_documentation
+from ..services.notifications import create_notification
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ AUTOMATION_ACTION_TYPES = {
     "run_automation",
     "set_automation_enabled",
     "upsert_state_value",
+    "create_notification",
 }
 
 AUTOMATION_TRIGGER_TYPES = {
@@ -116,6 +118,27 @@ AUTOMATION_TEMPLATES: list[dict[str, Any]] = [
         "cooldown_sec": 300,
         "run_access": "member_runnable",
         "tags": ["connectors", "ops"],
+    },
+    {
+        "key": "notify-on-tool-errors",
+        "name": "Notification On Tool Errors",
+        "description": "Creates an in-app notification when ask-agent reports tool errors.",
+        "trigger": {"type": "event", "event_type": "ask_agent_completed"},
+        "conditions": {"tool_errors_min": 1},
+        "action": {
+            "type": "create_notification",
+            "params": {
+                "title": "Tool errors detected",
+                "message": "The latest answer had {{tool_errors}} tool errors in chat {{chat_id}}.",
+                "severity": "warning",
+                "user_id": "{{user_id}}",
+                "source": "automation.template",
+                "data": {"chat_id": "{{chat_id}}", "branch": "{{branch}}"},
+            },
+        },
+        "cooldown_sec": 120,
+        "run_access": "member_runnable",
+        "tags": ["notifications", "reliability"],
     },
     {
         "key": "ask-clarification-on-errors",
@@ -1836,6 +1859,48 @@ async def _action_upsert_state_value(
     return {"key": key, "value": value}
 
 
+async def _action_create_notification(
+    *,
+    project_id: str,
+    action: dict[str, Any],
+    payload: dict[str, Any],
+    started_at: datetime,
+) -> dict[str, Any]:
+    _ = started_at
+    params = _render_template((action.get("params") if isinstance(action.get("params"), dict) else {}), payload)
+    title = str(params.get("title") or "").strip()
+    if not title:
+        raise RuntimeError("create_notification action requires params.title")
+    message = str(params.get("message") or params.get("details") or "").strip()
+    severity = str(params.get("severity") or "info").strip().lower() or "info"
+    source = str(params.get("source") or "automation.action").strip() or "automation.action"
+    event_type = str(params.get("event_type") or payload.get("event_type") or "").strip()
+    target_project_id = str(params.get("project_id") or project_id).strip() or project_id
+    target_user_id = str(params.get("user_id") or payload.get("user_id") or "").strip() or None
+    data = params.get("data") if isinstance(params.get("data"), dict) else {}
+    out = await create_notification(
+        title=title,
+        message=message,
+        severity=severity,
+        project_id=target_project_id,
+        user_id=target_user_id,
+        source=source,
+        event_type=event_type,
+        data={
+            **data,
+            "project_id": project_id,
+            "chat_id": str(payload.get("chat_id") or ""),
+            "branch": str(payload.get("branch") or ""),
+        },
+    )
+    return {
+        "notification_id": str(out.get("id") or ""),
+        "severity": str(out.get("severity") or "info"),
+        "project_id": target_project_id,
+        "user_id": str(out.get("user_id") or ""),
+    }
+
+
 async def _execute_action(
     *,
     project_id: str,
@@ -1879,6 +1944,8 @@ async def _execute_action(
         )
     if action_type == "upsert_state_value":
         return await _action_upsert_state_value(project_id=project_id, action=action, payload=payload, started_at=started_at)
+    if action_type == "create_notification":
+        return await _action_create_notification(project_id=project_id, action=action, payload=payload, started_at=started_at)
     raise RuntimeError(f"Unsupported action type: {action_type}")
 
 
@@ -2032,6 +2099,45 @@ async def run_automation(
         event_type,
         triggered_by,
     )
+    should_notify_run = status == "failed" or dry_run or triggered_by == "manual"
+    if should_notify_run:
+        severity = "error" if status == "failed" else ("info" if dry_run else "success")
+        if status == "failed":
+            title = f"Automation failed: {str(doc.get('name') or 'Unnamed automation')}"
+            message = error or f"Execution failed during {event_type}."
+        elif dry_run:
+            title = f"Automation dry-run: {str(doc.get('name') or 'Unnamed automation')}"
+            message = f"Dry-run completed for event '{event_type}' with status '{status}'."
+        else:
+            title = f"Automation completed: {str(doc.get('name') or 'Unnamed automation')}"
+            message = f"Manual run completed for event '{event_type}'."
+        try:
+            await create_notification(
+                title=title,
+                message=message,
+                severity=severity,
+                project_id=project_id,
+                user_id=str(payload.get("user_id") or "").strip() or None,
+                source="automation.run",
+                event_type=event_type,
+                data={
+                    "automation_id": str(doc.get("_id") or ""),
+                    "automation_name": str(doc.get("name") or ""),
+                    "run_id": str(run_row.get("id") or ""),
+                    "status": status,
+                    "triggered_by": triggered_by,
+                    "event_type": event_type,
+                    "chat_id": str(payload.get("chat_id") or ""),
+                    "branch": str(payload.get("branch") or ""),
+                },
+            )
+        except Exception:
+            logger.exception(
+                "automations.run.notification_failed project=%s automation_id=%s status=%s",
+                project_id,
+                str(doc.get("_id") or ""),
+                status,
+            )
     if not dry_run:
         emitted_event = "automation_run_failed" if status == "failed" else "automation_run_succeeded"
         try:

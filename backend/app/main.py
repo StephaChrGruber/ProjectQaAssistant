@@ -22,6 +22,7 @@ from .routes.chats import router as chats_router
 from .routes.custom_tools import router as custom_tools_router
 from .routes.ingestion import router as ingestion_router
 from .routes.me import router as me_router
+from .routes.notifications import router as notifications_router
 from .routes.projects import router as projects_router
 from .routes.qa import router as qa_router
 from .routes.tools import router as tools_router
@@ -108,3 +109,4 @@ app.include_router(tools_router)
 app.include_router(chats_router)
 app.include_router(custom_tools_router)
 app.include_router(automations_router)
+app.include_router(notifications_router)

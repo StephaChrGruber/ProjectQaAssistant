@@ -869,6 +869,7 @@ async def delete_project(project_id: str, user=Depends(current_user)):
     )
     automations_res = await db["automations"].delete_many({"project_id": project_id})
     automation_runs_res = await db["automation_runs"].delete_many({"project_id": project_id})
+    notifications_res = await db["notifications"].delete_many({"project_id": project_id})
 
     messages_deleted = 0
     if legacy_chat_ids:
@@ -900,6 +901,7 @@ async def delete_project(project_id: str, user=Depends(current_user)):
             "docs": int(docs_res.deleted_count or 0),
             "automations": int(automations_res.deleted_count or 0),
             "automation_runs": int(automation_runs_res.deleted_count or 0),
+            "notifications": int(notifications_res.deleted_count or 0),
         },
         "chroma": {
             "path": str(chroma_path),

@@ -56,6 +56,8 @@ async def init_db():
     )
     await db["automation_runs"].create_index([("project_id", 1), ("started_at", -1)], name="automation_runs_project_recent")
     await db["automation_runs"].create_index([("project_id", 1), ("automation_id", 1), ("started_at", -1)], name="automation_runs_automation_recent")
+    await db["notifications"].create_index([("user_id", 1), ("dismissed", 1), ("created_at", -1)], name="notifications_user_recent")
+    await db["notifications"].create_index([("project_id", 1), ("created_at", -1)], name="notifications_project_recent")
 
 def get_client() -> AsyncIOMotorClient:
     global _client

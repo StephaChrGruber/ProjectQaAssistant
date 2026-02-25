@@ -2,6 +2,7 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { ReactNode, useState } from "react"
+import GlobalNotifications from "@/components/GlobalNotifications"
 import { MuiThemeProvider } from "@/components/MuiThemeProvider"
 
 type Props = {
@@ -24,8 +25,10 @@ export function AppProviders({ children }: Props) {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <MuiThemeProvider>{children}</MuiThemeProvider>
+      <MuiThemeProvider>
+        {children}
+        <GlobalNotifications />
+      </MuiThemeProvider>
     </QueryClientProvider>
   )
 }
-
