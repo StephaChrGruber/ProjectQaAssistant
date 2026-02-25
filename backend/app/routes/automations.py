@@ -286,6 +286,45 @@ async def post_project_automation(
     return {"project_id": project_id, "item": item}
 
 
+@router.get("/{project_id}/automations/runs")
+async def get_project_automation_runs(
+    project_id: str,
+    automation_id: str | None = None,
+    limit: int = 120,
+    x_dev_user: str | None = Header(default=None),
+):
+    await _require_user_or_401(x_dev_user)
+    await _require_project_or_404(project_id)
+    items = await list_automation_runs(project_id, automation_id=automation_id, limit=limit)
+    return {"project_id": project_id, "total": len(items), "items": items}
+
+
+@router.post("/{project_id}/automations/dispatch")
+async def post_project_automation_dispatch(
+    project_id: str,
+    req: DispatchEventReq,
+    x_dev_user: str | None = Header(default=None),
+):
+    user = await _require_user_or_401(x_dev_user)
+    await _require_project_or_404(project_id)
+    payload = dict(req.payload or {})
+    payload.setdefault("project_id", project_id)
+    payload.setdefault("user_id", user)
+    payload.setdefault("dispatched_at", datetime.utcnow().isoformat() + "Z")
+    runs = await dispatch_automation_event(
+        project_id,
+        event_type=str(req.event_type or "").strip(),
+        payload=payload,
+    )
+    logger.info(
+        "automations.dispatch.manual project=%s event=%s runs=%s",
+        project_id,
+        str(req.event_type or "").strip(),
+        len(runs),
+    )
+    return {"project_id": project_id, "event_type": str(req.event_type or "").strip(), "runs": runs}
+
+
 @router.get("/{project_id}/automations/{automation_id}")
 async def get_project_automation(
     project_id: str,
@@ -373,42 +412,3 @@ async def run_project_automation(
     except RuntimeError as err:
         raise HTTPException(status_code=400, detail=str(err))
     return {"project_id": project_id, "run": run_row}
-
-
-@router.get("/{project_id}/automations/runs")
-async def get_project_automation_runs(
-    project_id: str,
-    automation_id: str | None = None,
-    limit: int = 120,
-    x_dev_user: str | None = Header(default=None),
-):
-    await _require_user_or_401(x_dev_user)
-    await _require_project_or_404(project_id)
-    items = await list_automation_runs(project_id, automation_id=automation_id, limit=limit)
-    return {"project_id": project_id, "total": len(items), "items": items}
-
-
-@router.post("/{project_id}/automations/dispatch")
-async def post_project_automation_dispatch(
-    project_id: str,
-    req: DispatchEventReq,
-    x_dev_user: str | None = Header(default=None),
-):
-    user = await _require_user_or_401(x_dev_user)
-    await _require_project_or_404(project_id)
-    payload = dict(req.payload or {})
-    payload.setdefault("project_id", project_id)
-    payload.setdefault("user_id", user)
-    payload.setdefault("dispatched_at", datetime.utcnow().isoformat() + "Z")
-    runs = await dispatch_automation_event(
-        project_id,
-        event_type=str(req.event_type or "").strip(),
-        payload=payload,
-    )
-    logger.info(
-        "automations.dispatch.manual project=%s event=%s runs=%s",
-        project_id,
-        str(req.event_type or "").strip(),
-        len(runs),
-    )
-    return {"project_id": project_id, "event_type": str(req.event_type or "").strip(), "runs": runs}
