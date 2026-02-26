@@ -1488,25 +1488,64 @@ async def generate_project_docs(project_id: str, branch: Optional[str] = None, c
 
     if use_browser_local:
         try:
-            context_payload = await _run_browser_local_git_tool(
-                tool_name="collect_repo_context",
-                project_id=project_id,
-                ctx=ctx,
-                args={
-                    "branch": chosen_branch,
-                    "max_files": 1200,
-                    "max_chars_per_file": 4200,
-                    "max_context_chars": 260000,
-                    "include_docs": False,
-                },
-                timeout_sec=150,
-            )
+            async def _collect_context(include_docs: bool) -> dict[str, Any]:
+                result = await _run_browser_local_git_tool(
+                    tool_name="collect_repo_context",
+                    project_id=project_id,
+                    ctx=ctx,
+                    args={
+                        "branch": chosen_branch,
+                        "max_files": 1200,
+                        "max_chars_per_file": 4200,
+                        "max_context_chars": 260000,
+                        "include_docs": include_docs,
+                    },
+                    timeout_sec=150,
+                )
+                return result if isinstance(result, dict) else {}
+
+            context_payload = await _collect_context(False)
             local_context = str(context_payload.get("context") or "").strip()
             local_paths_raw = context_payload.get("file_paths")
             local_paths = [str(p).strip() for p in (local_paths_raw if isinstance(local_paths_raw, list) else []) if str(p).strip()]
+            selected_paths_raw = context_payload.get("selected_paths")
+            selected_paths = [
+                str(p).strip() for p in (selected_paths_raw if isinstance(selected_paths_raw, list) else []) if str(p).strip()
+            ]
+            if not local_paths:
+                local_paths = selected_paths
             local_root = str(context_payload.get("root_name") or "")
+
             if not local_context:
-                raise RuntimeError("Local repository context is empty. Re-index the local repository and try again.")
+                logger.warning(
+                    "generate_project_docs.browser_local.empty_context_retry project=%s branch=%s include_docs=true",
+                    project_id,
+                    chosen_branch,
+                )
+                retry_payload = await _collect_context(True)
+                retry_context = str(retry_payload.get("context") or "").strip()
+                retry_paths_raw = retry_payload.get("file_paths")
+                retry_paths = [str(p).strip() for p in (retry_paths_raw if isinstance(retry_paths_raw, list) else []) if str(p).strip()]
+                retry_selected_raw = retry_payload.get("selected_paths")
+                retry_selected = [
+                    str(p).strip() for p in (retry_selected_raw if isinstance(retry_selected_raw, list) else []) if str(p).strip()
+                ]
+                if retry_context:
+                    local_context = retry_context
+                if retry_paths:
+                    local_paths = retry_paths
+                elif retry_selected:
+                    local_paths = retry_selected
+                if not local_root:
+                    local_root = str(retry_payload.get("root_name") or "")
+
+            if not local_context:
+                logger.warning(
+                    "generate_project_docs.browser_local.empty_context_fallback project=%s branch=%s paths=%s",
+                    project_id,
+                    chosen_branch,
+                    len(local_paths),
+                )
 
             docs_out = await generate_project_documentation_from_local_context(
                 project_id=project_id,
