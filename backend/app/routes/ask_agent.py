@@ -1311,9 +1311,8 @@ async def ask_agent_stream(req: AskReq):
         event_count += 1
         await queue.put(ev)
 
-    tokens = bind_stream_context(emitter=_emit, request_id=request_id)
-
     async def _runner() -> None:
+        tokens = bind_stream_context(emitter=_emit, request_id=request_id)
         try:
             result = await ask_agent(req)
             await queue.put(
@@ -1336,7 +1335,8 @@ async def ask_agent_stream(req: AskReq):
             )
         finally:
             done.set()
-            reset_stream_context(tokens)
+            with contextlib.suppress(Exception):
+                reset_stream_context(tokens)
 
     task = asyncio.create_task(_runner())
 

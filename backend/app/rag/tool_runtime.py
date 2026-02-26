@@ -346,7 +346,12 @@ class ToolRuntime:
             or (caps.get("browser_local_repo") and caps.get("has_user"))
         )
         has_local_repo = bool(caps.get("local_repo_exists") and not caps.get("browser_local_repo"))
-        has_docs_read = bool(caps.get("local_repo_exists") or caps.get("remote_git_configured"))
+        has_docs_read = bool(
+            caps.get("local_repo_exists")
+            or caps.get("remote_git_configured")
+            or (caps.get("browser_local_repo") and caps.get("has_user"))
+        )
+        has_docs_generate = bool(has_local_repo or (caps.get("browser_local_repo") and caps.get("has_user")))
         has_git_fetch = bool(caps.get("local_repo_exists") or (caps.get("browser_local_repo") and caps.get("has_user")))
 
         if name in {"repo_tree", "repo_grep", "open_file", "symbol_search", "git_show_file_at_ref"}:
@@ -382,12 +387,14 @@ class ToolRuntime:
             "git_commit",
             "compare_branches",
             "run_tests",
-            "write_documentation_file",
         }:
             return (has_local_repo, "local_repository_unavailable" if not has_local_repo else "")
 
+        if name == "write_documentation_file":
+            return (has_docs_generate, "local_repository_unavailable" if not has_docs_generate else "")
+
         if name == "generate_project_docs":
-            return (has_local_repo, "local_repository_unavailable" if not has_local_repo else "")
+            return (has_docs_generate, "local_repository_unavailable" if not has_docs_generate else "")
 
         if name == "create_jira_issue":
             return (bool(caps.get("jira_configured")), "jira_connector_not_configured" if not caps.get("jira_configured") else "")
@@ -928,8 +935,8 @@ def _meta_handler(req: GetProjectMetadataRequest):
     return get_project_metadata(req.project_id)
 
 
-def _docs_handler(req: GenerateProjectDocsRequest):
-    return generate_project_docs(req.project_id, req.branch)
+async def _docs_handler(req: GenerateProjectDocsRequest, ctx: Any | None = None):
+    return await generate_project_docs(req.project_id, req.branch, ctx=ctx)
 
 
 def _show_file_handler(req: GitShowFileAtRefRequest):

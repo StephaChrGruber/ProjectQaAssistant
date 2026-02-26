@@ -105,7 +105,11 @@ from ..models.tools import (
     WriteDocumentationFileRequest,
     WriteDocumentationFileResponse,
 )
-from ..services.documentation import DocumentationError, generate_project_documentation
+from ..services.documentation import (
+    DocumentationError,
+    generate_project_documentation,
+    generate_project_documentation_from_local_context,
+)
 from ..services.workspace import assemble_workspace_context, workspace_context_to_text
 from ..services.automations import (
     create_automation as create_automation_service,
@@ -291,6 +295,99 @@ async function run(args, context, helpers) {
     branch: String(args.branch || "main"),
     entries: entries.slice(0, maxEntries),
   }
+}
+""".strip(),
+    "read_docs_folder": """
+async function run(args, context, helpers) {
+  const docsRoot = String(args.path || "documentation").trim().replace(/^\\/+|\\/+$/g, "") || "documentation"
+  const branch = String(args.branch || "main")
+  const maxFiles = Math.max(1, Math.min(Number(args.max_files || 200), 500))
+  const maxChars = Math.max(100, Math.min(Number(args.max_chars_per_file || 12000), 30000))
+  const files = helpers.localRepo
+    .listFiles(10000)
+    .filter((path) => path.startsWith(docsRoot + "/") && path.toLowerCase().endsWith(".md"))
+    .slice(0, maxFiles)
+    .map((path) => ({ path, content: helpers.localRepo.readFile(path, maxChars) }))
+  return { branch, files }
+}
+""".strip(),
+    "collect_repo_context": """
+async function run(args, context, helpers) {
+  const maxFiles = Math.max(20, Math.min(Number(args.max_files || 500), 2000))
+  const maxCharsPerFile = Math.max(300, Math.min(Number(args.max_chars_per_file || 3500), 12000))
+  const maxContextChars = Math.max(12000, Math.min(Number(args.max_context_chars || 220000), 450000))
+  const includeDocs = Boolean(args.include_docs === true)
+  const info = helpers.localRepo.info()
+  const allFiles = helpers.localRepo.listFiles(12000)
+  const textExt = [
+    ".md",".txt",".rst",".py",".js",".ts",".tsx",".json",".yml",".yaml",".java",".kt",".cs",".sql",".html",
+    ".css",".go",".rs",".toml",".ini",".cfg",".env",".sh"
+  ]
+  const ignoreParts = new Set([".git","node_modules",".next","dist","build",".venv","venv","__pycache__"])
+  function isText(path) {
+    const lower = String(path || "").toLowerCase()
+    return textExt.some((ext) => lower.endsWith(ext))
+  }
+  function isIgnored(path) {
+    const parts = String(path || "").split("/").filter(Boolean)
+    return parts.some((part) => ignoreParts.has(part))
+  }
+  const filtered = allFiles
+    .filter((path) => isText(path))
+    .filter((path) => !isIgnored(path))
+    .filter((path) => includeDocs || !path.startsWith("documentation/"))
+    .slice(0, maxFiles)
+
+  const selectedPaths = []
+  let context = ""
+  for (const path of filtered) {
+    const content = String(helpers.localRepo.readFile(path, maxCharsPerFile) || "")
+    if (!content.trim()) continue
+    const block = `### FILE: ${path}\\n${content}\\n\\n`
+    if ((context.length + block.length) > maxContextChars) break
+    context += block
+    selectedPaths.push(path)
+  }
+  return {
+    root_name: String(info?.rootName || ""),
+    file_paths: allFiles,
+    selected_paths: selectedPaths,
+    context,
+    indexed_at: String(info?.indexedAt || ""),
+  }
+}
+""".strip(),
+    "write_docs_bundle": """
+async function run(args, context, helpers) {
+  const docsRoot = String(args.docs_root || "documentation").trim().replace(/^\\/+|\\/+$/g, "") || "documentation"
+  const clearFirst = args.clear_first !== false
+  const rows = Array.isArray(args.files) ? args.files : []
+  const written = []
+  let deleted = 0
+
+  function normalizePath(path) {
+    let p = String(path || "").trim().replaceAll("\\\\", "/").replace(/^\\.\\//, "").replace(/^\\/+/, "")
+    if (!p) return ""
+    if (!p.startsWith(docsRoot + "/")) p = `${docsRoot}/${p}`
+    return p
+  }
+
+  if (clearFirst) {
+    const existing = helpers.localRepo.listFiles(12000).filter((p) => p.startsWith(docsRoot + "/"))
+    for (const path of existing) {
+      const out = await helpers.localRepo.deleteFile(path)
+      if (out?.deleted) deleted += 1
+    }
+  }
+
+  for (const row of rows) {
+    const rawPath = normalizePath(row?.path)
+    const content = String(row?.content || "")
+    if (!rawPath || !rawPath.toLowerCase().endsWith(".md") || !content.trim()) continue
+    await helpers.localRepo.writeFile(rawPath, content.endsWith("\\n") ? content : `${content}\\n`)
+    written.push(rawPath)
+  }
+  return { docs_root: docsRoot, written_paths: written, deleted_count: deleted }
 }
 """.strip(),
 }
@@ -1378,9 +1475,86 @@ async def get_project_metadata(project_id: str) -> ProjectMetadataResponse:
     )
 
 
-async def generate_project_docs(project_id: str, branch: Optional[str] = None) -> dict:
+async def generate_project_docs(project_id: str, branch: Optional[str] = None, ctx: Any = None) -> dict:
+    meta = await get_project_metadata(project_id)
+    repo_path_raw = str(meta.repo_path or "").strip()
+    chosen_branch = (branch or meta.default_branch or "main").strip() or "main"
+    can_browser_local = bool(_ctx_field(ctx, "user_id"))
+    use_browser_local = _is_browser_local_repo_path(repo_path_raw)
+    if not use_browser_local and can_browser_local:
+        if not repo_path_raw or not Path(repo_path_raw).exists():
+            remote = await _remote_repo_connector(project_id)
+            use_browser_local = remote is None
+
+    if use_browser_local:
+        try:
+            context_payload = await _run_browser_local_git_tool(
+                tool_name="collect_repo_context",
+                project_id=project_id,
+                ctx=ctx,
+                args={
+                    "branch": chosen_branch,
+                    "max_files": 1200,
+                    "max_chars_per_file": 4200,
+                    "max_context_chars": 260000,
+                    "include_docs": False,
+                },
+                timeout_sec=150,
+            )
+            local_context = str(context_payload.get("context") or "").strip()
+            local_paths_raw = context_payload.get("file_paths")
+            local_paths = [str(p).strip() for p in (local_paths_raw if isinstance(local_paths_raw, list) else []) if str(p).strip()]
+            local_root = str(context_payload.get("root_name") or "")
+            if not local_context:
+                raise RuntimeError("Local repository context is empty. Re-index the local repository and try again.")
+
+            docs_out = await generate_project_documentation_from_local_context(
+                project_id=project_id,
+                branch=chosen_branch,
+                local_repo_root=local_root,
+                local_repo_file_paths=local_paths,
+                local_repo_context=local_context,
+                user_id=_ctx_field(ctx, "user_id") or None,
+            )
+
+            generated_files_raw = docs_out.get("files")
+            generated_files = generated_files_raw if isinstance(generated_files_raw, list) else []
+            write_out = await _run_browser_local_git_tool(
+                tool_name="write_docs_bundle",
+                project_id=project_id,
+                ctx=ctx,
+                args={
+                    "docs_root": "documentation",
+                    "clear_first": True,
+                    "files": generated_files,
+                },
+                timeout_sec=120,
+            )
+            written_paths_raw = write_out.get("written_paths")
+            written_paths = [str(p).strip() for p in (written_paths_raw if isinstance(written_paths_raw, list) else []) if str(p).strip()]
+            return {
+                "project_id": str(docs_out.get("project_id") or project_id),
+                "project_key": str(docs_out.get("project_key") or ""),
+                "branch": str(docs_out.get("branch") or chosen_branch),
+                "current_branch": chosen_branch,
+                "mode": str(docs_out.get("mode") or "fallback"),
+                "summary": str(docs_out.get("summary") or "Documentation generated."),
+                "files_written": written_paths,
+                "context_files_used": int(docs_out.get("context_files_used") or 0),
+                "llm_error": docs_out.get("llm_error"),
+                "generated_at": str(docs_out.get("generated_at") or _utc_iso_now()),
+                "local_repo_root": local_root,
+                "browser_local": True,
+            }
+        except DocumentationError as err:
+            raise RuntimeError(str(err)) from err
+
     try:
-        return await generate_project_documentation(project_id=project_id, branch=branch)
+        return await generate_project_documentation(
+            project_id=project_id,
+            branch=chosen_branch,
+            user_id=_ctx_field(ctx, "user_id") or None,
+        )
     except DocumentationError as err:
         raise RuntimeError(str(err)) from err
 
@@ -2845,7 +3019,7 @@ async def run_tests(req: RunTestsRequest) -> RunTestsResponse:
     )
 
 
-async def read_docs_folder(req: ReadDocsFolderRequest) -> ReadDocsFolderResponse:
+async def read_docs_folder(req: ReadDocsFolderRequest, ctx: Any = None) -> ReadDocsFolderResponse:
     req.max_files = max(1, min(req.max_files, 400))
     req.max_chars_per_file = max(100, min(req.max_chars_per_file, 20_000))
 
@@ -2854,7 +3028,41 @@ async def read_docs_folder(req: ReadDocsFolderRequest) -> ReadDocsFolderResponse
     docs_root = req.path.strip("/") or "documentation"
     files: list[ReadDocsFile] = []
 
-    root = Path(meta.repo_path) if meta.repo_path else None
+    repo_path_raw = str(meta.repo_path or "").strip()
+    root = Path(repo_path_raw) if repo_path_raw else None
+
+    async def _run_browser_local_docs() -> ReadDocsFolderResponse:
+        result = await _run_browser_local_git_tool(
+            tool_name="read_docs_folder",
+            project_id=req.project_id,
+            ctx=ctx,
+            args={
+                "path": docs_root,
+                "branch": branch,
+                "max_files": req.max_files,
+                "max_chars_per_file": req.max_chars_per_file,
+            },
+            timeout_sec=60,
+        )
+        raw_files = result.get("files")
+        out_files: list[ReadDocsFile] = []
+        if isinstance(raw_files, list):
+            for item in raw_files:
+                if not isinstance(item, dict):
+                    continue
+                out_files.append(
+                    ReadDocsFile(
+                        path=str(item.get("path") or ""),
+                        content=str(item.get("content") or ""),
+                    )
+                )
+                if len(out_files) >= req.max_files:
+                    break
+        return ReadDocsFolderResponse(branch=str(result.get("branch") or branch), files=out_files)
+
+    if _is_browser_local_repo_path(repo_path_raw):
+        return await _run_browser_local_docs()
+
     if root and root.exists():
         repo_path = str(root)
         current = _current_branch(repo_path)
@@ -2884,6 +3092,11 @@ async def read_docs_folder(req: ReadDocsFolderRequest) -> ReadDocsFolderResponse
                     continue
                 text, _ = _limit_text(text, req.max_chars_per_file)
                 files.append(ReadDocsFile(path=rel, content=text))
+        elif _ctx_field(ctx, "user_id"):
+            try:
+                return await _run_browser_local_docs()
+            except Exception as err:
+                logger.warning("read_docs_folder.browser_local_fallback_failed project=%s err=%s", req.project_id, err)
 
     return ReadDocsFolderResponse(branch=branch, files=files)
 
@@ -3085,7 +3298,7 @@ async def create_jira_issue(req: CreateJiraIssueRequest) -> CreateJiraIssueRespo
     return CreateJiraIssueResponse(key=key, url=url, summary=summary)
 
 
-async def write_documentation_file(req: WriteDocumentationFileRequest) -> WriteDocumentationFileResponse:
+async def write_documentation_file(req: WriteDocumentationFileRequest, ctx: Any = None) -> WriteDocumentationFileResponse:
     raw_path = (req.path or "").strip().replace("\\", "/")
     if not raw_path:
         raise RuntimeError("path is required")
@@ -3103,6 +3316,33 @@ async def write_documentation_file(req: WriteDocumentationFileRequest) -> WriteD
 
     doc = await _project_doc(req.project_id)
     repo_path = str((doc.get("repo_path") or "").strip())
+    if _is_browser_local_repo_path(repo_path):
+        if not _ctx_field(ctx, "user_id"):
+            raise RuntimeError("User context is required for browser-local documentation writes")
+        branch = (req.branch or str(doc.get("default_branch") or "main")).strip() or "main"
+        write_out = await _run_browser_local_git_tool(
+            tool_name="write_docs_bundle",
+            project_id=req.project_id,
+            ctx=ctx,
+            args={
+                "docs_root": "documentation",
+                "clear_first": False,
+                "files": [{"path": raw_path, "content": content}],
+            },
+            timeout_sec=45,
+        )
+        written_paths_raw = write_out.get("written_paths")
+        written_paths = [str(p).strip() for p in (written_paths_raw if isinstance(written_paths_raw, list) else []) if str(p).strip()]
+        if not written_paths:
+            raise RuntimeError(f"Failed to write documentation file in browser-local repo: {raw_path}")
+        bytes_written = len((content if content.endswith("\n") else content + "\n").encode("utf-8"))
+        return WriteDocumentationFileResponse(
+            path=written_paths[0],
+            bytes_written=bytes_written,
+            branch=branch,
+            overwritten=bool(req.overwrite),
+        )
+
     if not repo_path or not Path(repo_path).exists():
         raise RuntimeError("Local repository not available for write_documentation_file")
 
