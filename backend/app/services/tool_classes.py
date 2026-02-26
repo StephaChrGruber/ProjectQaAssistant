@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from ..db_indexes import ensure_index
 from ..db import get_db
 
 VIRTUAL_CUSTOM_UNCATEGORIZED_KEY = "custom.uncategorized"
@@ -106,9 +107,13 @@ def builtin_tool_classes() -> list[dict[str, Any]]:
 
 async def ensure_tool_class_indexes() -> None:
     db = get_db()
-    await db["tool_classes"].create_index([("key", 1)], unique=True, name="tool_classes_key_unique")
-    await db["tool_classes"].create_index([("parentKey", 1)], name="tool_classes_parent")
-    await db["tool_classes"].create_index([("scope", 1), ("origin", 1), ("isEnabled", 1)], name="tool_classes_scope")
+    await ensure_index(db["tool_classes"], [("key", 1)], name="tool_classes_key_unique")
+    await ensure_index(db["tool_classes"], [("parentKey", 1)], name="tool_classes_parent")
+    await ensure_index(
+        db["tool_classes"],
+        [("scope", 1), ("origin", 1), ("isEnabled", 1)],
+        name="tool_classes_scope",
+    )
 
 
 def _validate_tree(rows: list[dict[str, Any]]) -> None:

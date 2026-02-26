@@ -5,6 +5,7 @@ import os
 from datetime import datetime
 
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import OperationFailure
 
 
 def _mongo_uri() -> str:
@@ -13,6 +14,47 @@ def _mongo_uri() -> str:
 
 def _mongo_db() -> str:
     return os.getenv("MONGO_DB") or os.getenv("MONGODB_DB") or "project_qa"
+
+
+def _normalize_index_keys(keys: object) -> tuple[tuple[str, int], ...]:
+    if not isinstance(keys, list):
+        return tuple()
+    out: list[tuple[str, int]] = []
+    for pair in keys:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            continue
+        out.append((str(pair[0]), int(pair[1])))
+    return tuple(out)
+
+
+async def _ensure_index(collection, keys: list[tuple[str, int]], *, unique: bool = False, name: str | None = None) -> str:
+    wanted = _normalize_index_keys(keys)
+    existing = await collection.index_information()
+    for idx_name, spec in existing.items():
+        if _normalize_index_keys(spec.get("key")) != wanted:
+            continue
+        if unique and not bool(spec.get("unique", False)):
+            continue
+        return str(idx_name)
+
+    kwargs: dict[str, object] = {}
+    if unique:
+        kwargs["unique"] = True
+    if name:
+        kwargs["name"] = name
+    try:
+        return str(await collection.create_index(keys, **kwargs))
+    except OperationFailure as exc:
+        if int(getattr(exc, "code", 0) or 0) != 85:
+            raise
+        existing = await collection.index_information()
+        for idx_name, spec in existing.items():
+            if _normalize_index_keys(spec.get("key")) != wanted:
+                continue
+            if unique and not bool(spec.get("unique", False)):
+                continue
+            return str(idx_name)
+        raise
 
 
 KNOWN_CLASS_KEYS: set[str] = {
@@ -68,10 +110,14 @@ async def migrate() -> None:
     db = client[_mongo_db()]
     now = datetime.utcnow()
 
-    await db["tool_classes"].create_index([("key", 1)], unique=True, name="tool_classes_key_unique")
-    await db["tool_classes"].create_index([("parentKey", 1)], name="tool_classes_parent")
-    await db["tool_classes"].create_index([("scope", 1), ("origin", 1), ("isEnabled", 1)], name="tool_classes_scope")
-    await db["custom_tools"].create_index([("classKey", 1)], name="custom_tools_class_key")
+    await _ensure_index(db["tool_classes"], [("key", 1)], name="tool_classes_key_unique")
+    await _ensure_index(db["tool_classes"], [("parentKey", 1)], name="tool_classes_parent")
+    await _ensure_index(
+        db["tool_classes"],
+        [("scope", 1), ("origin", 1), ("isEnabled", 1)],
+        name="tool_classes_scope",
+    )
+    await _ensure_index(db["custom_tools"], [("classKey", 1)], name="custom_tools_class_key")
 
     cursor = db["custom_tools"].find({}, {"_id": 1, "classKey": 1, "tags": 1, "updatedAt": 1})
     scanned = 0
