@@ -11,6 +11,7 @@ from ..services.workspace import (
     apply_patch,
     assemble_workspace_context,
     build_patch_preview,
+    extract_and_store_chat_code_artifacts,
     create_file,
     create_folder,
     get_latest_workspace_diagnostics,
@@ -20,6 +21,7 @@ from ..services.workspace import (
     list_tree,
     move_path,
     normalize_patch_payload,
+    promote_chat_code_artifact_to_patch,
     read_file,
     rename_path,
     run_workspace_diagnostics,
@@ -124,6 +126,23 @@ class WorkspacePatchNormalizeReq(BaseModel):
     branch: str = "main"
     chat_id: str | None = None
     content: str
+    fallback_path: str | None = None
+
+
+class WorkspaceChatArtifactExtractReq(BaseModel):
+    branch: str = "main"
+    chat_id: str | None = None
+    context_key: str | None = None
+    message_id: str | None = None
+    content: str = ""
+
+
+class WorkspaceChatArtifactPromoteReq(BaseModel):
+    branch: str = "main"
+    chat_id: str | None = None
+    context_key: str | None = None
+    message_id: str | None = None
+    artifact_id: str
     fallback_path: str | None = None
 
 
@@ -491,6 +510,51 @@ async def workspace_patch_normalize(
             user_id=x_dev_user,
             chat_id=req.chat_id,
             content=req.content,
+            fallback_path=req.fallback_path,
+        )
+    except WorkspaceError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@router.post("/{project_id}/workspace/chat-artifacts/extract")
+async def workspace_chat_artifacts_extract(
+    project_id: str,
+    req: WorkspaceChatArtifactExtractReq,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+    try:
+        return await extract_and_store_chat_code_artifacts(
+            project_id=project_id,
+            branch=req.branch,
+            user_id=x_dev_user,
+            chat_id=req.chat_id,
+            context_key=req.context_key,
+            message_id=req.message_id,
+            content=req.content,
+        )
+    except WorkspaceError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@router.post("/{project_id}/workspace/chat-artifacts/promote")
+async def workspace_chat_artifacts_promote(
+    project_id: str,
+    req: WorkspaceChatArtifactPromoteReq,
+    x_dev_user: str | None = Header(default=None),
+):
+    if not x_dev_user:
+        raise HTTPException(status_code=401, detail="Missing X-Dev-User header (POC auth)")
+    try:
+        return await promote_chat_code_artifact_to_patch(
+            project_id=project_id,
+            branch=req.branch,
+            user_id=x_dev_user,
+            chat_id=req.chat_id,
+            context_key=req.context_key,
+            message_id=req.message_id,
+            artifact_id=req.artifact_id,
             fallback_path=req.fallback_path,
         )
     except WorkspaceError as err:

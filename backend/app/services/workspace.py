@@ -2509,6 +2509,247 @@ def _extract_fenced_code_blocks(raw: str) -> list[dict[str, str]]:
     return blocks
 
 
+def _extract_chat_artifact_path_hint(raw: str, fallback: str | None = None) -> str | None:
+    text = str(raw or "")
+    if fallback:
+        try:
+            return _normalize_rel_path(str(fallback or ""))
+        except Exception:
+            pass
+    patterns = [
+        r"(?:^|\n)\s*(?:path|file)\s*:\s*([^\n`]+)",
+        r"(?:^|\n)\s*(?:path|file)\s*=\s*([^\n`]+)",
+        r"(?:^|\n)\s*\+\+\+\s+b\/([^\n\s]+)",
+        r"(?:^|\n)\s*diff --git a\/[^\s]+ b\/([^\n\s]+)",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, text, flags=re.IGNORECASE)
+        if not m:
+            continue
+        candidate = str(m.group(1) or "").strip().strip("\"'")
+        if not candidate:
+            continue
+        try:
+            return _normalize_rel_path(candidate)
+        except Exception:
+            continue
+    return None
+
+
+def _looks_like_json_patch_payload(raw: str) -> bool:
+    parsed = _extract_json_obj(raw)
+    if not isinstance(parsed, dict):
+        return False
+    if isinstance(parsed.get("patch"), dict):
+        files = parsed.get("patch", {}).get("files")
+        return isinstance(files, list) and len(files) > 0
+    files = parsed.get("files")
+    return isinstance(files, list) and len(files) > 0
+
+
+def extract_chat_code_artifacts(
+    *,
+    content: str,
+    message_id: str | None = None,
+) -> list[dict[str, Any]]:
+    raw = str(content or "")
+    safe_message_id = str(message_id or "message").strip() or "message"
+    artifacts: list[dict[str, Any]] = []
+    next_idx = 0
+
+    for m in re.finditer(r"```([A-Za-z0-9_+-]*)\n([\s\S]*?)```", raw):
+        language = str(m.group(1) or "").strip().lower()
+        block = str(m.group(2) or "")
+        surrounding = raw[max(0, m.start() - 260) : min(len(raw), m.end() + 260)]
+        path_hint = _extract_chat_artifact_path_hint(block, fallback=_extract_chat_artifact_path_hint(surrounding))
+        block_kind = "fenced_code"
+        if language == "diff" or "diff --git " in block or "\n@@ " in f"\n{block}":
+            block_kind = "diff"
+        elif language in {"json", "jsonc"} and _looks_like_json_patch_payload(block):
+            block_kind = "json_patch"
+        artifacts.append(
+            {
+                "id": f"{safe_message_id}:{next_idx}",
+                "type": block_kind,
+                "language": language or None,
+                "block_index": next_idx,
+                "path_hint": path_hint,
+                "chars": len(block),
+                "content": block,
+            }
+        )
+        next_idx += 1
+
+    has_diff_artifact = any(str(row.get("type") or "") == "diff" for row in artifacts)
+    if not has_diff_artifact and ("diff --git " in raw or "\n@@ " in f"\n{raw}"):
+        artifacts.append(
+            {
+                "id": f"{safe_message_id}:{next_idx}",
+                "type": "diff",
+                "language": "diff",
+                "block_index": next_idx,
+                "path_hint": _extract_chat_artifact_path_hint(raw),
+                "chars": len(raw),
+                "content": raw,
+            }
+        )
+        next_idx += 1
+
+    has_json_patch = any(str(row.get("type") or "") == "json_patch" for row in artifacts)
+    if not has_json_patch and _looks_like_json_patch_payload(raw):
+        artifacts.append(
+            {
+                "id": f"{safe_message_id}:{next_idx}",
+                "type": "json_patch",
+                "language": "json",
+                "block_index": next_idx,
+                "path_hint": _extract_chat_artifact_path_hint(raw),
+                "chars": len(raw),
+                "content": raw,
+            }
+        )
+
+    return artifacts
+
+
+async def extract_and_store_chat_code_artifacts(
+    *,
+    project_id: str,
+    branch: str,
+    user_id: str,
+    chat_id: str | None,
+    context_key: str | None,
+    message_id: str | None,
+    content: str,
+) -> dict[str, Any]:
+    safe_branch = str(branch or "main").strip() or "main"
+    safe_chat_id = str(chat_id or "").strip()
+    safe_context_key = str(context_key or "").strip()
+    safe_message_id = str(message_id or "").strip() or f"message-{int(datetime.now(tz=timezone.utc).timestamp())}"
+
+    artifacts = extract_chat_code_artifacts(content=content, message_id=safe_message_id)
+    now = datetime.now(tz=timezone.utc)
+    if artifacts:
+        db = get_db()
+        for item in artifacts:
+            doc = {
+                "project_id": project_id,
+                "branch": safe_branch,
+                "user_id": str(user_id or "").strip(),
+                "chat_id": safe_chat_id,
+                "context_key": safe_context_key,
+                "message_id": safe_message_id,
+                "artifact_id": str(item.get("id") or ""),
+                "type": str(item.get("type") or ""),
+                "language": item.get("language"),
+                "block_index": int(item.get("block_index") or 0),
+                "path_hint": item.get("path_hint"),
+                "chars": int(item.get("chars") or 0),
+                "content": str(item.get("content") or ""),
+                "created_at": now,
+            }
+            await db["chat_code_artifacts"].update_one(
+                {
+                    "project_id": project_id,
+                    "chat_id": safe_chat_id,
+                    "message_id": safe_message_id,
+                    "artifact_id": str(item.get("id") or ""),
+                },
+                {
+                    "$set": doc,
+                    "$setOnInsert": {"first_seen_at": now},
+                },
+                upsert=True,
+            )
+    return {
+        "project_id": project_id,
+        "branch": safe_branch,
+        "chat_id": safe_chat_id,
+        "context_key": safe_context_key,
+        "message_id": safe_message_id,
+        "artifacts": [
+            {
+                "id": str(item.get("id") or ""),
+                "type": str(item.get("type") or ""),
+                "language": item.get("language"),
+                "block_index": int(item.get("block_index") or 0),
+                "path_hint": item.get("path_hint"),
+                "chars": int(item.get("chars") or 0),
+            }
+            for item in artifacts
+        ],
+    }
+
+
+async def promote_chat_code_artifact_to_patch(
+    *,
+    project_id: str,
+    branch: str,
+    user_id: str,
+    chat_id: str | None,
+    context_key: str | None,
+    message_id: str | None,
+    artifact_id: str | None,
+    fallback_path: str | None = None,
+) -> dict[str, Any]:
+    safe_chat_id = str(chat_id or "").strip()
+    safe_message_id = str(message_id or "").strip()
+    safe_artifact_id = str(artifact_id or "").strip()
+    if not safe_chat_id:
+        raise WorkspaceError("chat_id is required to promote chat artifact")
+    if not safe_artifact_id:
+        raise WorkspaceError("artifact_id is required to promote chat artifact")
+
+    db = get_db()
+    row = await db["chat_code_artifacts"].find_one(
+        {
+            "project_id": project_id,
+            "chat_id": safe_chat_id,
+            "message_id": safe_message_id,
+            "artifact_id": safe_artifact_id,
+        }
+    )
+    if not row:
+        row = await db["chat_code_artifacts"].find_one(
+            {
+                "project_id": project_id,
+                "chat_id": safe_chat_id,
+                "artifact_id": safe_artifact_id,
+            },
+            sort=[("created_at", -1)],
+        )
+    if not row:
+        raise WorkspaceError("chat artifact not found")
+
+    artifact_content = str(row.get("content") or "")
+    if not artifact_content.strip():
+        raise WorkspaceError("chat artifact has no content")
+
+    promoted = await normalize_patch_payload(
+        project_id=project_id,
+        branch=branch,
+        user_id=user_id,
+        chat_id=chat_id,
+        content=artifact_content,
+        fallback_path=fallback_path or str(row.get("path_hint") or "") or None,
+    )
+    return {
+        "project_id": project_id,
+        "branch": str(branch or "main").strip() or "main",
+        "chat_id": safe_chat_id,
+        "context_key": str(context_key or "").strip(),
+        "message_id": str(row.get("message_id") or safe_message_id),
+        "artifact": {
+            "id": str(row.get("artifact_id") or safe_artifact_id),
+            "type": str(row.get("type") or ""),
+            "language": row.get("language"),
+            "path_hint": row.get("path_hint"),
+            "chars": int(row.get("chars") or 0),
+        },
+        "promotion": promoted,
+    }
+
+
 def _parse_hunk_header(header: str) -> tuple[int, int, int, int]:
     # @@ -a,b +c,d @@
     m = re.search(r"@@\s*-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s*@@", header)

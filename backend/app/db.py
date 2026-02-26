@@ -64,6 +64,8 @@ async def init_db():
     await db["chat_messages_v2"].create_index([("user", 1), ("ts", -1)], name="chat_messages_v2_user_recent")
     await db["chat_context_config"].create_index([("chat_id", 1), ("context_key", 1)], unique=True, name="chat_ctx_cfg_unique")
     await db["chat_context_config"].create_index([("chat_id", 1), ("updated_at", -1)], name="chat_ctx_cfg_chat_recent")
+    await db["chat_code_artifacts"].create_index([("chat_id", 1), ("message_id", 1), ("artifact_id", 1)], name="chat_code_artifacts_msg")
+    await db["chat_code_artifacts"].create_index([("project_id", 1), ("context_key", 1), ("created_at", -1)], name="chat_code_artifacts_ctx_recent")
 
 def get_client() -> AsyncIOMotorClient:
     global _client

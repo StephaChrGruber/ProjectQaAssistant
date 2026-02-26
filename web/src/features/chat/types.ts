@@ -258,6 +258,37 @@ export type ChatChartSpec = {
   height?: number
 }
 
+export type ChatCodeArtifact = {
+  id: string
+  type: "fenced_code" | "diff" | "json_patch" | string
+  language?: string | null
+  block_index: number
+  path_hint?: string | null
+  chars?: number
+}
+
+export type ChatCodeArtifactsExtractResponse = {
+  project_id: string
+  branch: string
+  chat_id?: string
+  context_key?: string
+  message_id?: string
+  artifacts: ChatCodeArtifact[]
+}
+
+export type ChatCodeArtifactsPromoteResponse = {
+  project_id: string
+  branch: string
+  chat_id?: string
+  context_key?: string
+  message_id?: string
+  artifact?: ChatCodeArtifact
+  promotion?: {
+    kind: string
+    patch: Record<string, unknown>
+  }
+}
+
 export type GlobalChatContext = {
   context_key: string
   project_id?: string | null

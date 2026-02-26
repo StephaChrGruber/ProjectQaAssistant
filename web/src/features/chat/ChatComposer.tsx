@@ -99,6 +99,11 @@ export function ChatComposer({
                 description: "Open workspace for diff target (/diff <path>)",
                 template: "/diff __CURSOR__",
             },
+            {
+                command: "promote",
+                description: "Promote latest assistant code block to patch review",
+                template: "/promote",
+            },
         ],
         [codeLanguage]
     )

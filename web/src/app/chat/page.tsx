@@ -55,6 +55,9 @@ import { ChatComposer } from "@/features/chat/ChatComposer"
 import type {
     AskAgentResponse,
     BranchesResponse,
+    ChatCodeArtifact,
+    ChatCodeArtifactsExtractResponse,
+    ChatCodeArtifactsPromoteResponse,
     ChatTaskItem,
     ChatTasksResponse,
     ChatToolApprovalsResponse,
@@ -130,6 +133,29 @@ function keyOf(projectId: string, branch: string): string {
     return `${projectId}::${branch || "main"}`
 }
 
+type ProjectsResponseFlexible = ProjectDoc[] | { items?: ProjectDoc[]; projects?: ProjectDoc[] } | null | undefined
+
+function normalizeProjectsResponse(input: ProjectsResponseFlexible): ProjectDoc[] {
+    const rows: unknown[] = Array.isArray(input)
+        ? input
+        : Array.isArray(input?.items)
+          ? input.items
+          : Array.isArray(input?.projects)
+            ? input.projects
+            : []
+    const seen = new Set<string>()
+    const out: ProjectDoc[] = []
+    for (const row of rows) {
+        if (!row || typeof row !== "object") continue
+        const project = row as ProjectDoc
+        const id = String(project._id || "").trim()
+        if (!id || seen.has(id)) continue
+        seen.add(id)
+        out.push({ ...project, _id: id })
+    }
+    return out
+}
+
 function parseErr(err: unknown): string {
     if (err instanceof Error) return err.message
     return String(err || "Unknown error")
@@ -157,6 +183,21 @@ function equalDraftPreviews(
 
 function isUrl(value: string): boolean {
     return /^https?:\/\//i.test(value.trim())
+}
+
+function messageArtifactKey(message: GlobalChatMessage, idx: number): string {
+    const id = String(message.id || "").trim()
+    if (id) return id
+    return `${String(message.role || "message")}:${String(message.ts || idx)}:${idx}`
+}
+
+function hasCodeIntent(text: string): boolean {
+    const raw = String(text || "")
+    if (!raw.trim()) return false
+    if (/```[\s\S]*?```/.test(raw)) return true
+    if (/^\/(open|suggest|apply-last|diff|promote)\b/im.test(raw)) return true
+    if (/(^|\s)(src|app|web|backend|docs|documentation)\/[A-Za-z0-9._/\-]+/.test(raw)) return true
+    return false
 }
 
 function FloatingIsland({
@@ -336,6 +377,7 @@ export default function GlobalChatPage() {
     const [workspaceRequestedPatchFallbackPath, setWorkspaceRequestedPatchFallbackPath] = useState<string | null>(null)
     const [workspaceRequestedPatchAutoApply, setWorkspaceRequestedPatchAutoApply] = useState(false)
     const [automationsOpen, setAutomationsOpen] = useState(false)
+    const [projectsOpen, setProjectsOpen] = useState(false)
     const [settingsOpen, setSettingsOpen] = useState(false)
     const [adminOpen, setAdminOpen] = useState(false)
     const [workspaceOpenTabs, setWorkspaceOpenTabs] = useState<string[]>([])
@@ -344,6 +386,9 @@ export default function GlobalChatPage() {
     const [workspaceActivePreview, setWorkspaceActivePreview] = useState<string | null>(null)
     const [workspaceDraftPreviews, setWorkspaceDraftPreviews] = useState<Array<{ path: string; preview: string }>>([])
     const [workspaceCursor, setWorkspaceCursor] = useState<{ line: number; column: number } | null>(null)
+    const [autoOpenWorkspaceOnCodeIntent, setAutoOpenWorkspaceOnCodeIntent] = useState(true)
+    const [artifactsByMessageKey, setArtifactsByMessageKey] = useState<Record<string, ChatCodeArtifact[]>>({})
+    const [artifactBusyKey, setArtifactBusyKey] = useState<string | null>(null)
 
     const activeContextKey = useMemo(() => {
         if (!selectedProjectId) return ""
@@ -450,12 +495,12 @@ export default function GlobalChatPage() {
                 const initialBranch = params.get("branch")
                 const [me, projectsRes, profilesRes] = await Promise.all([
                     backendJson<MeResponse>("/api/me"),
-                    backendJson<{ items?: ProjectDoc[]; projects?: ProjectDoc[] }>("/api/projects"),
+                    backendJson<ProjectsResponseFlexible>("/api/projects"),
                     backendJson<{ items?: LlmProfileDoc[]; profiles?: LlmProfileDoc[] }>("/api/llm/profiles"),
                 ])
                 const user = String(me?.user?.email || me?.user?.id || "dev@local").trim().toLowerCase()
                 const admin = Boolean(me?.user?.isGlobalAdmin)
-                const list = (projectsRes.items || projectsRes.projects || []).filter(Boolean)
+                const list = normalizeProjectsResponse(projectsRes)
                 const selectedProject = initialProject || list[0]?._id || ""
                 const selectedBr = initialBranch || list.find((p) => p._id === selectedProject)?.default_branch || "main"
                 if (cancelled) return
@@ -465,6 +510,9 @@ export default function GlobalChatPage() {
                 setSelectedProjectId(selectedProject)
                 setSelectedBranch(selectedBr)
                 setContextConfirmed(Boolean(initialProject))
+                if (!selectedProject) {
+                    setContextDialogOpen(true)
+                }
                 setLlmProfiles((profilesRes.items || profilesRes.profiles || []).filter(Boolean))
                 if (selectedProject) {
                     const branchesRes = await backendJson<BranchesResponse>(
@@ -494,6 +542,47 @@ export default function GlobalChatPage() {
             cancelled = true
         }
     }, [])
+
+    useEffect(() => {
+        if (projectsOpen) return
+        let cancelled = false
+        async function refreshProjectsAfterClose() {
+            try {
+                const list = normalizeProjectsResponse(await backendJson<ProjectsResponseFlexible>("/api/projects"))
+                if (cancelled) return
+                setProjects(list)
+                if (!selectedProjectId && list[0]?._id) {
+                    setSelectedProjectId(list[0]._id)
+                    setSelectedBranch(String(list[0].default_branch || "main"))
+                    setContextConfirmed(false)
+                }
+            } catch {
+                // Ignore refresh errors.
+            }
+        }
+        void refreshProjectsAfterClose()
+        return () => {
+            cancelled = true
+        }
+    }, [projectsOpen, selectedProjectId])
+
+    useEffect(() => {
+        try {
+            const raw = window.localStorage.getItem("pqa.chat.auto_open_workspace_code_intent")
+            if (raw === "0") setAutoOpenWorkspaceOnCodeIntent(false)
+            if (raw === "1") setAutoOpenWorkspaceOnCodeIntent(true)
+        } catch {
+            // ignore local storage read errors
+        }
+    }, [])
+
+    useEffect(() => {
+        try {
+            window.localStorage.setItem("pqa.chat.auto_open_workspace_code_intent", autoOpenWorkspaceOnCodeIntent ? "1" : "0")
+        } catch {
+            // ignore local storage write errors
+        }
+    }, [autoOpenWorkspaceOnCodeIntent])
 
     useEffect(() => {
         if (!chatId || !selectedProjectId) return
@@ -532,6 +621,55 @@ export default function GlobalChatPage() {
         async (question: string, pendingQuestionId?: string) => {
             const trimmed = question.trim()
             if (!trimmed || !chatId || !selectedProjectId || !selectedBranch) return
+            const cmdMatch = trimmed.match(/^\/([a-zA-Z][a-zA-Z0-9_-]*)(?:\s+([\s\S]*))?$/)
+            if (cmdMatch) {
+                const cmd = String(cmdMatch[1] || "").toLowerCase()
+                const arg = String(cmdMatch[2] || "").trim()
+                if (cmd === "open" || cmd === "diff") {
+                    if (arg) {
+                        setWorkspaceRequestedPath(arg.replace(/^\.?\//, ""))
+                    }
+                    setWorkspaceRequestedAction(null)
+                    setWorkspaceRequestedPatchContent(null)
+                    setWorkspaceRequestedPatchAutoApply(false)
+                    setWorkspaceOpen(true)
+                    return
+                }
+                if (cmd === "suggest") {
+                    setWorkspaceRequestedAction("suggest")
+                    setWorkspaceRequestedPatchContent(null)
+                    setWorkspaceOpen(true)
+                    return
+                }
+                if (cmd === "apply-last") {
+                    setWorkspaceRequestedAction("apply-last")
+                    setWorkspaceRequestedPatchContent(null)
+                    setWorkspaceOpen(true)
+                    return
+                }
+                if (cmd === "promote") {
+                    const latestAssistant = [...messages]
+                        .reverse()
+                        .find((row) => row.role === "assistant" && String(row.context_key || "") === activeContextKey)
+                    if (!latestAssistant) {
+                        setError("No assistant message in this context is available to promote.")
+                        return
+                    }
+                    const raw = String(latestAssistant.content || "").trim()
+                    if (!raw) {
+                        setError("The latest assistant response is empty.")
+                        return
+                    }
+                    setWorkspaceRequestedPatchContent(raw)
+                    setWorkspaceRequestedPatchFallbackPath(arg || null)
+                    setWorkspaceRequestedPatchAutoApply(false)
+                    setWorkspaceOpen(true)
+                    return
+                }
+            }
+            if (autoOpenWorkspaceOnCodeIntent && hasCodeIntent(trimmed)) {
+                setWorkspaceOpen(true)
+            }
             setSending(true)
             setError(null)
             const nowIso = new Date().toISOString()
@@ -601,7 +739,9 @@ export default function GlobalChatPage() {
         [
             activeContextKey,
             activeOnly,
+            autoOpenWorkspaceOnCodeIntent,
             chatId,
+            messages,
             refreshBootstrap,
             refreshMessages,
             selectedBranch,
@@ -1073,23 +1213,95 @@ export default function GlobalChatPage() {
         setWorkspaceOpen(true)
     }, [])
 
-    const reviewMessagePatch = useCallback((_messageKey: string, message: string, fallbackPath?: string | null) => {
-        const raw = String(message || "").trim()
-        if (!raw) return
-        setWorkspaceRequestedPatchContent(raw)
-        setWorkspaceRequestedPatchFallbackPath(String(fallbackPath || "").trim() || null)
-        setWorkspaceRequestedPatchAutoApply(false)
-        setWorkspaceOpen(true)
-    }, [])
+    const extractMessageArtifacts = useCallback(
+        async (messageKey: string, message: GlobalChatMessage): Promise<ChatCodeArtifact[]> => {
+            if (!selectedProjectId) return []
+            const out = await backendJson<ChatCodeArtifactsExtractResponse>(
+                `/api/projects/${encodeURIComponent(selectedProjectId)}/workspace/chat-artifacts/extract`,
+                {
+                    method: "POST",
+                    body: JSON.stringify({
+                        user: userId,
+                        branch: selectedBranch || "main",
+                        chat_id: chatId,
+                        context_key: message.context_key || activeContextKey || null,
+                        message_id: String(message.id || messageKey),
+                        content: String(message.content || ""),
+                    }),
+                }
+            )
+            const artifacts = Array.isArray(out.artifacts) ? out.artifacts : []
+            setArtifactsByMessageKey((prev) => ({ ...prev, [messageKey]: artifacts }))
+            return artifacts
+        },
+        [activeContextKey, chatId, selectedBranch, selectedProjectId, userId]
+    )
 
-    const applyMessagePatchFromBubble = useCallback((_messageKey: string, message: string, fallbackPath?: string | null) => {
-        const raw = String(message || "").trim()
-        if (!raw) return
-        setWorkspaceRequestedPatchContent(raw)
-        setWorkspaceRequestedPatchFallbackPath(String(fallbackPath || "").trim() || null)
-        setWorkspaceRequestedPatchAutoApply(true)
-        setWorkspaceOpen(true)
-    }, [])
+    const promoteMessageArtifact = useCallback(
+        async (messageKey: string, message: GlobalChatMessage, fallbackPath?: string | null, autoApply = false) => {
+            if (!selectedProjectId) return
+            setArtifactBusyKey(messageKey)
+            setError(null)
+            try {
+                let artifacts = artifactsByMessageKey[messageKey] || []
+                if (!artifacts.length) {
+                    artifacts = await extractMessageArtifacts(messageKey, message)
+                }
+                if (!artifacts.length) {
+                    throw new Error("No code artifacts were found in this message.")
+                }
+                const selectedArtifact =
+                    artifacts.find((row) => Boolean(String(row.path_hint || "").trim())) ||
+                    artifacts.find((row) => String(row.type || "") === "diff") ||
+                    artifacts[0]
+                const out = await backendJson<ChatCodeArtifactsPromoteResponse>(
+                    `/api/projects/${encodeURIComponent(selectedProjectId)}/workspace/chat-artifacts/promote`,
+                    {
+                        method: "POST",
+                        body: JSON.stringify({
+                            user: userId,
+                            branch: selectedBranch || "main",
+                            chat_id: chatId,
+                            context_key: message.context_key || activeContextKey || null,
+                            message_id: String(message.id || messageKey),
+                            artifact_id: selectedArtifact.id,
+                            fallback_path: String(fallbackPath || selectedArtifact.path_hint || "").trim() || null,
+                        }),
+                    }
+                )
+                const patch = out.promotion?.patch
+                if (!patch || typeof patch !== "object") {
+                    throw new Error("Could not promote the selected artifact to a patch.")
+                }
+                setWorkspaceRequestedPatchContent(JSON.stringify({ patch }))
+                setWorkspaceRequestedPatchFallbackPath(String(fallbackPath || selectedArtifact.path_hint || "").trim() || null)
+                setWorkspaceRequestedPatchAutoApply(autoApply)
+                setWorkspaceOpen(true)
+                if (!autoApply) {
+                    setError(null)
+                }
+            } catch (err) {
+                setError(parseErr(err))
+            } finally {
+                setArtifactBusyKey((current) => (current === messageKey ? null : current))
+            }
+        },
+        [activeContextKey, artifactsByMessageKey, chatId, extractMessageArtifacts, selectedBranch, selectedProjectId, userId]
+    )
+
+    const reviewMessagePatch = useCallback(
+        (messageKey: string, message: GlobalChatMessage, fallbackPath?: string | null) => {
+            void promoteMessageArtifact(messageKey, message, fallbackPath, false)
+        },
+        [promoteMessageArtifact]
+    )
+
+    const applyMessagePatchFromBubble = useCallback(
+        (messageKey: string, message: GlobalChatMessage, fallbackPath?: string | null) => {
+            void promoteMessageArtifact(messageKey, message, fallbackPath, true)
+        },
+        [promoteMessageArtifact]
+    )
 
     const handleAnswerSourceClick = useCallback(
         async (src: { url?: string; source?: string; path?: string }) => {
@@ -1250,12 +1462,25 @@ export default function GlobalChatPage() {
                 <DialogContent>
                     <Stack spacing={1.2} sx={{ pt: 0.5 }}>
                         <Typography variant="subtitle2">Active Context</Typography>
+                        {projects.length === 0 && (
+                            <Alert
+                                severity="info"
+                                action={
+                                    <Button size="small" onClick={() => setProjectsOpen(true)}>
+                                        Open Projects
+                                    </Button>
+                                }
+                            >
+                                No projects found. Create one first.
+                            </Alert>
+                        )}
                         <FormControl size="small" fullWidth>
                             <InputLabel id="ctx-project-label">Project</InputLabel>
                             <Select
                                 labelId="ctx-project-label"
                                 label="Project"
                                 value={selectedProjectId}
+                                disabled={projects.length === 0}
                                 onChange={(e) => {
                                     setSelectedProjectId(String(e.target.value || ""))
                                     setContextConfirmed(false)
@@ -1274,6 +1499,7 @@ export default function GlobalChatPage() {
                                 labelId="ctx-branch-label"
                                 label="Branch"
                                 value={selectedBranch}
+                                disabled={!selectedProjectId}
                                 onChange={(e) => {
                                     setSelectedBranch(String(e.target.value || "main"))
                                     setContextConfirmed(false)
@@ -1305,6 +1531,13 @@ export default function GlobalChatPage() {
                         <Stack direction="row" alignItems="center" spacing={1}>
                             <Switch checked={activeOnly} onChange={(_, v) => setActiveOnly(v)} />
                             <Typography variant="body2">Show active context only</Typography>
+                        </Stack>
+                        <Stack direction="row" alignItems="center" spacing={1}>
+                            <Switch
+                                checked={autoOpenWorkspaceOnCodeIntent}
+                                onChange={(_, v) => setAutoOpenWorkspaceOnCodeIntent(v)}
+                            />
+                            <Typography variant="body2">Auto-open workspace on code intent</Typography>
                         </Stack>
                         {contexts.length > 0 && (
                             <Stack spacing={0.5}>
@@ -1383,16 +1616,28 @@ export default function GlobalChatPage() {
                         }}
                     >
                         <Box sx={{ px: { xs: 1.1, md: 1.4 }, py: 0.8, borderBottom: "1px solid", borderColor: "divider" }}>
-                            <Stack direction="row" spacing={0.8} alignItems="center" useFlexGap flexWrap="wrap">
-                                <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                                    Global Chat
-                                </Typography>
-                                <Chip size="small" label={selectedProjectLabel} />
-                                <Chip size="small" variant="outlined" label={selectedBranch || "main"} />
-                                {activeOnly && <Chip size="small" color="primary" label="Active-only" />}
-                                {!contextConfirmed && (
-                                    <Chip size="small" color="warning" label="Select context before sending" />
-                                )}
+                            <Stack spacing={0.6}>
+                                <Stack direction="row" spacing={0.8} alignItems="center" useFlexGap flexWrap="wrap">
+                                    <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                                        Global Chat
+                                    </Typography>
+                                    <Chip size="small" label={selectedProjectLabel} />
+                                    <Chip size="small" variant="outlined" label={selectedBranch || "main"} />
+                                    {activeOnly && <Chip size="small" color="primary" label="Active-only" />}
+                                    {!contextConfirmed && (
+                                        <Chip size="small" color="warning" label="Select context before sending" />
+                                    )}
+                                </Stack>
+                                <Stack direction="row" spacing={0.6} useFlexGap flexWrap="wrap">
+                                    <Chip
+                                        size="small"
+                                        color={artifactBusyKey ? "warning" : workspaceRequestedPatchContent ? "info" : "success"}
+                                        label={artifactBusyKey ? "Promoting code..." : workspaceRequestedPatchContent ? "Patch pending" : "Synced"}
+                                    />
+                                    {workspaceActivePath && (
+                                        <Chip size="small" variant="outlined" label={`File: ${workspaceActivePath}`} />
+                                    )}
+                                </Stack>
                             </Stack>
                         </Box>
 
@@ -1416,6 +1661,7 @@ export default function GlobalChatPage() {
                                 )}
                                 {visibleMessages.map((message, idx) => {
                             const isUser = message.role === "user"
+                            const messageKey = messageArtifactKey(message, idx)
                             const messageContextKey = String(message.context_key || "")
                             const isActive = messageContextKey === activeContextKey
                             const compact = !isActive
@@ -1423,6 +1669,12 @@ export default function GlobalChatPage() {
                             const contextBranch = String(message.branch || "main")
                             const contextLabel = `${projectNameById.get(contextProject) || contextProject || "Unknown"} · ${contextBranch}`
                             const sources = message.role === "assistant" ? (message.meta?.sources || []) : []
+                            const hasPromotableCode = hasCodeIntent(String(message.content || ""))
+                            const artifacts = artifactsByMessageKey[messageKey] || []
+                            const fallbackPath =
+                                sources.find((src) => Boolean(String(src.path || "").trim()))?.path ||
+                                artifacts.find((row) => Boolean(String(row.path_hint || "").trim()))?.path_hint ||
+                                null
                             return (
                                 <Box
                                     key={`${message.id || idx}-${message.ts || idx}`}
@@ -1493,66 +1745,75 @@ export default function GlobalChatPage() {
                                                 )
                                             )}
 
-                                            {!compact && !isUser && sources.length > 0 && (
+                                            {!compact && !isUser && (sources.length > 0 || hasPromotableCode || artifacts.length > 0) && (
                                                 <Stack spacing={0.25}>
                                                     <Stack direction="row" spacing={0.6} useFlexGap flexWrap="wrap">
                                                         <Button
                                                             variant="outlined"
                                                             size="small"
-                                                            onClick={() =>
-                                                                openInWorkspaceFromMessage(
-                                                                    sources.find((src) => Boolean(String(src.path || "").trim()))?.path || null
-                                                                )
-                                                            }
+                                                            onClick={() => openInWorkspaceFromMessage(fallbackPath)}
                                                         >
                                                             Open in Workspace
                                                         </Button>
                                                         <Button
                                                             variant="outlined"
                                                             size="small"
-                                                            onClick={() =>
-                                                                reviewMessagePatch(
-                                                                    `${message.id || idx}`,
-                                                                    message.content || "",
-                                                                    sources.find((src) => Boolean(String(src.path || "").trim()))?.path || null
-                                                                )
-                                                            }
+                                                            disabled={artifactBusyKey === messageKey || (!hasPromotableCode && artifacts.length === 0)}
+                                                            onClick={() => reviewMessagePatch(messageKey, message, fallbackPath)}
+                                                        >
+                                                            Promote Code
+                                                        </Button>
+                                                        <Button
+                                                            variant="outlined"
+                                                            size="small"
+                                                            disabled={artifactBusyKey === messageKey || (!hasPromotableCode && artifacts.length === 0)}
+                                                            onClick={() => reviewMessagePatch(messageKey, message, fallbackPath)}
                                                         >
                                                             Review Patch
                                                         </Button>
                                                         <Button
                                                             variant="outlined"
                                                             size="small"
-                                                            onClick={() =>
-                                                                applyMessagePatchFromBubble(
-                                                                    `${message.id || idx}`,
-                                                                    message.content || "",
-                                                                    sources.find((src) => Boolean(String(src.path || "").trim()))?.path || null
-                                                                )
-                                                            }
+                                                            disabled={artifactBusyKey === messageKey || (!hasPromotableCode && artifacts.length === 0)}
+                                                            onClick={() => applyMessagePatchFromBubble(messageKey, message, fallbackPath)}
                                                         >
                                                             Apply Selected
                                                         </Button>
                                                     </Stack>
-                                                    <Typography variant="caption" color="text.secondary">
-                                                        Sources
-                                                    </Typography>
-                                                    <Stack direction="row" spacing={0.55} useFlexGap flexWrap="wrap">
-                                                        {sources.slice(0, 8).map((src, srcIdx) => {
-                                                            const label = sourceDisplayText(src)
-                                                            const url = String(src.url || src.source || "")
-                                                            return (
+                                                    {artifacts.length > 0 && (
+                                                        <Stack direction="row" spacing={0.55} useFlexGap flexWrap="wrap">
+                                                            {artifacts.slice(0, 8).map((artifact) => (
                                                                 <Chip
-                                                                    key={`${label}-${srcIdx}`}
+                                                                    key={`${messageKey}-${artifact.id}`}
                                                                     size="small"
-                                                                    icon={<LinkIcon sx={{ fontSize: 13 }} />}
-                                                                    label={label}
-                                                                    clickable={Boolean(url || src.path)}
-                                                                    onClick={() => void handleAnswerSourceClick(src)}
+                                                                    label={`${artifact.type}${artifact.language ? ` · ${artifact.language}` : ""}${artifact.path_hint ? ` · ${artifact.path_hint}` : ""}`}
                                                                 />
-                                                            )
-                                                        })}
-                                                    </Stack>
+                                                            ))}
+                                                        </Stack>
+                                                    )}
+                                                    {sources.length > 0 && (
+                                                        <>
+                                                            <Typography variant="caption" color="text.secondary">
+                                                                Sources
+                                                            </Typography>
+                                                            <Stack direction="row" spacing={0.55} useFlexGap flexWrap="wrap">
+                                                                {sources.slice(0, 8).map((src, srcIdx) => {
+                                                                    const label = sourceDisplayText(src)
+                                                                    const url = String(src.url || src.source || "")
+                                                                    return (
+                                                                        <Chip
+                                                                            key={`${label}-${srcIdx}`}
+                                                                            size="small"
+                                                                            icon={<LinkIcon sx={{ fontSize: 13 }} />}
+                                                                            label={label}
+                                                                            clickable={Boolean(url || src.path)}
+                                                                            onClick={() => void handleAnswerSourceClick(src)}
+                                                                        />
+                                                                    )
+                                                                })}
+                                                            </Stack>
+                                                        </>
+                                                    )}
                                                 </Stack>
                                             )}
                                         </Stack>
@@ -1660,6 +1921,18 @@ export default function GlobalChatPage() {
                 onDocsErrorClose={() => setDocsError(null)}
                 onDocsNoticeClose={() => setDocsNotice(null)}
             />
+
+            <Dialog open={projectsOpen} onClose={() => setProjectsOpen(false)} fullWidth maxWidth="xl">
+                <AppDialogTitle title="Projects" onClose={() => setProjectsOpen(false)} />
+                <DialogContent sx={{ p: 0, height: { xs: "76vh", md: "84vh" } }}>
+                    <Box
+                        component="iframe"
+                        title="Projects"
+                        src="/projects?embedded=1"
+                        sx={{ border: 0, width: "100%", height: "100%", display: "block", bgcolor: "background.default" }}
+                    />
+                </DialogContent>
+            </Dialog>
 
             <Dialog open={automationsOpen} onClose={() => setAutomationsOpen(false)} fullWidth maxWidth="xl">
                 <AppDialogTitle title="Automations" onClose={() => setAutomationsOpen(false)} />
