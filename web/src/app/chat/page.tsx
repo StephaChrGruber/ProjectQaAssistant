@@ -293,6 +293,16 @@ function hasCodeIntent(text: string): boolean {
     return false
 }
 
+function hasPromotableCodeContent(text: string): boolean {
+    const raw = String(text || "")
+    if (!raw.trim()) return false
+    if (/```[\s\S]*?```/.test(raw)) return true
+    if (/^diff --git\s+/m.test(raw)) return true
+    if (/^@@\s+[-+0-9, ]+@@/m.test(raw)) return true
+    if (/^\s*\{\s*"patch"\s*:/m.test(raw)) return true
+    return false
+}
+
 function FloatingIsland({
     islandId,
     position,
@@ -1966,7 +1976,7 @@ export default function GlobalChatPage() {
                                     : contextBranch
                             const sources = message.role === "assistant" ? (message.meta?.sources || []) : []
                             const thinkingTrace = message.role === "assistant" ? (message.meta?.thinking_trace as ThinkingTrace | undefined) : undefined
-                            const hasPromotableCode = hasCodeIntent(String(message.content || ""))
+                            const hasPromotableCode = hasPromotableCodeContent(String(message.content || ""))
                             const artifacts = artifactsByMessageKey[messageKey] || []
                             const fallbackPath =
                                 sources.find((src) => Boolean(String(src.path || "").trim()))?.path ||
