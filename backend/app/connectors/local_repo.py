@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import logging
 
@@ -50,6 +51,28 @@ def _is_text_file(path: str) -> bool:
     )
 
 
+def _default_backend_repo_root() -> Path:
+    candidates: list[Path] = []
+    env_root = str(os.getenv("PQA_LOCAL_REPO_FALLBACK_ROOT") or "").strip()
+    if env_root:
+        candidates.append(Path(env_root))
+    try:
+        # In container layout this resolves to /app (repo root), not filesystem root.
+        candidates.append(Path(__file__).resolve().parents[2])
+    except Exception:
+        pass
+    candidates.append(Path.cwd())
+
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        if resolved.exists() and resolved.is_dir() and str(resolved) != "/":
+            return resolved
+    return Path.cwd()
+
+
 async def fetch_local_repo_docs(project, config: dict) -> list[dict]:
     repo_path = str(config.get("repo_path") or project.repo_path or "").strip()
     source_mode = "project_repo_path"
@@ -58,18 +81,27 @@ async def fetch_local_repo_docs(project, config: dict) -> list[dict]:
         source_mode = "browser_local_fallback"
         repo_path = ""
     if not repo_path:
-        # Fallback for empty local path config: scan the current project folder.
-        try:
-            repo_path = str(Path(__file__).resolve().parents[3])
-            source_mode = "backend_project_folder"
-        except Exception:
-            repo_path = str(Path.cwd())
-            source_mode = "cwd_fallback"
+        # Fallback for empty local path config: scan backend project folder (typically /app).
+        repo_path = str(_default_backend_repo_root())
+        source_mode = "backend_project_folder"
 
     root = Path(repo_path)
     if not root.exists() or not root.is_dir():
+        fallback = _default_backend_repo_root()
+        fallback_mode = "configured_path_missing_fallback"
+        if fallback != root and fallback.exists() and fallback.is_dir():
+            logger.warning(
+                "ingest.local.scan_root_fallback project=%s mode=%s bad_root=%s fallback_root=%s",
+                str(getattr(project, "id", "") or ""),
+                source_mode,
+                str(root),
+                str(fallback),
+            )
+            root = fallback
+            source_mode = fallback_mode
+    if not root.exists() or not root.is_dir():
         logger.warning(
-            "ingest.local.scan_skipped project=%s mode=%s root=%s reason=missing_or_not_dir",
+            "ingest.local.scan_skipped project=%s mode=%s root=%s reason=missing_or_not_dir_after_fallback",
             str(getattr(project, "id", "") or ""),
             source_mode,
             str(root),
@@ -85,36 +117,44 @@ async def fetch_local_repo_docs(project, config: dict) -> list[dict]:
         prefixes if isinstance(prefixes, list) else [],
     )
     docs: list[dict] = []
+    max_docs = 3000
+    root_str = str(root)
+    for dirpath, dirnames, filenames in os.walk(root_str, topdown=True, followlinks=False):
+        # Prune ignored folders early to keep traversal fast and safe.
+        dirnames[:] = [d for d in dirnames if d not in IGNORE_PARTS]
+        for fname in filenames:
+            p = Path(dirpath) / fname
+            try:
+                rel = str(p.relative_to(root)).replace("\\", "/")
+            except Exception:
+                continue
+            if _is_ignored(rel):
+                continue
+            if not _wanted(rel, prefixes):
+                continue
+            if not _is_text_file(rel):
+                continue
 
-    for p in root.rglob("*"):
-        if not p.is_file():
-            continue
-        rel = str(p.relative_to(root)).replace("\\", "/")
-        if _is_ignored(rel):
-            continue
-        if not _wanted(rel, prefixes):
-            continue
-        if not _is_text_file(rel):
-            continue
+            try:
+                raw = p.read_text(encoding="utf-8", errors="replace")
+            except (OSError, PermissionError):
+                continue
+            if not raw.strip():
+                continue
 
-        try:
-            raw = p.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            continue
-        if not raw.strip():
-            continue
+            docs.append(
+                {
+                    "source": "local",
+                    "doc_id": rel,
+                    "title": rel,
+                    "url": rel,
+                    "text": raw.strip(),
+                }
+            )
 
-        docs.append(
-            {
-                "source": "local",
-                "doc_id": rel,
-                "title": rel,
-                "url": rel,
-                "text": raw.strip(),
-            }
-        )
-
-        if len(docs) >= 3000:
+            if len(docs) >= max_docs:
+                break
+        if len(docs) >= max_docs:
             break
 
     logger.info(
