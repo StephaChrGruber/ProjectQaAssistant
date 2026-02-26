@@ -106,6 +106,7 @@ export default function GlobalNotifications() {
   const activeCount = useMemo(() => items.filter((x) => !x.dismissed).length, [items])
   const floatingTriggerHidden = useMemo(() => {
     const path = String(pathname || "")
+    if (path === "/chat" || path.startsWith("/chat/")) return true
     if (!path.startsWith("/projects/")) return false
     return path !== "/projects"
   }, [pathname])

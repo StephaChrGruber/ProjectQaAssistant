@@ -96,6 +96,7 @@ import {
 } from "@/lib/local-repo-bridge"
 import { WorkspaceDockLayout } from "@/features/workspace/WorkspaceDockLayout"
 import { useLocalToolJobWorker } from "@/features/local-tools/useLocalToolJobWorker"
+import AppDialogTitle from "@/components/AppDialogTitle"
 
 const LazyMarkdown = dynamicImport(
     () => import("@/features/chat/ChatMarkdownContent").then((m) => m.ChatMarkdownContent),
@@ -248,6 +249,9 @@ export default function GlobalChatPage() {
     const [workspaceRequestedPatchContent, setWorkspaceRequestedPatchContent] = useState<string | null>(null)
     const [workspaceRequestedPatchFallbackPath, setWorkspaceRequestedPatchFallbackPath] = useState<string | null>(null)
     const [workspaceRequestedPatchAutoApply, setWorkspaceRequestedPatchAutoApply] = useState(false)
+    const [automationsOpen, setAutomationsOpen] = useState(false)
+    const [settingsOpen, setSettingsOpen] = useState(false)
+    const [adminOpen, setAdminOpen] = useState(false)
     const [workspaceOpenTabs, setWorkspaceOpenTabs] = useState<string[]>([])
     const [workspaceDirtyPaths, setWorkspaceDirtyPaths] = useState<string[]>([])
     const [workspaceActivePath, setWorkspaceActivePath] = useState<string | null>(null)
@@ -1065,7 +1069,7 @@ export default function GlobalChatPage() {
     )
 
     return (
-        <Box sx={{ minHeight: "100vh", px: { xs: 1.2, md: 2.4 }, py: { xs: 1, md: 1.5 } }}>
+        <Box sx={{ minHeight: "100dvh", height: "100dvh", px: { xs: 0.6, md: 1.2 }, py: { xs: 0.6, md: 0.9 } }}>
             <FloatingIsland position={{ top: 12, left: 14 }}>
                 <Tooltip title="Context (project/branch/LLM)" enterTouchDelay={0}>
                     <IconButton size="small" onClick={() => setContextDialogOpen(true)}>
@@ -1134,9 +1138,7 @@ export default function GlobalChatPage() {
                 <Tooltip title="Automations">
                     <IconButton
                         size="small"
-                        onClick={() =>
-                            selectedProjectId && router.push(`/projects/${encodeURIComponent(selectedProjectId)}/automations`)
-                        }
+                        onClick={() => selectedProjectId && setAutomationsOpen(true)}
                     >
                         <AutoModeRounded fontSize="small" />
                     </IconButton>
@@ -1144,16 +1146,14 @@ export default function GlobalChatPage() {
                 <Tooltip title="Project settings">
                     <IconButton
                         size="small"
-                        onClick={() =>
-                            selectedProjectId && router.push(`/projects/${encodeURIComponent(selectedProjectId)}/settings`)
-                        }
+                        onClick={() => selectedProjectId && setSettingsOpen(true)}
                     >
                         <SettingsRounded fontSize="small" />
                     </IconButton>
                 </Tooltip>
                 {isAdmin && (
                     <Tooltip title="Admin">
-                        <IconButton size="small" onClick={() => router.push("/admin")}>
+                        <IconButton size="small" onClick={() => setAdminOpen(true)}>
                             <AdminPanelSettingsRounded fontSize="small" />
                         </IconButton>
                     </Tooltip>
@@ -1284,10 +1284,9 @@ export default function GlobalChatPage() {
                     <Paper
                         variant="outlined"
                         sx={{
-                            mx: "auto",
-                            mt: { xs: 5.3, md: 5.8 },
+                            mt: { xs: 4.9, md: 5.2 },
                             maxWidth: "100%",
-                            minHeight: "calc(100vh - 88px)",
+                            minHeight: "calc(100dvh - 70px)",
                             display: "flex",
                             flexDirection: "column",
                             borderRadius: 2.6,
@@ -1318,7 +1317,7 @@ export default function GlobalChatPage() {
                         )}
 
                         <Box ref={scrollRef} sx={{ flex: 1, minHeight: 0, overflowY: "auto", px: { xs: 0.8, md: 1.5 }, py: 1.1 }}>
-                            <Stack spacing={0.85} sx={{ maxWidth: 960, mx: "auto" }}>
+                            <Stack spacing={0.85}>
                                 {booting && (
                                     <Typography variant="body2" color="text.secondary">
                                         Loading global conversation...
@@ -1575,6 +1574,54 @@ export default function GlobalChatPage() {
                 onDocsErrorClose={() => setDocsError(null)}
                 onDocsNoticeClose={() => setDocsNotice(null)}
             />
+
+            <Dialog open={automationsOpen} onClose={() => setAutomationsOpen(false)} fullWidth maxWidth="xl">
+                <AppDialogTitle title="Automations" onClose={() => setAutomationsOpen(false)} />
+                <DialogContent sx={{ p: 0, height: { xs: "76vh", md: "84vh" } }}>
+                    {selectedProjectId ? (
+                        <Box
+                            component="iframe"
+                            title="Automations"
+                            src={`/projects/${encodeURIComponent(selectedProjectId)}/automations?embedded=1&branch=${encodeURIComponent(selectedBranch || "main")}`}
+                            sx={{ border: 0, width: "100%", height: "100%", display: "block", bgcolor: "background.default" }}
+                        />
+                    ) : (
+                        <Box sx={{ p: 2 }}>
+                            <Alert severity="info">Select a project context first.</Alert>
+                        </Box>
+                    )}
+                </DialogContent>
+            </Dialog>
+
+            <Dialog open={settingsOpen} onClose={() => setSettingsOpen(false)} fullWidth maxWidth="xl">
+                <AppDialogTitle title="Project Settings" onClose={() => setSettingsOpen(false)} />
+                <DialogContent sx={{ p: 0, height: { xs: "76vh", md: "84vh" } }}>
+                    {selectedProjectId ? (
+                        <Box
+                            component="iframe"
+                            title="Project settings"
+                            src={`/projects/${encodeURIComponent(selectedProjectId)}/settings?embedded=1&branch=${encodeURIComponent(selectedBranch || "main")}`}
+                            sx={{ border: 0, width: "100%", height: "100%", display: "block", bgcolor: "background.default" }}
+                        />
+                    ) : (
+                        <Box sx={{ p: 2 }}>
+                            <Alert severity="info">Select a project context first.</Alert>
+                        </Box>
+                    )}
+                </DialogContent>
+            </Dialog>
+
+            <Dialog open={adminOpen} onClose={() => setAdminOpen(false)} fullWidth maxWidth="xl">
+                <AppDialogTitle title="Admin" onClose={() => setAdminOpen(false)} />
+                <DialogContent sx={{ p: 0, height: { xs: "76vh", md: "84vh" } }}>
+                    <Box
+                        component="iframe"
+                        title="Admin"
+                        src="/admin?embedded=1"
+                        sx={{ border: 0, width: "100%", height: "100%", display: "block", bgcolor: "background.default" }}
+                    />
+                </DialogContent>
+            </Dialog>
         </Box>
     )
 }

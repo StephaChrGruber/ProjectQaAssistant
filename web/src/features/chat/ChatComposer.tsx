@@ -120,28 +120,29 @@ export function ChatComposer({
             sx={{
                 borderTop: "1px solid",
                 borderColor: "divider",
-                backgroundColor: "rgba(7, 12, 24, 0.72)",
+                backgroundColor: "rgba(255,255,255,0.8)",
                 backdropFilter: "blur(12px)",
                 px: { xs: 0.9, md: 2 },
                 pt: { xs: 0.65, md: 0.8 },
                 pb: "calc(8px + env(safe-area-inset-bottom, 0px))",
             }}
         >
-            <Stack sx={{ maxWidth: 1060, mx: "auto" }} spacing={0.7}>
+            <Stack spacing={0.7}>
                 {pendingUserQuestion && (
                     <Paper
                         variant="outlined"
                         sx={{
                             p: 0.9,
                             borderRadius: 1.6,
-                            bgcolor: "rgba(15,23,42,0.62)",
+                            bgcolor: "rgba(255,255,255,0.92)",
+                            borderColor: "rgba(15,23,42,0.12)",
                         }}
                     >
                         <Stack spacing={0.75}>
                             <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.06em", fontSize: 10.5 }}>
                                 ASSISTANT NEEDS INPUT
                             </Typography>
-                            <Typography variant="body2" sx={{ fontWeight: 600, fontSize: 13.5 }}>
+                            <Typography variant="body2" sx={{ fontWeight: 600, fontSize: 13.5, color: "text.primary" }}>
                                 {pendingUserQuestion.question}
                             </Typography>
                             {pendingUserQuestion.answer_mode === "single_choice" ? (
@@ -192,7 +193,8 @@ export function ChatComposer({
                     sx={{
                         p: 0.8,
                         borderRadius: 1.6,
-                        background: "linear-gradient(155deg, rgba(15,23,42,0.74), rgba(15,23,42,0.48))",
+                        background: "linear-gradient(160deg, rgba(255,255,255,0.95), rgba(248,250,252,0.92))",
+                        borderColor: "rgba(15,23,42,0.14)",
                     }}
                 >
                     <Stack spacing={0.7}>
