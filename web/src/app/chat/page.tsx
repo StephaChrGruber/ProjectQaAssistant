@@ -49,6 +49,7 @@ import DescriptionOutlined from "@mui/icons-material/DescriptionOutlined"
 import ExpandMoreRounded from "@mui/icons-material/ExpandMoreRounded"
 import ChevronRightRounded from "@mui/icons-material/ChevronRightRounded"
 import DragIndicatorRounded from "@mui/icons-material/DragIndicatorRounded"
+import AccountTreeRounded from "@mui/icons-material/AccountTreeRounded"
 import { backendJson } from "@/lib/backend"
 import { requestOpenGlobalNotifications } from "@/features/notifications/events"
 import { ChatComposer } from "@/features/chat/ChatComposer"
@@ -1959,6 +1960,10 @@ export default function GlobalChatPage() {
                             const contextProject = String(message.project_id || "")
                             const contextBranch = String(message.branch || "main")
                             const contextLabel = `${projectNameById.get(contextProject) || contextProject || "Unknown"} · ${contextBranch}`
+                            const branchChipLabel =
+                                contextBranch.length > (compact ? 10 : 14)
+                                    ? `${contextBranch.slice(0, compact ? 9 : 13)}…`
+                                    : contextBranch
                             const sources = message.role === "assistant" ? (message.meta?.sources || []) : []
                             const thinkingTrace = message.role === "assistant" ? (message.meta?.thinking_trace as ThinkingTrace | undefined) : undefined
                             const hasPromotableCode = hasCodeIntent(String(message.content || ""))
@@ -2006,13 +2011,32 @@ export default function GlobalChatPage() {
                                     >
                                         <Stack spacing={0.45}>
                                             <Stack direction="row" spacing={0.45} alignItems="center" useFlexGap flexWrap="wrap">
-                                                <Chip size="small" label={contextLabel} variant={isActive ? "filled" : "outlined"} />
                                                 {!isActive && (
-                                                    <Typography variant="caption" color="text.secondary">
+                                                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.62rem" }}>
                                                         Inactive context
                                                     </Typography>
                                                 )}
-                                                <Box sx={{ ml: "auto", display: "inline-flex", alignItems: "center", gap: 0.25 }}>
+                                                <Box sx={{ ml: "auto", display: "inline-flex", alignItems: "center", gap: 0.35 }}>
+                                                    <Tooltip title={contextLabel}>
+                                                        <Chip
+                                                            size="small"
+                                                            icon={<AccountTreeRounded sx={{ fontSize: compact ? 10 : 11 }} />}
+                                                            label={branchChipLabel || "main"}
+                                                            variant={isActive ? "filled" : "outlined"}
+                                                            sx={{
+                                                                height: compact ? 16 : 18,
+                                                                "& .MuiChip-label": {
+                                                                    px: 0.5,
+                                                                    fontSize: compact ? "0.58rem" : "0.62rem",
+                                                                    fontWeight: 600,
+                                                                },
+                                                                "& .MuiChip-icon": {
+                                                                    ml: 0.45,
+                                                                    mr: -0.15,
+                                                                },
+                                                            }}
+                                                        />
+                                                    </Tooltip>
                                                     {message.id && (
                                                         <Tooltip title={message.is_pinned ? "Unpin" : "Pin as global memory"}>
                                                             <IconButton size="small" onClick={() => void onPinToggle(message)}>
@@ -2028,14 +2052,16 @@ export default function GlobalChatPage() {
                                             </Stack>
 
                                             {!isUser && showThinkingByDefault && !!thinkingTrace && (
-                                                <ThinkingTracePanel
-                                                    trace={thinkingTrace}
-                                                    compact={compact}
-                                                    expanded={Boolean(thinkingExpandedByMessageKey[messageKey])}
-                                                    onToggle={(next) =>
-                                                        setThinkingExpandedByMessageKey((prev) => ({ ...prev, [messageKey]: next }))
-                                                    }
-                                                />
+                                                <Box sx={{ alignSelf: "flex-start", maxWidth: "min(100%, 440px)" }}>
+                                                    <ThinkingTracePanel
+                                                        trace={thinkingTrace}
+                                                        compact
+                                                        expanded={Boolean(thinkingExpandedByMessageKey[messageKey])}
+                                                        onToggle={(next) =>
+                                                            setThinkingExpandedByMessageKey((prev) => ({ ...prev, [messageKey]: next }))
+                                                        }
+                                                    />
+                                                </Box>
                                             )}
                                             {compact ? (
                                                 <Typography variant="body2" color="text.secondary" noWrap>

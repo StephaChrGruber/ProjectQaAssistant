@@ -45,7 +45,8 @@ export function ThinkingTracePanel({
   if (!trace || steps.length === 0) return null
 
   const total = formatDuration(trace.total_duration_ms)
-  const header = `Thinking (${steps.length} steps · ${total})`
+  const dense = compact && !live
+  const header = dense ? `Thinking · ${steps.length} · ${total}` : `Thinking (${steps.length} steps · ${total})`
 
   async function handleCopyTrace() {
     try {
@@ -61,24 +62,31 @@ export function ThinkingTracePanel({
     <Paper
       variant="outlined"
       sx={{
-        borderRadius: 1.5,
-        p: compact ? 0.6 : 0.8,
-        bgcolor: "rgba(255,255,255,0.65)",
-        borderColor: "rgba(15,23,42,0.12)",
+        borderRadius: dense ? 1.1 : 1.5,
+        p: dense ? 0.35 : compact ? 0.6 : 0.8,
+        bgcolor: dense ? "rgba(255,255,255,0.38)" : "rgba(255,255,255,0.65)",
+        borderColor: dense ? "rgba(15,23,42,0.08)" : "rgba(15,23,42,0.12)",
+        maxWidth: dense ? 420 : "100%",
       }}
     >
-      <Stack direction="row" spacing={0.6} alignItems="center">
-        <PsychologyRounded sx={{ fontSize: 16, color: "text.secondary" }} />
-        <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, letterSpacing: "0.04em" }}>
+      <Stack direction="row" spacing={dense ? 0.35 : 0.6} alignItems="center">
+        <PsychologyRounded sx={{ fontSize: dense ? 13 : 16, color: "text.secondary" }} />
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{ fontWeight: dense ? 600 : 700, letterSpacing: dense ? "0.02em" : "0.04em", fontSize: dense ? "0.67rem" : undefined }}
+        >
           {header}
         </Typography>
         {live && <Chip size="small" color="warning" label="Live" />}
         <Box sx={{ ml: "auto" }}>
-          <Tooltip title={copied ? "Copied" : "Copy trace JSON"}>
-            <IconButton size="small" onClick={handleCopyTrace}>
-              <ContentCopyRounded sx={{ fontSize: 16 }} />
-            </IconButton>
-          </Tooltip>
+          {!dense && (
+            <Tooltip title={copied ? "Copied" : "Copy trace JSON"}>
+              <IconButton size="small" onClick={handleCopyTrace}>
+                <ContentCopyRounded sx={{ fontSize: 16 }} />
+              </IconButton>
+            </Tooltip>
+          )}
           <Tooltip title={open ? "Hide thinking" : "Show thinking"}>
             <IconButton
               size="small"
@@ -90,7 +98,7 @@ export function ThinkingTracePanel({
             >
               <ExpandMoreRounded
                 sx={{
-                  fontSize: 18,
+                  fontSize: dense ? 15 : 18,
                   transform: open ? "rotate(180deg)" : "rotate(0deg)",
                   transition: "transform 120ms ease",
                 }}
