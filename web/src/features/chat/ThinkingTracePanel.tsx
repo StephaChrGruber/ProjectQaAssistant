@@ -63,14 +63,14 @@ export function ThinkingTracePanel({
       variant="outlined"
       sx={{
         borderRadius: dense ? 1.1 : 1.5,
-        p: dense ? 0.35 : compact ? 0.6 : 0.8,
+        p: dense ? 0.2 : compact ? 0.4 : 0.6,
         bgcolor: dense ? "rgba(255,255,255,0.38)" : "rgba(255,255,255,0.65)",
         borderColor: dense ? "rgba(15,23,42,0.08)" : "rgba(15,23,42,0.12)",
         maxWidth: dense ? 420 : "100%",
       }}
     >
       <Stack direction="row" spacing={dense ? 0.35 : 0.6} alignItems="center">
-        <PsychologyRounded sx={{ fontSize: dense ? 13 : 16, color: "text.secondary" }} />
+        <PsychologyRounded sx={{ fontSize: dense ? 10 : 13, color: "text.secondary" }} />
         <Typography
           variant="caption"
           color="text.secondary"

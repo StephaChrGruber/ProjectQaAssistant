@@ -2016,6 +2016,18 @@ export default function GlobalChatPage() {
                                                         Inactive context
                                                     </Typography>
                                                 )}
+                                                {!isUser && showThinkingByDefault && !!thinkingTrace && (
+                                                    <Box sx={{ alignSelf: "flex-start", maxWidth: "min(40%, 180px)", maxHeight: "fit-content" }}>
+                                                        <ThinkingTracePanel
+                                                            trace={thinkingTrace}
+                                                            compact
+                                                            expanded={Boolean(thinkingExpandedByMessageKey[messageKey])}
+                                                            onToggle={(next) =>
+                                                                setThinkingExpandedByMessageKey((prev) => ({ ...prev, [messageKey]: next }))
+                                                            }
+                                                        />
+                                                    </Box>
+                                                )}
                                                 <Box sx={{ ml: "auto", display: "inline-flex", alignItems: "center", gap: 0.35 }}>
                                                     <Tooltip title={contextLabel}>
                                                         <Chip
@@ -2051,18 +2063,6 @@ export default function GlobalChatPage() {
                                                 </Box>
                                             </Stack>
 
-                                            {!isUser && showThinkingByDefault && !!thinkingTrace && (
-                                                <Box sx={{ alignSelf: "flex-start", maxWidth: "min(100%, 440px)" }}>
-                                                    <ThinkingTracePanel
-                                                        trace={thinkingTrace}
-                                                        compact
-                                                        expanded={Boolean(thinkingExpandedByMessageKey[messageKey])}
-                                                        onToggle={(next) =>
-                                                            setThinkingExpandedByMessageKey((prev) => ({ ...prev, [messageKey]: next }))
-                                                        }
-                                                    />
-                                                </Box>
-                                            )}
                                             {compact ? (
                                                 <Typography variant="body2" color="text.secondary" noWrap>
                                                     {String(message.content || "").replace(/\s+/g, " ").trim() || "(empty)"}
