@@ -14,6 +14,24 @@ def _wanted(path: str, prefixes: list[str] | None) -> bool:
     return any(path == p or path.startswith(p.rstrip("/") + "/") for p in prefixes)
 
 
+def _normalize_prefixes(value) -> list[str] | None:
+    if value is None:
+        return None
+    rows: list[str] = []
+    if isinstance(value, str):
+        rows = [part.strip() for part in value.split(",")]
+    elif isinstance(value, (list, tuple, set)):
+        rows = [str(part).strip() for part in value]
+    out: list[str] = []
+    for row in rows:
+        if not row:
+            continue
+        normalized = row.replace("\\", "/").strip().strip("/")
+        if normalized:
+            out.append(normalized)
+    return out or None
+
+
 def _is_ignored(path: str) -> bool:
     parts = [p for p in path.replace("\\", "/").split("/") if p]
     return any(p in IGNORE_PARTS for p in parts)
@@ -108,54 +126,68 @@ async def fetch_local_repo_docs(project, config: dict) -> list[dict]:
         )
         return []
 
-    prefixes = config.get("paths")
+    prefixes = _normalize_prefixes(config.get("paths"))
     logger.info(
         "ingest.local.scan_start project=%s mode=%s root=%s path_filters=%s",
         str(getattr(project, "id", "") or ""),
         source_mode,
         str(root),
-        prefixes if isinstance(prefixes, list) else [],
+        prefixes or [],
     )
     docs: list[dict] = []
     max_docs = 3000
     root_str = str(root)
-    for dirpath, dirnames, filenames in os.walk(root_str, topdown=True, followlinks=False):
-        # Prune ignored folders early to keep traversal fast and safe.
-        dirnames[:] = [d for d in dirnames if d not in IGNORE_PARTS]
-        for fname in filenames:
-            p = Path(dirpath) / fname
-            try:
-                rel = str(p.relative_to(root)).replace("\\", "/")
-            except Exception:
-                continue
-            if _is_ignored(rel):
-                continue
-            if not _wanted(rel, prefixes):
-                continue
-            if not _is_text_file(rel):
-                continue
 
-            try:
-                raw = p.read_text(encoding="utf-8", errors="replace")
-            except (OSError, PermissionError):
-                continue
-            if not raw.strip():
-                continue
+    def scan(scan_prefixes: list[str] | None) -> list[dict]:
+        out: list[dict] = []
+        for dirpath, dirnames, filenames in os.walk(root_str, topdown=True, followlinks=False):
+            # Prune ignored folders early to keep traversal fast and safe.
+            dirnames[:] = [d for d in dirnames if d not in IGNORE_PARTS]
+            for fname in filenames:
+                p = Path(dirpath) / fname
+                try:
+                    rel = str(p.relative_to(root)).replace("\\", "/")
+                except Exception:
+                    continue
+                if _is_ignored(rel):
+                    continue
+                if not _wanted(rel, scan_prefixes):
+                    continue
+                if not _is_text_file(rel):
+                    continue
 
-            docs.append(
-                {
-                    "source": "local",
-                    "doc_id": rel,
-                    "title": rel,
-                    "url": rel,
-                    "text": raw.strip(),
-                }
-            )
+                try:
+                    raw = p.read_text(encoding="utf-8", errors="replace")
+                except (OSError, PermissionError):
+                    continue
+                if not raw.strip():
+                    continue
 
-            if len(docs) >= max_docs:
+                out.append(
+                    {
+                        "source": "local",
+                        "doc_id": rel,
+                        "title": rel,
+                        "url": rel,
+                        "text": raw.strip(),
+                    }
+                )
+
+                if len(out) >= max_docs:
+                    break
+            if len(out) >= max_docs:
                 break
-        if len(docs) >= max_docs:
-            break
+        return out
+
+    docs = scan(prefixes)
+    if not docs and prefixes:
+        logger.warning(
+            "ingest.local.scan_empty_with_filters project=%s root=%s filters=%s retry=without_filters",
+            str(getattr(project, "id", "") or ""),
+            str(root),
+            prefixes,
+        )
+        docs = scan(None)
 
     logger.info(
         "ingest.local.scan_done project=%s mode=%s root=%s docs=%s",
