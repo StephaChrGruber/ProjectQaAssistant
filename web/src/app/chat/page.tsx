@@ -136,6 +136,17 @@ function keyOf(projectId: string, branch: string): string {
     return `${projectId}::${branch || "main"}`
 }
 
+function parseContextKey(contextKey: string | null | undefined): { projectId: string; branch: string } | null {
+    const raw = String(contextKey || "").trim()
+    if (!raw) return null
+    const parts = raw.split("::")
+    if (parts.length < 2) return null
+    const projectId = String(parts[0] || "").trim()
+    const branch = String(parts.slice(1).join("::") || "main").trim() || "main"
+    if (!projectId) return null
+    return { projectId, branch }
+}
+
 type ProjectsResponseFlexible = ProjectDoc[] | { items?: ProjectDoc[]; projects?: ProjectDoc[] } | null | undefined
 
 function normalizeProjectsResponse(input: ProjectsResponseFlexible): ProjectDoc[] {
@@ -554,35 +565,43 @@ export default function GlobalChatPage() {
                 const user = String(me?.user?.email || me?.user?.id || "dev@local").trim().toLowerCase()
                 const admin = Boolean(me?.user?.isGlobalAdmin)
                 const list = normalizeProjectsResponse(projectsRes)
-                const selectedProject = initialProject || list[0]?._id || ""
-                const selectedBr = initialBranch || list.find((p) => p._id === selectedProject)?.default_branch || "main"
+                const bootParams = new URLSearchParams({ user })
+                if (initialProject) {
+                    bootParams.set("project_id", initialProject)
+                    bootParams.set("branch", initialBranch || "main")
+                }
+                const boot = await backendJson<GlobalChatBootstrapResponse>(`/api/chat/global/bootstrap?${bootParams.toString()}`)
+                const fromBoot = parseContextKey(boot.active_context_key)
+                const bootProject = fromBoot?.projectId || ""
+                const bootBranch = fromBoot?.branch || "main"
+                const selectedProjectCandidate = initialProject || bootProject || list[0]?._id || ""
+                const selectedProjectExists = list.some((p) => String(p._id) === String(selectedProjectCandidate))
+                const selectedProject = selectedProjectExists ? selectedProjectCandidate : list[0]?._id || ""
+                const selectedBr =
+                    initialBranch ||
+                    (selectedProject === bootProject ? bootBranch : "") ||
+                    list.find((p) => p._id === selectedProject)?.default_branch ||
+                    "main"
                 if (cancelled) return
                 setUserId(user)
                 setIsAdmin(admin)
                 setProjects(list)
                 setSelectedProjectId(selectedProject)
                 setSelectedBranch(selectedBr)
-                setContextConfirmed(Boolean(initialProject))
+                setContextConfirmed(Boolean(selectedProject && (initialProject || bootProject)))
                 if (!selectedProject) {
                     setContextDialogOpen(true)
                 }
                 setLlmProfiles((profilesRes.items || profilesRes.profiles || []).filter(Boolean))
+                setChatId(String(boot.chat_id || ""))
+                setContexts(Array.isArray(boot.contexts) ? boot.contexts : [])
+                setUnreadNotifications(Math.max(0, Number(boot.unread_notifications || 0)))
                 if (selectedProject) {
                     const branchesRes = await backendJson<BranchesResponse>(
                         `/api/projects/${encodeURIComponent(selectedProject)}/branches`
                     )
                     if (cancelled) return
                     setBranches(Array.isArray(branchesRes.branches) && branchesRes.branches.length > 0 ? branchesRes.branches : ["main"])
-                    const params = new URLSearchParams({
-                        user,
-                        project_id: selectedProject,
-                        branch: selectedBr,
-                    })
-                    const boot = await backendJson<GlobalChatBootstrapResponse>(`/api/chat/global/bootstrap?${params.toString()}`)
-                    if (cancelled) return
-                    setChatId(String(boot.chat_id || ""))
-                    setContexts(Array.isArray(boot.contexts) ? boot.contexts : [])
-                    setUnreadNotifications(Math.max(0, Number(boot.unread_notifications || 0)))
                 }
             } catch (e) {
                 if (!cancelled) setError(parseErr(e))
@@ -654,6 +673,24 @@ export default function GlobalChatPage() {
             // ignore local storage write errors
         }
     }, [showThinkingByDefault])
+
+    useEffect(() => {
+        try {
+            const raw = window.localStorage.getItem("pqa.chat.active_only")
+            if (raw === "1") setActiveOnly(true)
+            if (raw === "0") setActiveOnly(false)
+        } catch {
+            // ignore local storage read errors
+        }
+    }, [])
+
+    useEffect(() => {
+        try {
+            window.localStorage.setItem("pqa.chat.active_only", activeOnly ? "1" : "0")
+        } catch {
+            // ignore local storage write errors
+        }
+    }, [activeOnly])
 
     useEffect(() => {
         if (!chatId || !selectedProjectId) return
@@ -1536,9 +1573,12 @@ export default function GlobalChatPage() {
             sx={{
                 minHeight: "100dvh",
                 height: "100dvh",
+                maxHeight: "100dvh",
                 width: "100%",
                 boxSizing: "border-box",
                 overflow: "hidden",
+                display: "flex",
+                flexDirection: "column",
                 px: { xs: 0.6, md: 1.2 },
                 py: { xs: 0.6, md: 0.9 },
             }}
