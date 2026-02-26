@@ -115,6 +115,10 @@ export function ProjectDrawerLayout(props: Props) {
     const desktop = useMediaQuery(theme.breakpoints.up("md"))
     const [mobileOpen, setMobileOpen] = useState(false)
     const [activeNotificationCount, setActiveNotificationCount] = useState(0)
+    const showDrawer = useMemo(
+        () => pathname.includes("/settings") || pathname.startsWith("/admin"),
+        [pathname]
+    )
 
     const userLabel = useMemo(() => user?.displayName || user?.email || "Developer", [user])
     const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({})
@@ -236,6 +240,12 @@ export function ProjectDrawerLayout(props: Props) {
     useEffect(() => {
         setMobileOpen(false)
     }, [pathname])
+
+    useEffect(() => {
+        if (!showDrawer) {
+            setMobileOpen(false)
+        }
+    }, [showDrawer])
 
     useEffect(() => {
         if (!mobileOpen || desktop) return
@@ -453,27 +463,29 @@ export function ProjectDrawerLayout(props: Props) {
                 }}
             />
 
-            <Box component="nav" sx={{ width: { md: DRAWER_WIDTH }, flexShrink: { md: 0 } }}>
-                <Drawer
-                    variant={desktop ? "permanent" : "temporary"}
-                    open={desktop ? true : mobileOpen}
-                    onClose={() => setMobileOpen(false)}
-                    ModalProps={{ keepMounted: true }}
-                    sx={{
-                        display: "block",
-                        "& .MuiDrawer-paper": {
-                            width: { xs: "min(90vw, 340px)", md: DRAWER_WIDTH },
-                            boxSizing: "border-box",
-                            borderRightColor: "rgba(148,163,184,0.28)",
-                        },
-                    }}
-                >
-                    {drawerContent}
-                </Drawer>
-            </Box>
+            {showDrawer && (
+                <Box component="nav" sx={{ width: { md: DRAWER_WIDTH }, flexShrink: { md: 0 } }}>
+                    <Drawer
+                        variant={desktop ? "permanent" : "temporary"}
+                        open={desktop ? true : mobileOpen}
+                        onClose={() => setMobileOpen(false)}
+                        ModalProps={{ keepMounted: true }}
+                        sx={{
+                            display: "block",
+                            "& .MuiDrawer-paper": {
+                                width: { xs: "min(90vw, 340px)", md: DRAWER_WIDTH },
+                                boxSizing: "border-box",
+                                borderRightColor: "rgba(148,163,184,0.28)",
+                            },
+                        }}
+                    >
+                        {drawerContent}
+                    </Drawer>
+                </Box>
+            )}
 
             <Box sx={{ display: "flex", minWidth: 0, flex: 1, flexDirection: "column", overflow: "hidden" }}>
-                {!desktop && (
+                {showDrawer && !desktop && (
                     <AppBar
                         position="sticky"
                         color="transparent"

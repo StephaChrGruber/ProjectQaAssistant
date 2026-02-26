@@ -1419,7 +1419,7 @@ export default function GlobalChatPage() {
                     </IconButton>
                 </Tooltip>
                 <Tooltip title="Workspace">
-                    <IconButton size="small" onClick={() => setWorkspaceOpen(true)}>
+                    <IconButton size="small" onClick={() => setWorkspaceOpen((prev) => !prev)}>
                         <CodeRounded fontSize="small" />
                     </IconButton>
                 </Tooltip>

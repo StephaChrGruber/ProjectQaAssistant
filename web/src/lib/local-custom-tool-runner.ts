@@ -294,6 +294,11 @@ function createLocalRepoHelpers(projectId: string) {
 export async function executeLocalToolJob(job: LocalToolJobPayload): Promise<unknown> {
     const code = String(job.code || "").trim()
     if (!code) throw new Error("Local custom tool has empty code")
+    try {
+        await restoreLocalRepoSession(job.projectId)
+    } catch {
+        // Ignore restore failures; helpers will surface actionable runtime errors if snapshot remains unavailable.
+    }
 
     const helpers = {
         localRepo: createLocalRepoHelpers(job.projectId),
