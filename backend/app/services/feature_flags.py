@@ -19,6 +19,8 @@ DEFAULT_FEATURE_FLAGS: dict[str, bool] = {
     "workspace_inline_ai": True,
     "workspace_diagnostics": True,
     "workspace_chat_patch_apply": True,
+    "chat_thinking_trace": True,
+    "chat_thinking_trace_stream": True,
 }
 
 

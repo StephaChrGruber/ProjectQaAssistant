@@ -10,6 +10,7 @@ export type ChatMessage = {
     }
     sources?: ChatAnswerSource[]
     grounded?: boolean
+    thinking_trace?: ThinkingTrace
   }
 }
 
@@ -79,9 +80,49 @@ export type AskAgentResponse = {
   }>
   sources?: ChatAnswerSource[]
   grounded?: boolean
+  thinking_trace?: ThinkingTrace
   memory_summary?: ChatMemorySummary
   task_state?: ChatTaskState
   pending_user_question?: PendingUserQuestion | null
+}
+
+export type ThinkingTraceStatus = "running" | "ok" | "error" | "info"
+
+export type ThinkingTraceStep = {
+  id: string
+  kind: "phase" | "llm_cycle" | "tool_call" | "clarification" | "status" | "final" | string
+  title: string
+  status: ThinkingTraceStatus
+  ts: string
+  duration_ms?: number | null
+  tool?: string | null
+  summary?: string | null
+  details?: Record<string, unknown>
+}
+
+export type ThinkingTracePhase = {
+  name: string
+  status: "start" | "done" | "error" | string
+  ts: string
+  duration_ms?: number | null
+  details?: Record<string, unknown>
+}
+
+export type ThinkingTrace = {
+  version: string
+  started_at: string
+  finished_at?: string | null
+  total_duration_ms?: number | null
+  phases?: ThinkingTracePhase[]
+  steps?: ThinkingTraceStep[]
+  summary?: Record<string, unknown>
+}
+
+export type AskAgentStreamEvent = {
+  type: "start" | "phase" | "tool_start" | "tool_end" | "status" | "final" | "error" | string
+  request_id: string
+  ts: string
+  payload: Record<string, unknown>
 }
 
 export type LocalToolClaimResponse = {

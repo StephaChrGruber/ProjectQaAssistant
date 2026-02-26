@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import inspect
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urljoin
 
 import requests
@@ -366,6 +367,7 @@ class Agent2:
         prior_messages: list[dict[str, str]] | None = None,
         system_context: str | None = None,
         runtime: ToolRuntime | None = None,
+        event_callback: Callable[[dict[str, Any]], Any] | None = None,
     ):
         self.project_id = project_id
         self.branch = branch
@@ -382,6 +384,18 @@ class Agent2:
         self.prior_messages = prior_messages or []
         self.system_context = _as_text(system_context)
         self.runtime = runtime or _RUNTIME
+        self.event_callback = event_callback
+
+    async def _emit_event(self, payload: dict[str, Any]) -> None:
+        cb = self.event_callback
+        if cb is None:
+            return
+        try:
+            out = cb(payload)
+            if inspect.isawaitable(out):
+                await out
+        except Exception:
+            logger.exception("agent2.event_callback_failed")
 
     async def run(self, user_text: str) -> dict[str, Any]:
         system_prompt = _system_prompt(
@@ -467,6 +481,7 @@ class Agent2:
         conflict_signal = bool(self.interaction_policy.get("conflict_signal"))
         clarification_calls_this_run = 0
         clarification_block_cycles = 0
+        llm_cycle = 0
         logger.info(
             "agent2.run.start project=%s branch=%s user=%s chat_id=%s required_action_tools=%s prompt_messages=%s clar={goal:%s remaining:%s disable:%s reason:%s continue:%s destructive:%s answered:%s}",
             self.project_id,
@@ -485,6 +500,8 @@ class Agent2:
         )
 
         while True:
+            llm_cycle += 1
+            await self._emit_event({"type": "llm_cycle_start", "cycle": llm_cycle})
             assistant_text = _llm_chat_nostream(
                 messages,
                 temperature=self.temperature,
@@ -514,6 +531,7 @@ class Agent2:
                         no_evidence_cycles,
                     )
                     if no_evidence_cycles > 3:
+                        await self._emit_event({"type": "final_ready", "cycle": llm_cycle, "tool_calls": len(tool_events)})
                         return {
                             "answer": (
                                 "I could not complete the requested action because no required action tool was executed. "
@@ -542,6 +560,7 @@ class Agent2:
                         sorted(required_action_tools),
                         [str((ev or {}).get("tool") or "") for ev in tool_events],
                     )
+                    await self._emit_event({"type": "final_ready", "cycle": llm_cycle, "tool_calls": len(tool_events)})
                     return {"answer": assistant_text, "tool_events": tool_events}
 
                 if not has_evidence_tool:
@@ -551,9 +570,11 @@ class Agent2:
                             self.project_id,
                             self.chat_id or "",
                         )
+                        await self._emit_event({"type": "final_ready", "cycle": llm_cycle, "tool_calls": len(tool_events)})
                         return {"answer": assistant_text, "tool_events": tool_events}
                     no_evidence_cycles += 1
                     if no_evidence_cycles > 2:
+                        await self._emit_event({"type": "final_ready", "cycle": llm_cycle, "tool_calls": len(tool_events)})
                         return {
                             "answer": (
                                 "I need to gather evidence from tools before I can answer. "
@@ -573,11 +594,13 @@ class Agent2:
                         }
                     )
                     continue
+                await self._emit_event({"type": "final_ready", "cycle": llm_cycle, "tool_calls": len(tool_events)})
                 return {"answer": assistant_text, "tool_events": tool_events}
 
             tool_calls += 1
             no_evidence_cycles = 0
             if tool_calls > self.max_tool_calls:
+                await self._emit_event({"type": "final_ready", "cycle": llm_cycle, "tool_calls": len(tool_events)})
                 return {
                     "answer": (
                         "I made too many tool calls without reaching a final answer. "
@@ -588,8 +611,18 @@ class Agent2:
 
             tool_name = tool_call["tool"]
             model_args = dict(tool_call["args"] or {})
+            call_id = f"cycle-{llm_cycle}-tool-{tool_calls}"
             logger.info("tool.execute.request tool=%s args=%s", tool_name, model_args)
             envelope_data: dict[str, Any]
+            await self._emit_event(
+                {
+                    "type": "tool_call_start",
+                    "cycle": llm_cycle,
+                    "call_id": call_id,
+                    "tool": tool_name,
+                    "args": model_args,
+                }
+            )
             if tool_name == "request_user_input":
                 request_question = _as_text(model_args.get("question"))
                 question_key = _normalize_question_key(request_question)
@@ -664,6 +697,19 @@ class Agent2:
                 int(envelope_data.get("duration_ms") or 0),
                 int(envelope_data.get("attempts") or 1),
             )
+            await self._emit_event(
+                {
+                    "type": "tool_call_end",
+                    "cycle": llm_cycle,
+                    "call_id": call_id,
+                    "tool": tool_name,
+                    "ok": bool(envelope_data.get("ok")),
+                    "duration_ms": int(envelope_data.get("duration_ms") or 0),
+                    "cached": bool(envelope_data.get("cached")),
+                    "attempts": int(envelope_data.get("attempts") or 1),
+                    "error": envelope_data.get("error") if isinstance(envelope_data.get("error"), dict) else None,
+                }
+            )
 
             if tool_name == "request_user_input" and bool(envelope_data.get("ok")):
                 result = envelope_data.get("result")
@@ -693,6 +739,7 @@ class Agent2:
                     continue
                 if bool(pending.get("blocked")):
                     if clarification_block_cycles > 3:
+                        await self._emit_event({"type": "final_ready", "cycle": llm_cycle, "tool_calls": len(tool_events)})
                         return {
                             "answer": (
                                 "I cannot ask additional clarification questions for this goal right now. "
@@ -732,6 +779,15 @@ class Agent2:
                 goal_id = _as_text(self.interaction_policy.get("goal_id"))
                 if goal_id:
                     pending["goal_id"] = goal_id
+                await self._emit_event(
+                    {
+                        "type": "clarification_requested",
+                        "cycle": llm_cycle,
+                        "question": question,
+                        "answer_mode": answer_mode,
+                        "options": options,
+                    }
+                )
                 prompt_text = (
                     f"I need more input before I can continue:\n\n{question}"
                     if question
@@ -741,6 +797,7 @@ class Agent2:
                     prompt_text += "\n\nChoose one option below."
                 else:
                     prompt_text += "\n\nPlease reply with your answer."
+                await self._emit_event({"type": "final_ready", "cycle": llm_cycle, "tool_calls": len(tool_events)})
                 return {
                     "answer": prompt_text,
                     "tool_events": tool_events,
@@ -788,6 +845,7 @@ async def answer_with_agent(
     max_tool_calls: int = 12,
     include_tool_events: bool = False,
     runtime: ToolRuntime | None = None,
+    event_callback: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
     agent = Agent2(
         project_id=project_id,
@@ -805,6 +863,7 @@ async def answer_with_agent(
         prior_messages=prior_messages,
         system_context=system_context,
         runtime=runtime,
+        event_callback=event_callback,
     )
     out = await agent.run(question)
     if include_tool_events:

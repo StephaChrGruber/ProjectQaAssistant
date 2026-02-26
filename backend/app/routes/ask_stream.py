@@ -27,6 +27,7 @@ async def _get_project(project_id: str) -> dict:
 
 @router.post("/chats/{chat_id}/ask_stream")
 async def ask_stream(chat_id: str, body: dict, user=Depends(current_user)):
+    # Legacy route: kept for backward compatibility while /ask_agent/stream is the primary path.
     chat = await _get_chat(chat_id, user["id"])
     project = await _get_project(chat["projectId"])
 

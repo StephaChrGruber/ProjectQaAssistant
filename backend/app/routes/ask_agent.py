@@ -1,7 +1,12 @@
 import logging
+import json
+import asyncio
+import contextlib
+from uuid import uuid4
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from ..db import get_db
 from datetime import datetime
@@ -20,6 +25,13 @@ from ..services.hierarchical_memory import (
     persist_hierarchical_memory,
 )
 from ..services.workspace import assemble_workspace_context, workspace_context_to_text
+from ..services.thinking_trace import (
+    ThinkingTraceCollector,
+    bind_stream_context,
+    current_stream_request_id,
+    emit_stream_event,
+    reset_stream_context,
+)
 from ..services.global_chat_v2 import (
     append_global_message,
     build_context_key,
@@ -202,6 +214,23 @@ async def ask_agent(req: AskReq):
     chat_id = req.chat_id or f"{req.project_id}::{req.branch}::{req.user}"
     now = datetime.utcnow()
     db = get_db()
+    request_id = current_stream_request_id()
+    trace_collector = ThinkingTraceCollector()
+    await trace_collector.phase(
+        "request",
+        "start",
+        {"project_id": req.project_id, "branch": req.branch, "chat_id": chat_id},
+    )
+    await emit_stream_event(
+        "start",
+        {
+            "project_id": req.project_id,
+            "branch": req.branch,
+            "chat_id": chat_id,
+            "request_id": request_id,
+        },
+        request_id=request_id,
+    )
     global_mode = _is_global_chat_id(chat_id)
     context_key = str(req.context_key or "").strip() or build_context_key(req.project_id, req.branch)
     context_cfg: dict[str, Any] = {}
@@ -411,7 +440,18 @@ async def ask_agent(req: AskReq):
         project_doc=project_doc,
     )
     feature_flags = defaults.get("feature_flags") if isinstance(defaults.get("feature_flags"), dict) else {}
+    thinking_trace_enabled = bool(feature_flags.get("chat_thinking_trace", True))
     audit_events_enabled = bool(feature_flags.get("enable_audit_events", True))
+    await trace_collector.phase(
+        "llm_config_resolved",
+        "done",
+        {
+            "provider": defaults.get("provider"),
+            "model": defaults.get("llm_model"),
+            "profile_id": defaults.get("llm_profile_id"),
+            "thinking_trace_enabled": thinking_trace_enabled,
+        },
+    )
     user_role = await _resolve_user_role(req.project_id, req.user)
     if global_mode:
         chat_policy = context_cfg.get("tool_policy") if isinstance(context_cfg.get("tool_policy"), dict) else {}
@@ -626,6 +666,15 @@ async def ask_agent(req: AskReq):
         int(hierarchical_snapshot.get("retrieval_conflicts") or 0),
         len(hierarchical_context_for_agent),
     )
+    await trace_collector.phase(
+        "memory_context",
+        "done",
+        {
+            "recent_messages": int(hierarchical_snapshot.get("recent_messages") or 0),
+            "retrieved_items": int(hierarchical_snapshot.get("retrieved_items") or 0),
+            "context_chars": len(hierarchical_context_for_agent),
+        },
+    )
 
     effective_question = user_text
     if active_pending_question:
@@ -703,6 +752,7 @@ async def ask_agent(req: AskReq):
             max_tool_calls=int(defaults.get("max_tool_calls") or 12),
             include_tool_events=True,
             runtime=runtime,
+            event_callback=trace_collector.on_agent_event if thinking_trace_enabled else None,
         )
 
     failover_used = False
@@ -710,6 +760,7 @@ async def ask_agent(req: AskReq):
     pending_user_question: dict[str, Any] | None = None
     awaiting_user_input = False
     try:
+        await trace_collector.phase("agent_run", "start", {"provider": active_llm.get("provider"), "model": active_llm.get("model")})
         agent_out = await _run_agent_with_current_llm()
         answer = str((agent_out or {}).get("answer") or "")
         tool_events = (agent_out or {}).get("tool_events") or []
@@ -762,6 +813,15 @@ async def ask_agent(req: AskReq):
             sum(1 for ev in tool_events if not bool((ev or {}).get("ok"))),
             awaiting_user_input,
         )
+        await trace_collector.phase(
+            "agent_run",
+            "done",
+            {
+                "tool_calls": len(tool_events),
+                "tool_errors": sum(1 for ev in tool_events if not bool((ev or {}).get("ok"))),
+                "awaiting_user_input": awaiting_user_input,
+            },
+        )
         answer_sources = _collect_answer_sources(tool_events, local_repo_context=req.local_repo_context)
         if awaiting_user_input:
             answer_sources = []
@@ -781,6 +841,7 @@ async def ask_agent(req: AskReq):
                 answer_sources = fallback_sources
     except LLMUpstreamError as err:
         detail = str(err)
+        await trace_collector.phase("agent_run", "error", {"error": detail[:300]})
         fallback_profile_id = str(routing_cfg.get("fallback_profile_id") or "").strip() or None
         can_failover = (
             not explicit_llm_override
@@ -927,6 +988,7 @@ async def ask_agent(req: AskReq):
             req.branch,
             req.user,
         )
+        await trace_collector.phase("agent_run", "error", {"error": "unexpected ask_agent exception"})
         if audit_events_enabled:
             await record_audit_event(
                 event="ask_agent.internal_error",
@@ -966,6 +1028,24 @@ async def ask_agent(req: AskReq):
         grounded_ok = bool(answer_sources)
     else:
         answer, grounded_ok = _enforce_grounded_answer(answer, answer_sources, grounding_policy)
+    thinking_trace = (
+        trace_collector.as_dict(
+            tool_events=tool_events if isinstance(tool_events, list) else [],
+            grounded=bool(grounded_ok),
+            sources_count=len(answer_sources or []),
+            pending_user_input=bool(awaiting_user_input),
+        )
+        if thinking_trace_enabled
+        else None
+    )
+    if isinstance(thinking_trace, dict):
+        logger.info(
+            "ask_agent.trace_built chat_id=%s steps=%s phases=%s duration_ms=%s",
+            chat_id,
+            len((thinking_trace.get("steps") or [])),
+            len((thinking_trace.get("phases") or [])),
+            int(thinking_trace.get("total_duration_ms") or 0),
+        )
 
     # append assistant message
     done = datetime.utcnow()
@@ -992,6 +1072,7 @@ async def ask_agent(req: AskReq):
         "tool_summary": tool_summary,
         "sources": answer_sources,
         "grounded": grounded_ok,
+        "thinking_trace": thinking_trace,
         "pending_user_question": pending_user_question,
         "clarification": {
             "goal_id": derived_goal_id,
@@ -1193,7 +1274,7 @@ async def ask_agent(req: AskReq):
             chat_id,
         )
 
-    return {
+    response_payload = {
         "answer": answer,
         "chat_id": chat_id,
         "tool_events": tool_events,
@@ -1204,4 +1285,94 @@ async def ask_agent(req: AskReq):
         "hierarchical_memory": {"snapshot": hierarchical_snapshot},
         "pending_user_question": pending_user_question,
         "clarification_state": clarification_state,
+        "thinking_trace": thinking_trace,
     }
+    await emit_stream_event(
+        "status",
+        {
+            "title": "Completed response",
+            "tool_calls": len(tool_events or []),
+            "sources": len(answer_sources or []),
+        },
+        request_id=request_id,
+    )
+    return response_payload
+
+
+@router.post("/ask_agent/stream")
+async def ask_agent_stream(req: AskReq):
+    request_id = str(uuid4())
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    done = asyncio.Event()
+    event_count = 0
+
+    async def _emit(ev: dict[str, Any]) -> None:
+        nonlocal event_count
+        event_count += 1
+        await queue.put(ev)
+
+    tokens = bind_stream_context(emitter=_emit, request_id=request_id)
+
+    async def _runner() -> None:
+        try:
+            result = await ask_agent(req)
+            await queue.put(
+                {
+                    "type": "final",
+                    "request_id": request_id,
+                    "ts": _iso_utc(datetime.utcnow()),
+                    "payload": result,
+                }
+            )
+        except Exception as exc:
+            logger.exception("ask_agent.stream.failed project=%s chat_id=%s", req.project_id, req.chat_id or "")
+            await queue.put(
+                {
+                    "type": "error",
+                    "request_id": request_id,
+                    "ts": _iso_utc(datetime.utcnow()),
+                    "payload": {"message": str(exc)},
+                }
+            )
+        finally:
+            done.set()
+            reset_stream_context(tokens)
+
+    task = asyncio.create_task(_runner())
+
+    async def _iter():
+        disconnects = 0
+        try:
+            while True:
+                if done.is_set() and queue.empty():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=8.0)
+                except asyncio.TimeoutError:
+                    heartbeat = {
+                        "type": "status",
+                        "request_id": request_id,
+                        "ts": _iso_utc(datetime.utcnow()),
+                        "payload": {"title": "still_processing"},
+                    }
+                    yield json.dumps(heartbeat, ensure_ascii=False) + "\n"
+                    continue
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except asyncio.CancelledError:
+            disconnects += 1
+            raise
+        finally:
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(Exception):
+                    await task
+            logger.info(
+                "ask_agent.stream.done project=%s chat_id=%s request_id=%s events=%s disconnects=%s",
+                req.project_id,
+                req.chat_id or "",
+                request_id,
+                event_count,
+                disconnects,
+            )
+
+    return StreamingResponse(_iter(), media_type="application/x-ndjson")

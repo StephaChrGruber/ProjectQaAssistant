@@ -68,6 +68,7 @@ import type {
     DocumentationFileResponse,
     DocumentationListResponse,
     GenerateDocsResponse,
+    AskAgentStreamEvent,
     GlobalChatBootstrapResponse,
     GlobalChatContext,
     GlobalChatMessage,
@@ -76,6 +77,7 @@ import type {
     MeResponse,
     PendingUserQuestion,
     ProjectDoc,
+    ThinkingTrace,
     ToolCatalogItem,
     ToolCatalogResponse,
 } from "@/features/chat/types"
@@ -101,6 +103,7 @@ import {
 import { WorkspaceDockLayout } from "@/features/workspace/WorkspaceDockLayout"
 import { useLocalToolJobWorker } from "@/features/local-tools/useLocalToolJobWorker"
 import AppDialogTitle from "@/components/AppDialogTitle"
+import { ThinkingTracePanel } from "@/features/chat/ThinkingTracePanel"
 
 const LazyMarkdown = dynamicImport(
     () => import("@/features/chat/ChatMarkdownContent").then((m) => m.ChatMarkdownContent),
@@ -159,6 +162,53 @@ function normalizeProjectsResponse(input: ProjectsResponseFlexible): ProjectDoc[
 function parseErr(err: unknown): string {
     if (err instanceof Error) return err.message
     return String(err || "Unknown error")
+}
+
+function parseNdjsonChunk(buffer: string): { events: AskAgentStreamEvent[]; rest: string } {
+    const lines = buffer.split("\n")
+    const rest = lines.pop() || ""
+    const events: AskAgentStreamEvent[] = []
+    for (const line of lines) {
+        const raw = line.trim()
+        if (!raw) continue
+        try {
+            const parsed = JSON.parse(raw) as AskAgentStreamEvent
+            if (parsed && typeof parsed === "object") events.push(parsed)
+        } catch {
+            // Ignore malformed stream line; final fallback request handles completeness.
+        }
+    }
+    return { events, rest }
+}
+
+function appendTraceStep(prev: ThinkingTrace | null, payload: Record<string, unknown>, liveTitle?: string): ThinkingTrace {
+    const steps = Array.isArray(prev?.steps) ? [...prev.steps] : []
+    const rawStatus = String(payload.status || "info").toLowerCase()
+    const status: "running" | "ok" | "error" | "info" =
+        rawStatus === "ok" || rawStatus === "error" || rawStatus === "running" || rawStatus === "info"
+            ? rawStatus
+            : "info"
+    const step = {
+        id: String(payload.id || `step-${steps.length + 1}`),
+        kind: String(payload.kind || payload.type || "status"),
+        title: String(payload.title || liveTitle || "Thinking"),
+        status,
+        ts: String(payload.ts || new Date().toISOString()),
+        duration_ms: payload.duration_ms == null ? null : Number(payload.duration_ms || 0),
+        tool: payload.tool == null ? null : String(payload.tool || ""),
+        summary: payload.summary == null ? null : String(payload.summary || ""),
+        details: typeof payload.details === "object" && payload.details ? (payload.details as Record<string, unknown>) : {},
+    }
+    steps.push(step)
+    return {
+        version: String(prev?.version || "v1"),
+        started_at: String(prev?.started_at || new Date().toISOString()),
+        finished_at: null,
+        total_duration_ms: Number(prev?.total_duration_ms || 0),
+        phases: Array.isArray(prev?.phases) ? prev?.phases : [],
+        steps,
+        summary: (prev?.summary || {}) as Record<string, unknown>,
+    }
 }
 
 function equalStringArrays(a: string[], b: string[]): boolean {
@@ -387,6 +437,9 @@ export default function GlobalChatPage() {
     const [workspaceDraftPreviews, setWorkspaceDraftPreviews] = useState<Array<{ path: string; preview: string }>>([])
     const [workspaceCursor, setWorkspaceCursor] = useState<{ line: number; column: number } | null>(null)
     const [autoOpenWorkspaceOnCodeIntent, setAutoOpenWorkspaceOnCodeIntent] = useState(true)
+    const [showThinkingByDefault, setShowThinkingByDefault] = useState(true)
+    const [liveThinkingTrace, setLiveThinkingTrace] = useState<ThinkingTrace | null>(null)
+    const [thinkingExpandedByMessageKey, setThinkingExpandedByMessageKey] = useState<Record<string, boolean>>({})
     const [artifactsByMessageKey, setArtifactsByMessageKey] = useState<Record<string, ChatCodeArtifact[]>>({})
     const [artifactBusyKey, setArtifactBusyKey] = useState<string | null>(null)
 
@@ -585,6 +638,24 @@ export default function GlobalChatPage() {
     }, [autoOpenWorkspaceOnCodeIntent])
 
     useEffect(() => {
+        try {
+            const raw = window.localStorage.getItem("pqa.chat.show_thinking")
+            if (raw === "0") setShowThinkingByDefault(false)
+            if (raw === "1") setShowThinkingByDefault(true)
+        } catch {
+            // ignore local storage read errors
+        }
+    }, [])
+
+    useEffect(() => {
+        try {
+            window.localStorage.setItem("pqa.chat.show_thinking", showThinkingByDefault ? "1" : "0")
+        } catch {
+            // ignore local storage write errors
+        }
+    }, [showThinkingByDefault])
+
+    useEffect(() => {
         if (!chatId || !selectedProjectId) return
         void refreshMessages({ mode: activeOnly ? "active" : "mixed" })
         void refreshContextConfig()
@@ -616,6 +687,17 @@ export default function GlobalChatPage() {
         if (!scrollRef.current) return
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }, [messages.length])
+
+    useEffect(() => {
+        const previousBodyOverflow = document.body.style.overflow
+        const previousHtmlOverflow = document.documentElement.style.overflow
+        document.body.style.overflow = "hidden"
+        document.documentElement.style.overflow = "hidden"
+        return () => {
+            document.body.style.overflow = previousBodyOverflow
+            document.documentElement.style.overflow = previousHtmlOverflow
+        }
+    }, [])
 
     const sendQuestion = useCallback(
         async (question: string, pendingQuestionId?: string) => {
@@ -685,31 +767,112 @@ export default function GlobalChatPage() {
             }
             setMessages((prev) => [...prev, optimisticUser])
             setInput("")
+            const requestPayload = {
+                project_id: selectedProjectId,
+                branch: selectedBranch,
+                user: userId,
+                chat_id: chatId,
+                context_key: activeContextKey,
+                include_pinned_memory: true,
+                history_mode: "active_plus_pinned",
+                question: trimmed,
+                pending_question_id: pendingQuestionId || null,
+                workspace_context: workspaceOpen
+                    ? {
+                          active_path: workspaceActivePath,
+                          open_tabs: workspaceOpenTabs,
+                          dirty_paths: workspaceDirtyPaths,
+                          active_preview: workspaceActivePreview,
+                          draft_previews: workspaceDraftPreviews,
+                          cursor: workspaceCursor,
+                      }
+                    : undefined,
+            }
             try {
-                const res = await backendJson<AskAgentResponse>("/api/ask_agent", {
-                    method: "POST",
-                    body: JSON.stringify({
-                        project_id: selectedProjectId,
-                        branch: selectedBranch,
-                        user: userId,
-                        chat_id: chatId,
-                        context_key: activeContextKey,
-                        include_pinned_memory: true,
-                        history_mode: "active_plus_pinned",
-                        question: trimmed,
-                        pending_question_id: pendingQuestionId || null,
-                        workspace_context: workspaceOpen
-                            ? {
-                                  active_path: workspaceActivePath,
-                                  open_tabs: workspaceOpenTabs,
-                                  dirty_paths: workspaceDirtyPaths,
-                                  active_preview: workspaceActivePreview,
-                                  draft_previews: workspaceDraftPreviews,
-                                  cursor: workspaceCursor,
-                              }
-                            : undefined,
-                    }),
+                let res: AskAgentResponse | null = null
+                setLiveThinkingTrace({
+                    version: "v1",
+                    started_at: new Date().toISOString(),
+                    steps: [],
+                    phases: [],
+                    summary: {},
                 })
+                try {
+                    const streamRes = await fetch("/api/ask_agent/stream", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(requestPayload),
+                    })
+                    if (!streamRes.ok || !streamRes.body) {
+                        throw new Error(`Stream request failed (${streamRes.status})`)
+                    }
+                    const reader = streamRes.body.getReader()
+                    const decoder = new TextDecoder()
+                    let buffer = ""
+                    let finalPayload: AskAgentResponse | null = null
+                    while (true) {
+                        const chunk = await reader.read()
+                        if (chunk.done) break
+                        buffer += decoder.decode(chunk.value, { stream: true })
+                        const parsed = parseNdjsonChunk(buffer)
+                        buffer = parsed.rest
+                        for (const ev of parsed.events) {
+                            const payload = (ev.payload || {}) as Record<string, unknown>
+                            if (ev.type === "final") {
+                                finalPayload = payload as unknown as AskAgentResponse
+                                if ((payload as any)?.thinking_trace) {
+                                    setLiveThinkingTrace((payload as any).thinking_trace as ThinkingTrace)
+                                }
+                                continue
+                            }
+                            if (ev.type === "error") {
+                                throw new Error(String((payload as any)?.message || "Streaming request failed"))
+                            }
+                            if (ev.type === "phase") {
+                                setLiveThinkingTrace((prev) =>
+                                    appendTraceStep(
+                                        prev,
+                                        {
+                                            id: `phase-${String((payload as any)?.name || "")}-${Date.now()}`,
+                                            kind: "phase",
+                                            title: `Phase: ${String((payload as any)?.name || "update")}`,
+                                            status: String((payload as any)?.status || "info"),
+                                            ts: String((payload as any)?.ts || new Date().toISOString()),
+                                            details: payload,
+                                        },
+                                        "Phase update"
+                                    )
+                                )
+                                continue
+                            }
+                            if (ev.type === "tool_start" || ev.type === "tool_end" || ev.type === "status") {
+                                setLiveThinkingTrace((prev) =>
+                                    appendTraceStep(
+                                        prev,
+                                        payload,
+                                        ev.type === "tool_start"
+                                            ? "Tool started"
+                                            : ev.type === "tool_end"
+                                              ? "Tool finished"
+                                              : "Status"
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    if (!finalPayload) {
+                        throw new Error("Missing final stream payload.")
+                    }
+                    res = finalPayload
+                } catch {
+                    // Fallback to sync ask endpoint when streaming is unavailable.
+                    setLiveThinkingTrace(null)
+                    res = await backendJson<AskAgentResponse>("/api/ask_agent", {
+                        method: "POST",
+                        body: JSON.stringify(requestPayload),
+                    })
+                }
+                if (!res) throw new Error("No response payload.")
                 const assistant: GlobalChatMessage = {
                     role: "assistant",
                     content: String(res.answer || ""),
@@ -722,6 +885,7 @@ export default function GlobalChatPage() {
                     meta: {
                         sources: res.sources || [],
                         grounded: res.grounded,
+                        thinking_trace: res.thinking_trace as ThinkingTrace | undefined,
                     },
                 }
                 setMessages((prev) => [...prev, assistant])
@@ -733,6 +897,7 @@ export default function GlobalChatPage() {
             } catch (e) {
                 setError(parseErr(e))
             } finally {
+                setLiveThinkingTrace(null)
                 setSending(false)
             }
         },
@@ -1367,7 +1532,17 @@ export default function GlobalChatPage() {
     )
 
     return (
-        <Box sx={{ minHeight: "100dvh", height: "100dvh", px: { xs: 0.6, md: 1.2 }, py: { xs: 0.6, md: 0.9 } }}>
+        <Box
+            sx={{
+                minHeight: "100dvh",
+                height: "100dvh",
+                width: "100%",
+                boxSizing: "border-box",
+                overflow: "hidden",
+                px: { xs: 0.6, md: 1.2 },
+                py: { xs: 0.6, md: 0.9 },
+            }}
+        >
             <FloatingIsland islandId="context" position={{ top: 12, left: 14 }}>
                 <Tooltip title="Context (project/branch/LLM)" enterTouchDelay={0}>
                     <IconButton size="small" onClick={() => setContextDialogOpen(true)}>
@@ -1539,6 +1714,10 @@ export default function GlobalChatPage() {
                             />
                             <Typography variant="body2">Auto-open workspace on code intent</Typography>
                         </Stack>
+                        <Stack direction="row" alignItems="center" spacing={1}>
+                            <Switch checked={showThinkingByDefault} onChange={(_, v) => setShowThinkingByDefault(v)} />
+                            <Typography variant="body2">Show thinking trace in chat</Typography>
+                        </Stack>
                         {contexts.length > 0 && (
                             <Stack spacing={0.5}>
                                 <Typography variant="caption" color="text.secondary">
@@ -1605,7 +1784,8 @@ export default function GlobalChatPage() {
                         sx={{
                             mt: 0,
                             maxWidth: "100%",
-                            minHeight: "calc(100dvh - 12px)",
+                            height: "100%",
+                            minHeight: 0,
                             display: "flex",
                             flexDirection: "column",
                             borderRadius: 2.6,
@@ -1669,6 +1849,7 @@ export default function GlobalChatPage() {
                             const contextBranch = String(message.branch || "main")
                             const contextLabel = `${projectNameById.get(contextProject) || contextProject || "Unknown"} · ${contextBranch}`
                             const sources = message.role === "assistant" ? (message.meta?.sources || []) : []
+                            const thinkingTrace = message.role === "assistant" ? (message.meta?.thinking_trace as ThinkingTrace | undefined) : undefined
                             const hasPromotableCode = hasCodeIntent(String(message.content || ""))
                             const artifacts = artifactsByMessageKey[messageKey] || []
                             const fallbackPath =
@@ -1743,6 +1924,16 @@ export default function GlobalChatPage() {
                                                         <LazyMarkdown key={`${idx}-md-${partIdx}`} value={part.value} isUser={isUser} />
                                                     )
                                                 )
+                                            )}
+                                            {!isUser && showThinkingByDefault && !!thinkingTrace && (
+                                                <ThinkingTracePanel
+                                                    trace={thinkingTrace}
+                                                    compact={compact}
+                                                    expanded={Boolean(thinkingExpandedByMessageKey[messageKey])}
+                                                    onToggle={(next) =>
+                                                        setThinkingExpandedByMessageKey((prev) => ({ ...prev, [messageKey]: next }))
+                                                    }
+                                                />
                                             )}
 
                                             {!compact && !isUser && (sources.length > 0 || hasPromotableCode || artifacts.length > 0) && (
@@ -1821,6 +2012,38 @@ export default function GlobalChatPage() {
                                 </Box>
                             )
                                 })}
+                                {sending && (
+                                    <Box sx={{ display: "flex", justifyContent: "flex-start" }}>
+                                        <Paper
+                                            variant="outlined"
+                                            sx={{
+                                                maxWidth: { xs: "98%", sm: "94%" },
+                                                px: 1.2,
+                                                py: 0.75,
+                                                borderRadius: 1.8,
+                                                borderColor: "rgba(15,23,42,0.13)",
+                                                bgcolor: "rgba(255,255,255,0.68)",
+                                            }}
+                                        >
+                                            <Stack spacing={0.7}>
+                                                <Stack direction="row" spacing={0.8} alignItems="center">
+                                                    <CircularProgress size={14} thickness={5} />
+                                                    <Typography variant="body2" color="text.secondary">
+                                                        Thinking...
+                                                    </Typography>
+                                                </Stack>
+                                                {showThinkingByDefault && !!liveThinkingTrace && (
+                                                    <ThinkingTracePanel
+                                                        trace={liveThinkingTrace}
+                                                        live
+                                                        defaultExpanded
+                                                        expanded
+                                                    />
+                                                )}
+                                            </Stack>
+                                        </Paper>
+                                    </Box>
+                                )}
                             </Stack>
                         </Box>
 
