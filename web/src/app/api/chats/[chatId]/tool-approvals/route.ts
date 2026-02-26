@@ -10,7 +10,14 @@ export async function GET(
     const { chatId } = await ctx.params
     const url = new URL(req.url)
     const user = (url.searchParams.get("user") || "").trim() || DEV_USER
-    const res = await fetch(`${BACKEND}/chats/${encodeURIComponent(chatId)}/tool-approvals`, {
+    const upstream = new URL(`${BACKEND}/chats/${encodeURIComponent(chatId)}/tool-approvals`)
+    for (const key of ["context_key", "project_id", "branch"]) {
+        const value = url.searchParams.get(key)
+        if (value != null && value !== "") {
+            upstream.searchParams.set(key, value)
+        }
+    }
+    const res = await fetch(upstream.toString(), {
         headers: { "X-Dev-User": user },
         cache: "no-store",
     })

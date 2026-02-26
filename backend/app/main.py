@@ -18,6 +18,7 @@ from .routes.ask_agent import router as ask_agent_router
 from .routes.ask_stream import router as ask_stream_router
 from .routes.automations import router as automations_router
 from .routes.chat import router as chat_router
+from .routes.chat_global import router as chat_global_router
 from .routes.chats import router as chats_router
 from .routes.custom_tools import router as custom_tools_router
 from .routes.ingestion import router as ingestion_router
@@ -104,6 +105,7 @@ app.include_router(admin_router)
 app.include_router(ingestion_router)
 app.include_router(ask_agent_router)
 app.include_router(chat_router)
+app.include_router(chat_global_router)
 app.include_router(ask_stream_router)
 app.include_router(projects_router)
 app.include_router(workspace_router)

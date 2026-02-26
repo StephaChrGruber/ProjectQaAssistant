@@ -12,25 +12,25 @@ type Props = {
 
 const baseTheme = createTheme({
     palette: {
-        mode: "dark",
+        mode: "light",
         primary: {
-            main: "#34d399",
-            light: "#6ee7b7",
-            dark: "#059669",
+            main: "#2563eb",
+            light: "#60a5fa",
+            dark: "#1d4ed8",
         },
         secondary: {
-            main: "#22d3ee",
-            light: "#67e8f9",
-            dark: "#0891b2",
+            main: "#0ea5a5",
+            light: "#5eead4",
+            dark: "#0f766e",
         },
         background: {
-            default: "#05070f",
-            paper: "rgba(14, 20, 33, 0.88)",
+            default: "#f3f7ff",
+            paper: "rgba(255, 255, 255, 0.82)",
         },
-        divider: "rgba(148, 163, 184, 0.22)",
+        divider: "rgba(15, 23, 42, 0.12)",
         text: {
-            primary: "#e6edf8",
-            secondary: "#9fb0c9",
+            primary: "#0f172a",
+            secondary: "#475569",
         },
     },
     shape: {
@@ -92,30 +92,30 @@ const baseTheme = createTheme({
     },
     shadows: [
         "none",
-        "0 1px 2px rgba(2,6,23,0.25)",
-        "0 8px 20px rgba(2,6,23,0.2)",
-        "0 12px 28px rgba(2,6,23,0.24)",
-        "0 18px 34px rgba(2,6,23,0.28)",
-        "0 24px 42px rgba(2,6,23,0.3)",
-        "0 30px 46px rgba(2,6,23,0.32)",
-        "0 36px 52px rgba(2,6,23,0.34)",
-        "0 40px 58px rgba(2,6,23,0.36)",
-        "0 42px 62px rgba(2,6,23,0.38)",
-        "0 44px 64px rgba(2,6,23,0.4)",
-        "0 46px 66px rgba(2,6,23,0.42)",
-        "0 48px 68px rgba(2,6,23,0.44)",
-        "0 50px 70px rgba(2,6,23,0.46)",
-        "0 52px 72px rgba(2,6,23,0.48)",
-        "0 54px 74px rgba(2,6,23,0.5)",
-        "0 56px 76px rgba(2,6,23,0.52)",
-        "0 58px 78px rgba(2,6,23,0.54)",
-        "0 60px 80px rgba(2,6,23,0.56)",
-        "0 62px 82px rgba(2,6,23,0.58)",
-        "0 64px 84px rgba(2,6,23,0.6)",
-        "0 66px 86px rgba(2,6,23,0.62)",
-        "0 68px 88px rgba(2,6,23,0.64)",
-        "0 70px 90px rgba(2,6,23,0.66)",
-        "0 72px 92px rgba(2,6,23,0.68)",
+        "0 1px 2px rgba(15,23,42,0.05)",
+        "0 8px 20px rgba(15,23,42,0.08)",
+        "0 12px 28px rgba(15,23,42,0.1)",
+        "0 18px 34px rgba(15,23,42,0.12)",
+        "0 24px 42px rgba(15,23,42,0.12)",
+        "0 30px 46px rgba(15,23,42,0.12)",
+        "0 36px 52px rgba(15,23,42,0.12)",
+        "0 40px 58px rgba(15,23,42,0.13)",
+        "0 42px 62px rgba(15,23,42,0.13)",
+        "0 44px 64px rgba(15,23,42,0.14)",
+        "0 46px 66px rgba(15,23,42,0.14)",
+        "0 48px 68px rgba(15,23,42,0.15)",
+        "0 50px 70px rgba(15,23,42,0.15)",
+        "0 52px 72px rgba(15,23,42,0.15)",
+        "0 54px 74px rgba(15,23,42,0.16)",
+        "0 56px 76px rgba(15,23,42,0.16)",
+        "0 58px 78px rgba(15,23,42,0.16)",
+        "0 60px 80px rgba(15,23,42,0.16)",
+        "0 62px 82px rgba(15,23,42,0.17)",
+        "0 64px 84px rgba(15,23,42,0.17)",
+        "0 66px 86px rgba(15,23,42,0.17)",
+        "0 68px 88px rgba(15,23,42,0.18)",
+        "0 70px 90px rgba(15,23,42,0.18)",
+        "0 72px 92px rgba(15,23,42,0.18)",
     ],
 })
 
@@ -128,7 +128,7 @@ export function MuiThemeProvider({ children }: Props) {
                         styleOverrides: (t: Theme) => ({
                             body: {
                                 background:
-                                    "radial-gradient(1200px 640px at -8% -6%, rgba(34,211,238,0.22), transparent 55%), radial-gradient(900px 560px at 104% -8%, rgba(52,211,153,0.14), transparent 56%), linear-gradient(180deg, #0a1020 0%, #05070f 64%)",
+                                    "radial-gradient(1300px 720px at -8% -8%, rgba(96,165,250,0.22), transparent 58%), radial-gradient(1000px 620px at 108% -10%, rgba(20,184,166,0.16), transparent 60%), linear-gradient(180deg, #f8fbff 0%, #eef4ff 70%)",
                             },
                             "::selection": {
                                 backgroundColor: alpha(t.palette.primary.main, 0.35),
@@ -147,8 +147,8 @@ export function MuiThemeProvider({ children }: Props) {
                                 boxShadow: "none",
                             },
                             contained: {
-                                background: "linear-gradient(135deg, #22d3ee 0%, #34d399 100%)",
-                                color: "#04221d",
+                                background: "linear-gradient(135deg, #60a5fa 0%, #14b8a6 100%)",
+                                color: "#0f172a",
                                 fontWeight: 700,
                             },
                             sizeSmall: {
@@ -176,12 +176,12 @@ export function MuiThemeProvider({ children }: Props) {
                         styleOverrides: {
                             root: {
                                 borderRadius: 10,
-                                backgroundColor: "rgba(15, 23, 42, 0.32)",
+                                backgroundColor: "rgba(255,255,255,0.72)",
                                 "& .MuiOutlinedInput-notchedOutline": {
-                                    borderColor: "rgba(148,163,184,0.25)",
+                                    borderColor: "rgba(15,23,42,0.18)",
                                 },
                                 "&:hover .MuiOutlinedInput-notchedOutline": {
-                                    borderColor: "rgba(148,163,184,0.46)",
+                                    borderColor: "rgba(15,23,42,0.3)",
                                 },
                             },
                             input: {
@@ -205,8 +205,8 @@ export function MuiThemeProvider({ children }: Props) {
                         styleOverrides: {
                             paper: {
                                 backdropFilter: "blur(18px)",
-                                borderColor: "rgba(148,163,184,0.26)",
-                                backgroundColor: "rgba(7, 12, 24, 0.82)",
+                                borderColor: "rgba(15,23,42,0.14)",
+                                backgroundColor: "rgba(255,255,255,0.86)",
                                 backgroundImage: "none",
                             },
                         },
@@ -234,8 +234,8 @@ export function MuiThemeProvider({ children }: Props) {
                                 paddingBottom: 6,
                                 transition: "background-color 120ms ease, transform 120ms ease",
                                 "&.Mui-selected": {
-                                    backgroundColor: "rgba(34,211,238,0.16)",
-                                    border: "1px solid rgba(34,211,238,0.38)",
+                                    backgroundColor: "rgba(37,99,235,0.1)",
+                                    border: "1px solid rgba(37,99,235,0.35)",
                                 },
                                 "&:hover": {
                                     transform: "translateY(-1px)",

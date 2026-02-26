@@ -21,6 +21,7 @@ from ..repositories.chat_repository import (
     upsert_tool_approval,
 )
 from ..services.feature_flags import load_project_feature_flags
+from ..services.global_chat_v2 import build_context_key, get_context_config, upsert_context_config
 from ..services.hierarchical_memory import derive_memory_summary, derive_task_state
 
 router = APIRouter(prefix="/chats", tags=["chats"])
@@ -28,6 +29,9 @@ logger = logging.getLogger(__name__)
 
 
 class ChatToolPolicyReq(BaseModel):
+    context_key: str | None = None
+    project_id: str | None = None
+    branch: str | None = None
     allowed_tools: list[str] = Field(default_factory=list)
     blocked_tools: list[str] = Field(default_factory=list)
     strict_allowlist: bool = False
@@ -41,15 +45,24 @@ class ChatToolPolicyReq(BaseModel):
 
 
 class ChatLlmProfileReq(BaseModel):
+    context_key: str | None = None
+    project_id: str | None = None
+    branch: str | None = None
     llm_profile_id: str | None = None
 
 
 class ChatToolApprovalReq(BaseModel):
     tool_name: str
     ttl_minutes: int = 30
+    context_key: str | None = None
+    project_id: str | None = None
+    branch: str | None = None
 
 
 class CreateChatTaskReq(BaseModel):
+    context_key: str | None = None
+    project_id: str | None = None
+    branch: str | None = None
     title: str
     details: str = ""
     assignee: str | None = None
@@ -58,6 +71,9 @@ class CreateChatTaskReq(BaseModel):
 
 
 class UpdateChatTaskReq(BaseModel):
+    context_key: str | None = None
+    project_id: str | None = None
+    branch: str | None = None
     title: str | None = None
     details: str | None = None
     status: str | None = None
@@ -78,6 +94,27 @@ class MemoryUpdateReq(BaseModel):
 
 def _norm_tool_name(v: str) -> str:
     return str(v or "").strip()
+
+
+def _is_global_chat(chat_id: str) -> bool:
+    return str(chat_id or "").strip().lower().startswith("global::")
+
+
+def _resolve_context_key(
+    *,
+    chat: dict[str, Any],
+    context_key: str | None,
+    project_id: str | None,
+    branch: str | None,
+) -> str | None:
+    explicit = str(context_key or "").strip()
+    if explicit:
+        return explicit
+    pid = str(project_id or chat.get("project_id") or "").strip()
+    if not pid:
+        return None
+    br = str(branch or chat.get("branch") or "main").strip() or "main"
+    return build_context_key(pid, br)
 
 
 async def _get_chat_owner_or_403(chat_id: str, x_dev_user: str | None) -> dict[str, Any]:
@@ -364,18 +401,39 @@ async def reset_chat_memory(chat_id: str, x_dev_user: str | None = Header(defaul
 async def list_chat_tasks(
     chat_id: str,
     status: str | None = None,
+    context_key: str | None = None,
+    project_id: str | None = None,
+    branch: str | None = None,
     limit: int = 120,
     x_dev_user: str | None = Header(default=None),
 ):
     chat = await _get_chat_owner_or_403(chat_id, x_dev_user)
-    q: dict[str, Any] = {"project_id": str(chat.get("project_id") or "")}
-    # Include tasks scoped to this chat and legacy/unscoped tasks.
-    q["$or"] = [
-        {"chat_id": chat_id},
-        {"chat_id": None},
-        {"chat_id": ""},
-        {"chat_id": {"$exists": False}},
-    ]
+    if _is_global_chat(chat_id):
+        resolved_context_key = _resolve_context_key(
+            chat=chat,
+            context_key=context_key,
+            project_id=project_id,
+            branch=branch,
+        )
+        if not resolved_context_key:
+            raise HTTPException(status_code=400, detail="context_key or project_id is required for global chat tasks")
+        resolved_project_id = str(project_id or "").strip() or str(chat.get("project_id") or "").strip()
+        if not resolved_project_id:
+            resolved_project_id = resolved_context_key.split("::", 1)[0]
+        q: dict[str, Any] = {
+            "project_id": resolved_project_id,
+            "chat_id": chat_id,
+            "context_key": resolved_context_key,
+        }
+    else:
+        q = {"project_id": str(chat.get("project_id") or "")}
+        # Include tasks scoped to this chat and legacy/unscoped tasks.
+        q["$or"] = [
+            {"chat_id": chat_id},
+            {"chat_id": None},
+            {"chat_id": ""},
+            {"chat_id": {"$exists": False}},
+        ]
     if (status or "").strip():
         q["status"] = status.strip().lower()
     safe_limit = max(1, min(int(limit or 120), 500))
@@ -392,8 +450,26 @@ async def create_chat_task(chat_id: str, req: CreateChatTaskReq, x_dev_user: str
         raise HTTPException(status_code=400, detail="title is required")
 
     now = datetime.utcnow().isoformat() + "Z"
+    resolved_context_key: str | None = None
+    resolved_project_id = str(chat.get("project_id") or "")
+    resolved_branch = str(chat.get("branch") or "main")
+    if _is_global_chat(chat_id):
+        resolved_context_key = _resolve_context_key(
+            chat=chat,
+            context_key=req.context_key,
+            project_id=req.project_id,
+            branch=req.branch,
+        )
+        if not resolved_context_key:
+            raise HTTPException(status_code=400, detail="context_key or project_id is required for global chat tasks")
+        resolved_project_id = str(req.project_id or "").strip() or resolved_context_key.split("::", 1)[0]
+        resolved_branch = str(req.branch or "").strip() or (
+            resolved_context_key.split("::", 1)[1] if "::" in resolved_context_key else "main"
+        )
     doc = {
-        "project_id": str(chat.get("project_id") or ""),
+        "project_id": resolved_project_id,
+        "branch": resolved_branch,
+        "context_key": resolved_context_key,
         "chat_id": chat_id,
         "title": title,
         "details": str(req.details or "").strip(),
@@ -420,13 +496,29 @@ async def patch_chat_task(
     x_dev_user: str | None = Header(default=None),
 ):
     chat = await _get_chat_owner_or_403(chat_id, x_dev_user)
-    q: dict[str, Any] = {"project_id": str(chat.get("project_id") or "")}
-    q["$or"] = [
-        {"chat_id": chat_id},
-        {"chat_id": None},
-        {"chat_id": ""},
-        {"chat_id": {"$exists": False}},
-    ]
+    if _is_global_chat(chat_id):
+        resolved_context_key = _resolve_context_key(
+            chat=chat,
+            context_key=req.context_key,
+            project_id=req.project_id,
+            branch=req.branch,
+        )
+        if not resolved_context_key:
+            raise HTTPException(status_code=400, detail="context_key or project_id is required for global chat tasks")
+        resolved_project_id = str(req.project_id or "").strip() or resolved_context_key.split("::", 1)[0]
+        q: dict[str, Any] = {
+            "project_id": resolved_project_id,
+            "chat_id": chat_id,
+            "context_key": resolved_context_key,
+        }
+    else:
+        q = {"project_id": str(chat.get("project_id") or "")}
+        q["$or"] = [
+            {"chat_id": chat_id},
+            {"chat_id": None},
+            {"chat_id": ""},
+            {"chat_id": {"$exists": False}},
+        ]
     if ObjectId.is_valid(task_id):
         q["_id"] = ObjectId(task_id)
     else:
@@ -491,10 +583,34 @@ async def clear_chat(chat_id: str):
 
 
 @router.get("/{chat_id}/tool-policy")
-async def get_chat_tool_policy(chat_id: str):
+async def get_chat_tool_policy(
+    chat_id: str,
+    context_key: str | None = None,
+    project_id: str | None = None,
+    branch: str | None = None,
+    x_dev_user: str | None = Header(default=None),
+):
     doc = await repo_get_chat(chat_id, {"_id": 0, "chat_id": 1, "tool_policy": 1})
     if not doc:
         raise HTTPException(status_code=404, detail="Chat not found")
+    if _is_global_chat(chat_id):
+        owner = await _get_chat_owner_or_403(chat_id, x_dev_user)
+        resolved_context_key = _resolve_context_key(
+            chat=owner,
+            context_key=context_key,
+            project_id=project_id,
+            branch=branch,
+        )
+        if not resolved_context_key:
+            raise HTTPException(status_code=400, detail="context_key or project_id is required")
+        cfg = await get_context_config(
+            get_db(),
+            chat_id=chat_id,
+            user=str(owner.get("user") or ""),
+            context_key=resolved_context_key,
+        )
+        policy = cfg.get("tool_policy") if isinstance(cfg.get("tool_policy"), dict) else {}
+        return {"chat_id": chat_id, "context_key": resolved_context_key, "tool_policy": policy}
     policy = doc.get("tool_policy") if isinstance(doc.get("tool_policy"), dict) else {}
     return {"chat_id": chat_id, "tool_policy": policy}
 
@@ -510,16 +626,66 @@ async def put_chat_tool_policy(chat_id: str, req: ChatToolPolicyReq):
         len(policy.get("allowed_tools") or []),
         len(policy.get("blocked_tools") or []),
     )
+    if _is_global_chat(chat_id):
+        chat = await repo_get_chat(chat_id, {"_id": 0, "chat_id": 1, "user": 1, "project_id": 1, "branch": 1})
+        if not chat:
+            raise HTTPException(status_code=404, detail="Chat not found")
+        resolved_context_key = _resolve_context_key(
+            chat=chat,
+            context_key=req.context_key,
+            project_id=req.project_id,
+            branch=req.branch,
+        )
+        if not resolved_context_key:
+            raise HTTPException(status_code=400, detail="context_key or project_id is required")
+        resolved_project_id = str(req.project_id or "").strip() or resolved_context_key.split("::", 1)[0]
+        resolved_branch = str(req.branch or "").strip() or (
+            resolved_context_key.split("::", 1)[1] if "::" in resolved_context_key else "main"
+        )
+        await upsert_context_config(
+            get_db(),
+            chat_id=chat_id,
+            user=str(chat.get("user") or ""),
+            context_key=resolved_context_key,
+            project_id=resolved_project_id,
+            branch=resolved_branch,
+            patch={"tool_policy": policy},
+        )
+        return {"chat_id": chat_id, "context_key": resolved_context_key, "tool_policy": policy}
     if await update_chat_tool_policy(chat_id, policy, datetime.utcnow()) == 0:
         raise HTTPException(status_code=404, detail="Chat not found")
     return {"chat_id": chat_id, "tool_policy": policy}
 
 
 @router.get("/{chat_id}/llm-profile")
-async def get_chat_llm_profile(chat_id: str):
+async def get_chat_llm_profile(
+    chat_id: str,
+    context_key: str | None = None,
+    project_id: str | None = None,
+    branch: str | None = None,
+    x_dev_user: str | None = Header(default=None),
+):
     doc = await repo_get_chat(chat_id, {"_id": 0, "chat_id": 1, "llm_profile_id": 1})
     if not doc:
         raise HTTPException(status_code=404, detail="Chat not found")
+    if _is_global_chat(chat_id):
+        owner = await _get_chat_owner_or_403(chat_id, x_dev_user)
+        resolved_context_key = _resolve_context_key(
+            chat=owner,
+            context_key=context_key,
+            project_id=project_id,
+            branch=branch,
+        )
+        if not resolved_context_key:
+            raise HTTPException(status_code=400, detail="context_key or project_id is required")
+        cfg = await get_context_config(
+            get_db(),
+            chat_id=chat_id,
+            user=str(owner.get("user") or ""),
+            context_key=resolved_context_key,
+        )
+        profile_id = (cfg.get("llm_profile_id") or "").strip() or None
+        return {"chat_id": chat_id, "context_key": resolved_context_key, "llm_profile_id": profile_id}
     profile_id = (doc.get("llm_profile_id") or "").strip() or None
     return {"chat_id": chat_id, "llm_profile_id": profile_id}
 
@@ -527,16 +693,66 @@ async def get_chat_llm_profile(chat_id: str):
 @router.put("/{chat_id}/llm-profile")
 async def put_chat_llm_profile(chat_id: str, req: ChatLlmProfileReq):
     profile_id = (req.llm_profile_id or "").strip() or None
+    if _is_global_chat(chat_id):
+        chat = await repo_get_chat(chat_id, {"_id": 0, "chat_id": 1, "user": 1, "project_id": 1, "branch": 1})
+        if not chat:
+            raise HTTPException(status_code=404, detail="Chat not found")
+        resolved_context_key = _resolve_context_key(
+            chat=chat,
+            context_key=req.context_key,
+            project_id=req.project_id,
+            branch=req.branch,
+        )
+        if not resolved_context_key:
+            raise HTTPException(status_code=400, detail="context_key or project_id is required")
+        resolved_project_id = str(req.project_id or "").strip() or resolved_context_key.split("::", 1)[0]
+        resolved_branch = str(req.branch or "").strip() or (
+            resolved_context_key.split("::", 1)[1] if "::" in resolved_context_key else "main"
+        )
+        await upsert_context_config(
+            get_db(),
+            chat_id=chat_id,
+            user=str(chat.get("user") or ""),
+            context_key=resolved_context_key,
+            project_id=resolved_project_id,
+            branch=resolved_branch,
+            patch={"llm_profile_id": profile_id},
+        )
+        return {"chat_id": chat_id, "context_key": resolved_context_key, "llm_profile_id": profile_id}
     if await update_chat_llm_profile(chat_id, profile_id, datetime.utcnow()) == 0:
         raise HTTPException(status_code=404, detail="Chat not found")
     return {"chat_id": chat_id, "llm_profile_id": profile_id}
 
 
 @router.get("/{chat_id}/tool-approvals")
-async def list_chat_tool_approvals(chat_id: str, x_dev_user: str | None = Header(default=None)):
+async def list_chat_tool_approvals(
+    chat_id: str,
+    context_key: str | None = None,
+    project_id: str | None = None,
+    branch: str | None = None,
+    x_dev_user: str | None = Header(default=None),
+):
     await _get_chat_owner_or_403(chat_id, x_dev_user)
     now = datetime.utcnow()
-    rows = await list_active_tool_approvals(chat_id, now, limit=200)
+    if _is_global_chat(chat_id):
+        owner = await _get_chat_owner_or_403(chat_id, x_dev_user)
+        resolved_context_key = _resolve_context_key(
+            chat=owner,
+            context_key=context_key,
+            project_id=project_id,
+            branch=branch,
+        )
+        q: dict[str, Any] = {"chatId": chat_id, "expiresAt": {"$gt": now}}
+        if resolved_context_key:
+            q["$or"] = [
+                {"contextKey": resolved_context_key},
+                {"contextKey": {"$exists": False}},
+                {"contextKey": ""},
+                {"contextKey": None},
+            ]
+        rows = await get_db()["chat_tool_approvals"].find(q, {"_id": 0}).sort("createdAt", -1).limit(200).to_list(length=200)
+    else:
+        rows = await list_active_tool_approvals(chat_id, now, limit=200)
     caller = str(x_dev_user or "").strip().lower()
     items: list[dict[str, Any]] = []
     for row in rows:
@@ -564,17 +780,41 @@ async def approve_chat_tool(chat_id: str, req: ChatToolApprovalReq, x_dev_user: 
     exp = exp + timedelta(minutes=ttl)
     approval_user = str(x_dev_user or chat.get("user") or "").strip()
 
-    await upsert_tool_approval(
-        chat_id=chat_id,
-        tool_name=name,
-        user_id=approval_user,
-        approved_by=str(x_dev_user or chat.get("user") or ""),
-        created_at=now,
-        expires_at=exp,
-    )
+    resolved_context_key = None
+    if _is_global_chat(chat_id):
+        resolved_context_key = _resolve_context_key(
+            chat=chat,
+            context_key=req.context_key,
+            project_id=req.project_id,
+            branch=req.branch,
+        )
+    if resolved_context_key:
+        await get_db()["chat_tool_approvals"].update_one(
+            {"chatId": chat_id, "toolName": name, "userId": approval_user, "contextKey": resolved_context_key},
+            {
+                "$set": {
+                    "approved": True,
+                    "approvedBy": str(x_dev_user or chat.get("user") or ""),
+                    "createdAt": now,
+                    "expiresAt": exp,
+                    "contextKey": resolved_context_key,
+                }
+            },
+            upsert=True,
+        )
+    else:
+        await upsert_tool_approval(
+            chat_id=chat_id,
+            tool_name=name,
+            user_id=approval_user,
+            approved_by=str(x_dev_user or chat.get("user") or ""),
+            created_at=now,
+            expires_at=exp,
+        )
     return {
         "chat_id": chat_id,
         "tool_name": name,
+        "context_key": resolved_context_key,
         "user_id": approval_user,
         "approved_by": str(x_dev_user or chat.get("user") or ""),
         "createdAt": now.isoformat() + "Z",
@@ -583,11 +823,31 @@ async def approve_chat_tool(chat_id: str, req: ChatToolApprovalReq, x_dev_user: 
 
 
 @router.delete("/{chat_id}/tool-approvals/{tool_name}")
-async def revoke_chat_tool_approval(chat_id: str, tool_name: str, x_dev_user: str | None = Header(default=None)):
+async def revoke_chat_tool_approval(
+    chat_id: str,
+    tool_name: str,
+    context_key: str | None = None,
+    project_id: str | None = None,
+    branch: str | None = None,
+    x_dev_user: str | None = Header(default=None),
+):
     chat = await _get_chat_owner_or_403(chat_id, x_dev_user)
     name = _norm_tool_name(tool_name)
     if not name:
         raise HTTPException(status_code=400, detail="tool_name is required")
     approval_user = str(x_dev_user or chat.get("user") or "").strip()
-    await revoke_tool_approval(chat_id, name, approval_user)
-    return {"chat_id": chat_id, "tool_name": name, "revoked": True}
+    resolved_context_key = None
+    if _is_global_chat(chat_id):
+        resolved_context_key = _resolve_context_key(
+            chat=chat,
+            context_key=context_key,
+            project_id=project_id,
+            branch=branch,
+        )
+    if resolved_context_key:
+        await get_db()["chat_tool_approvals"].delete_many(
+            {"chatId": chat_id, "toolName": name, "userId": approval_user, "contextKey": resolved_context_key}
+        )
+    else:
+        await revoke_tool_approval(chat_id, name, approval_user)
+    return {"chat_id": chat_id, "tool_name": name, "context_key": resolved_context_key, "revoked": True}

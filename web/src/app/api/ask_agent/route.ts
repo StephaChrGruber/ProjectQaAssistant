@@ -18,6 +18,9 @@ export async function POST(req: Request) {
         dry_run: body.dry_run ?? body.dryRun ?? null,
         pending_question_id: body.pending_question_id ?? body.pendingQuestionId ?? null,
         pending_answer: body.pending_answer ?? body.pendingAnswer ?? null,
+        context_key: body.context_key ?? body.contextKey ?? null,
+        include_pinned_memory: body.include_pinned_memory ?? body.includePinnedMemory ?? true,
+        history_mode: body.history_mode ?? body.historyMode ?? "active_plus_pinned",
 
         // IMPORTANT: backend expects "question"
         question: body.question ?? body.query ?? "",

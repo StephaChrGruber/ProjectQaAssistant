@@ -10,7 +10,7 @@ export async function GET(
     const { chatId } = await ctx.params
     const inUrl = new URL(req.url)
     const upstream = new URL(`${BACKEND}/chats/${encodeURIComponent(chatId)}/tasks`)
-    for (const key of ["status", "limit"]) {
+    for (const key of ["status", "limit", "context_key", "project_id", "branch"]) {
         const value = inUrl.searchParams.get(key)
         if (value != null && value !== "") {
             upstream.searchParams.set(key, value)

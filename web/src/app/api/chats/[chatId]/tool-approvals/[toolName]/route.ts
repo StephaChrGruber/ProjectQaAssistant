@@ -10,8 +10,15 @@ export async function DELETE(
     const { chatId, toolName } = await ctx.params
     const url = new URL(req.url)
     const user = (url.searchParams.get("user") || "").trim() || DEV_USER
+    const upstream = new URL(`${BACKEND}/chats/${encodeURIComponent(chatId)}/tool-approvals/${encodeURIComponent(toolName)}`)
+    for (const key of ["context_key", "project_id", "branch"]) {
+        const value = url.searchParams.get(key)
+        if (value != null && value !== "") {
+            upstream.searchParams.set(key, value)
+        }
+    }
     const res = await fetch(
-        `${BACKEND}/chats/${encodeURIComponent(chatId)}/tool-approvals/${encodeURIComponent(toolName)}`,
+        upstream.toString(),
         {
             method: "DELETE",
             headers: { "X-Dev-User": user },

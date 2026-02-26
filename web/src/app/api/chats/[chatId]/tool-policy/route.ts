@@ -4,11 +4,19 @@ const BACKEND = process.env.BACKEND_BASE_URL!
 const DEV_USER = process.env.POC_DEV_USER || "dev"
 
 export async function GET(
-    _req: Request,
+    req: Request,
     { params }: { params: Promise<{ chatId: string }> }
 ) {
     const { chatId } = await params
-    const res = await fetch(`${BACKEND}/chats/${encodeURIComponent(chatId)}/tool-policy`, {
+    const inUrl = new URL(req.url)
+    const upstream = new URL(`${BACKEND}/chats/${encodeURIComponent(chatId)}/tool-policy`)
+    for (const key of ["context_key", "project_id", "branch"]) {
+        const value = inUrl.searchParams.get(key)
+        if (value != null && value !== "") {
+            upstream.searchParams.set(key, value)
+        }
+    }
+    const res = await fetch(upstream.toString(), {
         headers: { "X-Dev-User": DEV_USER },
         cache: "no-store",
     })

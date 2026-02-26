@@ -20,6 +20,14 @@ from ..services.hierarchical_memory import (
     persist_hierarchical_memory,
 )
 from ..services.workspace import assemble_workspace_context, workspace_context_to_text
+from ..services.global_chat_v2 import (
+    append_global_message,
+    build_context_key,
+    ensure_global_chat_envelope,
+    get_context_config,
+    list_llm_history_messages,
+    upsert_context_config,
+)
 from .ask_agent_clarification import (
     as_text as _as_text,
     derive_goal_id as _derive_goal_id,
@@ -86,6 +94,9 @@ class AskReq(BaseModel):
     pending_answer: str | None = None
     dry_run: bool | None = None
     workspace_context: dict[str, Any] | None = None
+    context_key: str | None = None
+    include_pinned_memory: bool = True
+    history_mode: str = "active_plus_pinned"
 
 
 async def _load_project_doc(project_id: str) -> dict[str, Any]:
@@ -145,54 +156,143 @@ async def _update_chat_memory_summary(chat_id: str) -> dict[str, Any] | None:
     return {"memory_summary": summary, "task_state": task_state}
 
 
+def _is_global_chat_id(chat_id: str) -> bool:
+    return str(chat_id or "").strip().lower().startswith("global::")
+
+
+async def _update_context_memory_summary(chat_id: str, context_key: str, user_id: str) -> dict[str, Any] | None:
+    db = get_db()
+    rows = (
+        await db["chat_messages_v2"]
+        .find({"chat_id": chat_id, "context_key": context_key}, {"role": 1, "content": 1, "ts": 1, "meta": 1})
+        .sort([("_id", -1)])
+        .limit(220)
+        .to_list(length=220)
+    )
+    if not rows:
+        return None
+    rows.reverse()
+    messages = [
+        {
+            "role": str(row.get("role") or ""),
+            "content": str(row.get("content") or ""),
+            "ts": row.get("ts"),
+            "meta": row.get("meta") if isinstance(row.get("meta"), dict) else {},
+        }
+        for row in rows
+        if str(row.get("role") or "").strip() in {"user", "assistant", "system", "tool"}
+    ]
+    summary = _derive_chat_memory(messages)
+    task_state = derive_task_state(messages, None)
+    project_id, branch = (context_key.split("::", 1) + ["main"])[:2]
+    await upsert_context_config(
+        db,
+        chat_id=chat_id,
+        user=user_id,
+        context_key=context_key,
+        project_id=str(project_id or ""),
+        branch=str(branch or "main"),
+        patch={"memory_summary": summary, "task_state": task_state},
+    )
+    return {"memory_summary": summary, "task_state": task_state}
+
+
 @router.post("/ask_agent")
 async def ask_agent(req: AskReq):
     chat_id = req.chat_id or f"{req.project_id}::{req.branch}::{req.user}"
     now = datetime.utcnow()
     db = get_db()
+    global_mode = _is_global_chat_id(chat_id)
+    context_key = str(req.context_key or "").strip() or build_context_key(req.project_id, req.branch)
+    context_cfg: dict[str, Any] = {}
+    active_chat_doc: dict[str, Any] | None = None
 
-    # ensure chat
-    await db["chats"].update_one(
-        {"chat_id": chat_id},
-        {
-            "$set": {
-                "project_id": req.project_id,
-                "branch": req.branch,
-                "user": req.user,
-                "updated_at": now,
+    # ensure chat envelope
+    if global_mode:
+        active_chat_doc = await ensure_global_chat_envelope(
+            db,
+            user=req.user,
+            active_context_key=context_key,
+        )
+    else:
+        await db["chats"].update_one(
+            {"chat_id": chat_id},
+            {
+                "$set": {
+                    "project_id": req.project_id,
+                    "branch": req.branch,
+                    "user": req.user,
+                    "updated_at": now,
+                },
+                "$setOnInsert": {
+                    "chat_id": chat_id,
+                    "title": "New chat",
+                    "messages": [],
+                    "tool_policy": {},
+                    "llm_profile_id": None,
+                    "created_at": now,
+                },
             },
-            "$setOnInsert": {
-                "chat_id": chat_id,
-                "title": "New chat",
-                "messages": [],
-                "tool_policy": {},
-                "llm_profile_id": None,
-                "created_at": now,
-            },
-        },
-        upsert=True,
-    )
+            upsert=True,
+        )
 
     requested_profile_id = (req.llm_profile_id or "").strip() or None
     if requested_profile_id is not None:
-        await db["chats"].update_one(
-            {"chat_id": chat_id},
-            {"$set": {"llm_profile_id": requested_profile_id, "updated_at": now}},
-        )
+        if global_mode:
+            context_cfg = await upsert_context_config(
+                db,
+                chat_id=chat_id,
+                user=req.user,
+                context_key=context_key,
+                project_id=req.project_id,
+                branch=req.branch,
+                patch={"llm_profile_id": requested_profile_id},
+            )
+        else:
+            await db["chats"].update_one(
+                {"chat_id": chat_id},
+                {"$set": {"llm_profile_id": requested_profile_id, "updated_at": now}},
+            )
 
-    chat_doc = await db["chats"].find_one(
-        {"chat_id": chat_id},
-        {
-            "tool_policy": 1,
-            "llm_profile_id": 1,
-            "pending_user_question": 1,
-            "memory_summary": 1,
-            "task_state": 1,
-            "clarification_state": 1,
-        },
+    chat_doc = (
+        await db["chats"].find_one(
+            {"chat_id": chat_id},
+            {
+                "tool_policy": 1,
+                "llm_profile_id": 1,
+                "pending_user_question": 1,
+                "memory_summary": 1,
+                "task_state": 1,
+                "clarification_state": 1,
+                "active_context_key": 1,
+            },
+        )
+        or active_chat_doc
+        or {}
     )
-    active_pending_question = _normalize_pending_user_question((chat_doc or {}).get("pending_user_question"))
-    clarification_state = _normalize_clarification_state((chat_doc or {}).get("clarification_state"))
+    if global_mode:
+        if not context_cfg:
+            context_cfg = await get_context_config(
+                db,
+                chat_id=chat_id,
+                user=req.user,
+                context_key=context_key,
+            )
+        if not context_cfg:
+            context_cfg = await upsert_context_config(
+                db,
+                chat_id=chat_id,
+                user=req.user,
+                context_key=context_key,
+                project_id=req.project_id,
+                branch=req.branch,
+                patch={},
+            )
+        active_pending_question = _normalize_pending_user_question(context_cfg.get("pending_user_question"))
+        clarification_state = _normalize_clarification_state(context_cfg.get("clarification_state"))
+    else:
+        active_pending_question = _normalize_pending_user_question((chat_doc or {}).get("pending_user_question"))
+        clarification_state = _normalize_clarification_state((chat_doc or {}).get("clarification_state"))
 
     raw_user_text = _as_text(req.question)
     user_text = raw_user_text
@@ -247,27 +347,55 @@ async def ask_agent(req: AskReq):
     user_msg = {"role": "user", "content": user_text, "ts": now}
     if user_meta:
         user_msg["meta"] = user_meta
-    update_doc: dict[str, Any] = {
-        "$push": {"messages": user_msg},
-        "$set": {
-            "updated_at": now,
-            "last_message_at": now,
-            "last_message_preview": user_text[:160],
-            "clarification_state": clarification_state,
-        },
-        "$setOnInsert": {"title": user_text[:60] or "New chat"},
-    }
-    if active_pending_question:
-        update_doc["$unset"] = {"pending_user_question": ""}
-    await db["chats"].update_one(
-        {"chat_id": chat_id},
-        update_doc,
-    )
+    if global_mode:
+        await append_global_message(
+            db,
+            chat_id=chat_id,
+            user=req.user,
+            role="user",
+            content=user_text,
+            context_key=context_key,
+            project_id=req.project_id,
+            branch=req.branch,
+            ts=now,
+            meta=user_meta,
+        )
+        context_patch: dict[str, Any] = {"clarification_state": clarification_state}
+        if active_pending_question:
+            context_patch["pending_user_question"] = None
+        context_cfg = await upsert_context_config(
+            db,
+            chat_id=chat_id,
+            user=req.user,
+            context_key=context_key,
+            project_id=req.project_id,
+            branch=req.branch,
+            patch=context_patch,
+        )
+    else:
+        update_doc: dict[str, Any] = {
+            "$push": {"messages": user_msg},
+            "$set": {
+                "updated_at": now,
+                "last_message_at": now,
+                "last_message_preview": user_text[:160],
+                "clarification_state": clarification_state,
+            },
+            "$setOnInsert": {"title": user_text[:60] or "New chat"},
+        }
+        if active_pending_question:
+            update_doc["$unset"] = {"pending_user_question": ""}
+        await db["chats"].update_one(
+            {"chat_id": chat_id},
+            update_doc,
+        )
 
     # run retrieval + llm
     project_doc = await _load_project_doc(req.project_id)
     chat_profile_id = None
-    if isinstance(chat_doc, dict):
+    if global_mode:
+        chat_profile_id = (context_cfg.get("llm_profile_id") or "").strip() or None
+    elif isinstance(chat_doc, dict):
         chat_profile_id = (chat_doc.get("llm_profile_id") or "").strip() or None
 
     routing_cfg = _extract_llm_routing(project_doc)
@@ -285,7 +413,10 @@ async def ask_agent(req: AskReq):
     feature_flags = defaults.get("feature_flags") if isinstance(defaults.get("feature_flags"), dict) else {}
     audit_events_enabled = bool(feature_flags.get("enable_audit_events", True))
     user_role = await _resolve_user_role(req.project_id, req.user)
-    chat_policy = (chat_doc or {}).get("tool_policy") if isinstance(chat_doc, dict) else {}
+    if global_mode:
+        chat_policy = context_cfg.get("tool_policy") if isinstance(context_cfg.get("tool_policy"), dict) else {}
+    else:
+        chat_policy = (chat_doc or {}).get("tool_policy") if isinstance(chat_doc, dict) else {}
     effective_tool_policy = _merge_tool_policies(
         defaults.get("tool_policy") or {},
         chat_policy if isinstance(chat_policy, dict) else {},
@@ -295,8 +426,16 @@ async def ask_agent(req: AskReq):
         role=user_role,
         security_policy=defaults.get("security_policy") or {},
     )
+    approvals_query: dict[str, Any] = {"chatId": chat_id, "expiresAt": {"$gt": datetime.utcnow()}}
+    if global_mode:
+        approvals_query["$or"] = [
+            {"contextKey": context_key},
+            {"contextKey": {"$exists": False}},
+            {"contextKey": ""},
+            {"contextKey": None},
+        ]
     approval_rows = await db["chat_tool_approvals"].find(
-        {"chatId": chat_id, "expiresAt": {"$gt": datetime.utcnow()}},
+        approvals_query,
         {"toolName": 1, "userId": 1, "expiresAt": 1, "approved": 1},
     ).to_list(length=400)
     approved_tools = _active_approved_tools(approval_rows, user=req.user)
@@ -366,24 +505,40 @@ async def ask_agent(req: AskReq):
     conversation_messages_for_agent: list[dict[str, str]] = []
     hierarchical_context_for_agent = ""
     hierarchical_snapshot: dict[str, Any] = {}
-    memory_summary_seed = (chat_doc or {}).get("memory_summary") if isinstance(chat_doc, dict) else None
-    task_state_seed = (chat_doc or {}).get("task_state") if isinstance(chat_doc, dict) else None
+    if global_mode:
+        memory_summary_seed = context_cfg.get("memory_summary") if isinstance(context_cfg.get("memory_summary"), dict) else None
+        task_state_seed = context_cfg.get("task_state") if isinstance(context_cfg.get("task_state"), dict) else None
+    else:
+        memory_summary_seed = (chat_doc or {}).get("memory_summary") if isinstance(chat_doc, dict) else None
+        task_state_seed = (chat_doc or {}).get("task_state") if isinstance(chat_doc, dict) else None
     try:
-        chat_state_doc = await db["chats"].find_one(
-            {"chat_id": chat_id},
-            {"messages": {"$slice": -320}, "memory_summary": 1, "task_state": 1},
-        )
-        chat_messages_for_context = (chat_state_doc or {}).get("messages") or []
-        memory_summary_base = (
-            (chat_state_doc or {}).get("memory_summary")
-            if isinstance((chat_state_doc or {}).get("memory_summary"), dict)
-            else memory_summary_seed
-        )
-        task_state_base = (
-            (chat_state_doc or {}).get("task_state")
-            if isinstance((chat_state_doc or {}).get("task_state"), dict)
-            else task_state_seed
-        )
+        if global_mode:
+            chat_messages_for_context = await list_llm_history_messages(
+                db,
+                chat_id=chat_id,
+                context_key=context_key,
+                include_pinned_memory=bool(req.include_pinned_memory),
+                active_limit=320,
+                pinned_limit=96 if str(req.history_mode or "").strip().lower() == "active_plus_pinned" else 0,
+            )
+            memory_summary_base = memory_summary_seed
+            task_state_base = task_state_seed
+        else:
+            chat_state_doc = await db["chats"].find_one(
+                {"chat_id": chat_id},
+                {"messages": {"$slice": -320}, "memory_summary": 1, "task_state": 1},
+            )
+            chat_messages_for_context = (chat_state_doc or {}).get("messages") or []
+            memory_summary_base = (
+                (chat_state_doc or {}).get("memory_summary")
+                if isinstance((chat_state_doc or {}).get("memory_summary"), dict)
+                else memory_summary_seed
+            )
+            task_state_base = (
+                (chat_state_doc or {}).get("task_state")
+                if isinstance((chat_state_doc or {}).get("task_state"), dict)
+                else task_state_seed
+            )
         memory_bundle = await build_hierarchical_context(
             project_id=req.project_id,
             branch=req.branch,
@@ -858,21 +1013,27 @@ async def ask_agent(req: AskReq):
             "failover_used": failover_used,
         },
     }
-    await db["chats"].update_one(
-        {"chat_id": chat_id},
-        {
-            "$push": {
-                "messages": {
-                    "role": "assistant",
-                    "content": answer,
-                    "ts": done,
-                    "meta": assistant_meta,
-                }
-            },
-            "$set": {
-                "updated_at": done,
-                "last_message_at": done,
-                "last_message_preview": answer[:160],
+    if global_mode:
+        await append_global_message(
+            db,
+            chat_id=chat_id,
+            user=req.user,
+            role="assistant",
+            content=answer,
+            context_key=context_key,
+            project_id=req.project_id,
+            branch=req.branch,
+            ts=done,
+            meta=assistant_meta,
+        )
+        context_cfg = await upsert_context_config(
+            db,
+            chat_id=chat_id,
+            user=req.user,
+            context_key=context_key,
+            project_id=req.project_id,
+            branch=req.branch,
+            patch={
                 "pending_user_question": pending_user_question,
                 "clarification_state": clarification_state,
                 "hierarchical_memory": {
@@ -880,9 +1041,34 @@ async def ask_agent(req: AskReq):
                     "updated_at": done.isoformat() + "Z",
                 },
             },
-        },
-    )
-    memory_state = await _update_chat_memory_summary(chat_id)
+        )
+        memory_state = await _update_context_memory_summary(chat_id, context_key, req.user)
+    else:
+        await db["chats"].update_one(
+            {"chat_id": chat_id},
+            {
+                "$push": {
+                    "messages": {
+                        "role": "assistant",
+                        "content": answer,
+                        "ts": done,
+                        "meta": assistant_meta,
+                    }
+                },
+                "$set": {
+                    "updated_at": done,
+                    "last_message_at": done,
+                    "last_message_preview": answer[:160],
+                    "pending_user_question": pending_user_question,
+                    "clarification_state": clarification_state,
+                    "hierarchical_memory": {
+                        "snapshot": hierarchical_snapshot,
+                        "updated_at": done.isoformat() + "Z",
+                    },
+                },
+            },
+        )
+        memory_state = await _update_chat_memory_summary(chat_id)
     memory_summary = (memory_state or {}).get("memory_summary") if isinstance(memory_state, dict) else None
     task_state = (memory_state or {}).get("task_state") if isinstance(memory_state, dict) else None
     if not isinstance(memory_summary, dict):
@@ -951,6 +1137,7 @@ async def ask_agent(req: AskReq):
                         "project_id": req.project_id,
                         "chat_id": chat_id,
                         "branch": req.branch,
+                        "context_key": context_key if global_mode else None,
                         "user": req.user,
                         "tool": str(row.get("tool") or ""),
                         "ok": bool(row.get("ok")),
@@ -974,6 +1161,7 @@ async def ask_agent(req: AskReq):
             "project_id": req.project_id,
             "chat_id": chat_id,
             "branch": req.branch,
+            "context_key": context_key if global_mode else None,
             "user_id": req.user,
             "question": user_text,
             "answer": answer,

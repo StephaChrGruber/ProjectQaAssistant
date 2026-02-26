@@ -258,6 +258,46 @@ export type ChatChartSpec = {
   height?: number
 }
 
+export type GlobalChatContext = {
+  context_key: string
+  project_id?: string | null
+  branch?: string | null
+  message_count?: number
+  last_ts?: string | null
+  llm_profile_id?: string | null
+  tool_policy?: ChatToolPolicy | null
+}
+
+export type GlobalChatBootstrapResponse = {
+  chat_id: string
+  user: string
+  active_context_key?: string | null
+  contexts?: GlobalChatContext[]
+  unread_notifications?: number
+  feature_matrix?: Record<string, unknown>
+}
+
+export type GlobalChatMessage = ChatMessage & {
+  id?: string | null
+  chat_id?: string
+  user?: string
+  context_key?: string | null
+  project_id?: string | null
+  branch?: string | null
+  is_pinned?: boolean
+  pin_source?: string | null
+  is_active_context?: boolean
+  compact_hint?: boolean
+}
+
+export type GlobalChatMessagesResponse = {
+  chat_id: string
+  active_context_key?: string | null
+  items?: GlobalChatMessage[]
+  next_cursor?: string | null
+  has_more?: boolean
+}
+
 export type TokenKind = "plain" | "keyword" | "string" | "number" | "comment" | "operator" | "type" | "builtin"
 
 export type Token = {

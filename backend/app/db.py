@@ -58,6 +58,12 @@ async def init_db():
     await db["automation_runs"].create_index([("project_id", 1), ("automation_id", 1), ("started_at", -1)], name="automation_runs_automation_recent")
     await db["notifications"].create_index([("user_id", 1), ("dismissed", 1), ("created_at", -1)], name="notifications_user_recent")
     await db["notifications"].create_index([("project_id", 1), ("created_at", -1)], name="notifications_project_recent")
+    await db["chat_messages_v2"].create_index([("chat_id", 1), ("ts", 1)], name="chat_messages_v2_chat_ts")
+    await db["chat_messages_v2"].create_index([("chat_id", 1), ("context_key", 1), ("ts", 1)], name="chat_messages_v2_chat_ctx_ts")
+    await db["chat_messages_v2"].create_index([("chat_id", 1), ("is_pinned", 1), ("ts", 1)], name="chat_messages_v2_chat_pinned_ts")
+    await db["chat_messages_v2"].create_index([("user", 1), ("ts", -1)], name="chat_messages_v2_user_recent")
+    await db["chat_context_config"].create_index([("chat_id", 1), ("context_key", 1)], unique=True, name="chat_ctx_cfg_unique")
+    await db["chat_context_config"].create_index([("chat_id", 1), ("updated_at", -1)], name="chat_ctx_cfg_chat_recent")
 
 def get_client() -> AsyncIOMotorClient:
     global _client
