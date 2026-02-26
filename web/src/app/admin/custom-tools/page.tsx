@@ -14,6 +14,7 @@ import {
     MenuItem,
     Select,
     Stack,
+    TextField,
     Typography,
 } from "@mui/material"
 import ArrowBackRounded from "@mui/icons-material/ArrowBackRounded"
@@ -37,6 +38,7 @@ import type {
     SystemToolRow,
     ToolDetailResponse,
     ToolForm,
+    ToolClassRow,
     ToolVersionRow,
 } from "@/features/custom-tools/types"
 
@@ -53,10 +55,14 @@ export default function AdminCustomToolsPage() {
     const [testArgsText, setTestArgsText] = useState<string>('{}')
     const [testResult, setTestResult] = useState<string>("")
     const [systemTools, setSystemTools] = useState<SystemToolRow[]>([])
+    const [toolClasses, setToolClasses] = useState<ToolClassRow[]>([])
     const [templateId, setTemplateId] = useState<string>("")
     const [versionCodeRows, setVersionCodeRows] = useState<ToolVersionRow[]>([])
     const [versionCodeLoading, setVersionCodeLoading] = useState(false)
     const [selectedVersionCode, setSelectedVersionCode] = useState<number>(0)
+    const [newClassKey, setNewClassKey] = useState("")
+    const [newClassDisplay, setNewClassDisplay] = useState("")
+    const [newClassParent, setNewClassParent] = useState("")
     const codeEditorRef = useRef<MonacoEditorNS.IStandaloneCodeEditor | null>(null)
     const monacoConfiguredRef = useRef(false)
 
@@ -132,6 +138,14 @@ export default function AdminCustomToolsPage() {
         setSystemTools((out.items || []).sort((a, b) => a.name.localeCompare(b.name)))
     }, [projectFilter])
 
+    const loadToolClasses = useCallback(async () => {
+        const out = await backendJson<{ items: ToolClassRow[] }>(
+            "/api/admin/tool-classes?include_builtin=true&include_disabled=true"
+        )
+        const rows = (out.items || []).slice().sort((a, b) => String(a.path || a.key).localeCompare(String(b.path || b.key)))
+        setToolClasses(rows)
+    }, [])
+
     const loadVersionCodes = useCallback(async (toolId: string) => {
         if (!toolId) {
             setVersionCodeRows([])
@@ -169,6 +183,7 @@ export default function AdminCustomToolsPage() {
             projectId: t.projectId || "",
             name: t.name || "",
             description: t.description || "",
+            classKey: t.classKey || "",
             runtime: t.runtime || "backend_python",
             isEnabled: t.isEnabled !== false,
             readOnly: t.readOnly !== false,
@@ -199,6 +214,10 @@ export default function AdminCustomToolsPage() {
     useEffect(() => {
         void loadSystemTools().catch((err) => setError(String(err)))
     }, [loadSystemTools])
+
+    useEffect(() => {
+        void loadToolClasses().catch((err) => setError(String(err)))
+    }, [loadToolClasses])
 
     useEffect(() => {
         if (!selectedToolId) return
@@ -292,6 +311,7 @@ export default function AdminCustomToolsPage() {
                 projectId: form.projectId || null,
                 name: form.name,
                 description: form.description || null,
+                classKey: form.classKey || null,
                 runtime: form.runtime,
                 isEnabled: form.isEnabled,
                 readOnly: form.readOnly,
@@ -335,6 +355,7 @@ export default function AdminCustomToolsPage() {
                 body: JSON.stringify({
                     name: form.name,
                     description: form.description || null,
+                    classKey: form.classKey || null,
                     runtime: form.runtime,
                     isEnabled: form.isEnabled,
                     readOnly: form.readOnly,
@@ -455,6 +476,32 @@ export default function AdminCustomToolsPage() {
         }
     }
 
+    async function createToolClass() {
+        if (!newClassKey.trim()) return
+        setBusy(true)
+        setError(null)
+        setNotice(null)
+        try {
+            await backendJson("/api/admin/tool-classes", {
+                method: "POST",
+                body: JSON.stringify({
+                    key: newClassKey.trim(),
+                    displayName: (newClassDisplay || newClassKey).trim(),
+                    parentKey: newClassParent || null,
+                    isEnabled: true,
+                }),
+            })
+            setNotice(`Created tool class: ${newClassKey.trim()}`)
+            setNewClassKey("")
+            setNewClassDisplay("")
+            await loadToolClasses()
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err))
+        } finally {
+            setBusy(false)
+        }
+    }
+
     return (
         <Container maxWidth="xl" sx={{ py: { xs: 2, md: 3 } }}>
             <Stack spacing={2}>
@@ -488,6 +535,42 @@ export default function AdminCustomToolsPage() {
                 {error && <Alert severity="error">{error}</Alert>}
                 {notice && <Alert severity="success">{notice}</Alert>}
 
+                <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "1fr 1fr 1fr auto" }, gap: 1 }}>
+                    <TextField
+                        label="New Class Key"
+                        size="small"
+                        placeholder="team.my_tools"
+                        value={newClassKey}
+                        onChange={(e) => setNewClassKey(e.target.value)}
+                    />
+                    <TextField
+                        label="Display Name"
+                        size="small"
+                        placeholder="My Tools"
+                        value={newClassDisplay}
+                        onChange={(e) => setNewClassDisplay(e.target.value)}
+                    />
+                    <FormControl size="small">
+                        <InputLabel id="new-class-parent-label">Parent Class</InputLabel>
+                        <Select
+                            labelId="new-class-parent-label"
+                            label="Parent Class"
+                            value={newClassParent}
+                            onChange={(e) => setNewClassParent(String(e.target.value || ""))}
+                        >
+                            <MenuItem value="">(none)</MenuItem>
+                            {toolClasses.map((row) => (
+                                <MenuItem key={`parent-${row.key}`} value={row.key}>
+                                    {row.path || row.key}
+                                </MenuItem>
+                            ))}
+                        </Select>
+                    </FormControl>
+                    <Button variant="outlined" onClick={() => void createToolClass()} disabled={busy || !newClassKey.trim()}>
+                        Add Class
+                    </Button>
+                </Box>
+
                 <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", lg: "360px 1fr" }, gap: 2 }}>
                     <ToolSelectorCard
                         tools={tools}
@@ -507,6 +590,7 @@ export default function AdminCustomToolsPage() {
                         setForm={setForm}
                         projects={projects}
                         versions={versions}
+                        toolClasses={toolClasses}
                         busy={busy}
                         runtimeTemplates={runtimeTemplates}
                         templateId={templateId}

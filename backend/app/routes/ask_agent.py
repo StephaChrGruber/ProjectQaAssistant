@@ -73,6 +73,7 @@ from .ask_agent_sources import (
 from .ask_agent_tool_policy import (
     active_approved_tools as _active_approved_tools,
     apply_role_tool_policy as _apply_role_tool_policy,
+    as_class_key_list as _as_class_key_list,
     as_tool_name_list as _as_tool_name_list,
     extract_max_tool_calls as _extract_max_tool_calls,
     extract_tool_policy as _extract_tool_policy,
@@ -635,7 +636,7 @@ async def ask_agent(req: AskReq):
         )
 
     logger.info(
-        "ask_agent.start project=%s branch=%s user=%s chat_id=%s role=%s profile_id=%s provider=%s model=%s pending=%s policy={read_only_only:%s allowed:%s blocked:%s approved:%s} clar={goal:%s asked:%s remaining:%s continue:%s destructive:%s disable:%s reason:%s}",
+        "ask_agent.start project=%s branch=%s user=%s chat_id=%s role=%s profile_id=%s provider=%s model=%s pending=%s policy={read_only_only:%s allowed:%s allowed_classes:%s blocked:%s blocked_classes:%s approved:%s} clar={goal:%s asked:%s remaining:%s continue:%s destructive:%s disable:%s reason:%s}",
         req.project_id,
         req.branch,
         req.user,
@@ -647,7 +648,9 @@ async def ask_agent(req: AskReq):
         bool(active_pending_question),
         bool(effective_tool_policy.get("read_only_only")),
         len(_as_tool_name_list(effective_tool_policy.get("allowed_tools"))),
+        len(_as_class_key_list(effective_tool_policy.get("allowed_classes"))),
         len(_as_tool_name_list(effective_tool_policy.get("blocked_tools"))),
+        len(_as_class_key_list(effective_tool_policy.get("blocked_classes"))),
         len(_as_tool_name_list(effective_tool_policy.get("approved_tools"))),
         derived_goal_id,
         goal_asked_count,

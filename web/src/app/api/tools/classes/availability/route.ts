@@ -9,20 +9,20 @@ export async function GET(req: Request) {
   const branch = inUrl.searchParams.get("branch") || "main"
   const chatId = inUrl.searchParams.get("chatId") || inUrl.searchParams.get("chat_id") || ""
   const user = inUrl.searchParams.get("user") || DEV_USER
-  const classKey = inUrl.searchParams.get("classKey") || inUrl.searchParams.get("class_key") || ""
-  const includeSubclasses = inUrl.searchParams.get("include_subclasses")
+  const includeUnavailable = inUrl.searchParams.get("include_unavailable")
+  const includeEmpty = inUrl.searchParams.get("include_empty")
 
   if (!projectId) {
     return NextResponse.json({ detail: "projectId is required" }, { status: 400 })
   }
 
-  const upstream = new URL(`${BACKEND}/tools/catalog/availability`)
+  const upstream = new URL(`${BACKEND}/tools/classes/availability`)
   upstream.searchParams.set("project_id", projectId)
   upstream.searchParams.set("branch", branch)
   if (chatId) upstream.searchParams.set("chat_id", chatId)
   if (user) upstream.searchParams.set("user", user)
-  if (classKey) upstream.searchParams.set("class_key", classKey)
-  if (includeSubclasses != null) upstream.searchParams.set("include_subclasses", includeSubclasses)
+  if (includeUnavailable != null) upstream.searchParams.set("include_unavailable", includeUnavailable)
+  if (includeEmpty != null) upstream.searchParams.set("include_empty", includeEmpty)
 
   const res = await fetch(upstream.toString(), {
     headers: { "X-Dev-User": user || DEV_USER },
@@ -34,3 +34,4 @@ export async function GET(req: Request) {
     headers: { "Content-Type": res.headers.get("content-type") || "application/json" },
   })
 }
+

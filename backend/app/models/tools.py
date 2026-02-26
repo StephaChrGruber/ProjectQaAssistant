@@ -445,6 +445,8 @@ class WorkspaceGetContextResponse(BaseModel):
 class ListToolsRequest(BaseModel):
     include_unavailable: bool = False
     include_parameters: bool = False
+    class_key: Optional[str] = None
+    include_subclasses: bool = True
     limit: int = 200
 
 
@@ -457,6 +459,8 @@ class SearchToolsRequest(BaseModel):
     query: str
     include_unavailable: bool = False
     include_parameters: bool = False
+    class_key: Optional[str] = None
+    include_subclasses: bool = True
     limit: int = 20
 
 
@@ -474,6 +478,43 @@ class GetToolDetailsRequest(BaseModel):
 class GetToolDetailsResponse(BaseModel):
     found: bool
     tool: Optional[Dict[str, Any]] = None
+
+
+class ListToolClassesRequest(BaseModel):
+    include_unavailable: bool = False
+    include_empty: bool = True
+    limit: int = 200
+
+
+class ListToolClassesResponse(BaseModel):
+    count: int
+    classes: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class ListToolsByClassRequest(BaseModel):
+    class_key: str
+    include_subclasses: bool = True
+    include_unavailable: bool = False
+    include_parameters: bool = False
+    limit: int = 200
+
+
+class ListToolsByClassResponse(BaseModel):
+    class_key: str
+    include_subclasses: bool = True
+    count: int
+    tools: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class GetToolClassDetailsRequest(BaseModel):
+    class_key: str
+
+
+class GetToolClassDetailsResponse(BaseModel):
+    found: bool
+    class_item: Optional[Dict[str, Any]] = None
+    tools_count: int = 0
+    sample_tools: List[str] = Field(default_factory=list)
 
 
 class RequestUserInputRequest(BaseModel):

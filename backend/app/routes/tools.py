@@ -1,6 +1,6 @@
 from __future__ import annotations
 from fastapi import APIRouter, Depends, Request, HTTPException
-from typing import Optional
+from typing import Any, Optional
 from bson import ObjectId
 import logging
 
@@ -14,6 +14,13 @@ from ..utils.projects import get_project_or_404, project_meta
 from ..utils.repo_tools import repo_grep_rg, repo_open_file
 from ..rag.tool_runtime import ToolContext, build_default_tool_runtime
 from ..services.custom_tools import build_runtime_for_project
+from ..services.tool_classes import (
+    class_descendants,
+    class_map as tool_class_map,
+    class_key_to_path,
+    list_tool_classes,
+    normalize_class_key,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -25,12 +32,40 @@ def get_db(request: Request):
 
 
 @router.get("/tools/catalog")
-async def tools_catalog(project_id: Optional[str] = None):
+async def tools_catalog(
+    project_id: Optional[str] = None,
+    class_key: Optional[str] = None,
+    include_subclasses: bool = True,
+):
     if project_id:
         runtime = await build_runtime_for_project(project_id)
     else:
         runtime = build_default_tool_runtime()
-    return {"tools": runtime.catalog()}
+    rows = runtime.catalog()
+    class_filter = normalize_class_key(class_key)
+    if class_filter:
+        classes = await list_tool_classes(
+            include_builtin=True,
+            include_custom=True,
+            include_disabled=False,
+            include_virtual_uncategorized=True,
+        )
+        allowed = class_descendants(classes, class_filter) if include_subclasses else {class_filter}
+        rows = [r for r in rows if str(r.get("class_key") or "").strip() in allowed]
+    return {"tools": rows}
+
+
+@router.get("/tools/classes")
+async def tools_classes(
+    include_disabled: bool = False,
+):
+    rows = await list_tool_classes(
+        include_builtin=True,
+        include_custom=True,
+        include_disabled=bool(include_disabled),
+        include_virtual_uncategorized=True,
+    )
+    return {"classes": rows, "count": len(rows)}
 
 
 @router.get("/tools/catalog/availability")
@@ -39,6 +74,8 @@ async def tools_catalog_availability(
     branch: str = "main",
     chat_id: Optional[str] = None,
     user: Optional[str] = None,
+    class_key: Optional[str] = None,
+    include_subclasses: bool = True,
 ):
     try:
         runtime = await build_runtime_for_project(project_id)
@@ -51,11 +88,24 @@ async def tools_catalog_availability(
             policy={},
         )
         policy = runtime._policy_dict(ctx)
+        class_rows = await list_tool_classes(
+            include_builtin=True,
+            include_custom=True,
+            include_disabled=False,
+            include_virtual_uncategorized=True,
+        )
+        class_filter = normalize_class_key(class_key)
+        allowed_class_keys: set[str] | None = None
+        if class_filter:
+            allowed_class_keys = class_descendants(class_rows, class_filter) if include_subclasses else {class_filter}
         rows: list[dict] = []
 
         for item in runtime.catalog():
             name = str(item.get("name") or "").strip()
             if not name:
+                continue
+            item_class_key = str(item.get("class_key") or "").strip()
+            if allowed_class_keys is not None and item_class_key not in allowed_class_keys:
                 continue
             spec = runtime._tools.get(name)
             if not spec:
@@ -93,6 +143,94 @@ async def tools_catalog_availability(
     except Exception as err:
         logger.exception("tools.catalog.availability.error project=%s", project_id)
         raise HTTPException(500, f"Could not load tool availability: {err}")
+
+
+@router.get("/tools/classes/availability")
+async def tools_classes_availability(
+    project_id: str,
+    branch: str = "main",
+    chat_id: Optional[str] = None,
+    user: Optional[str] = None,
+    include_unavailable: bool = False,
+    include_empty: bool = True,
+):
+    try:
+        runtime = await build_runtime_for_project(project_id)
+        user_id = (user or "dev@local").strip() or "dev@local"
+        ctx = ToolContext(
+            project_id=project_id,
+            branch=(branch or "main").strip() or "main",
+            user_id=user_id,
+            chat_id=(chat_id or None),
+            policy={},
+        )
+        policy = runtime._policy_dict(ctx)
+        class_rows = await list_tool_classes(
+            include_builtin=True,
+            include_custom=True,
+            include_disabled=False,
+            include_virtual_uncategorized=True,
+        )
+        by_class = tool_class_map(class_rows)
+        class_counts: dict[str, dict[str, int]] = {key: {"total": 0, "available": 0} for key in by_class}
+
+        for item in runtime.catalog():
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            spec = runtime._tools.get(name)
+            if not spec:
+                continue
+            class_key = str(item.get("class_key") or "").strip()
+            if not class_key:
+                continue
+            stat = class_counts.setdefault(class_key, {"total": 0, "available": 0})
+            stat["total"] += 1
+            allowed, reason = runtime._is_tool_allowed(name, spec, policy)
+            if allowed:
+                cap_allowed, _cap_reason = await runtime._tool_capability_allowed(name, spec, ctx)
+                allowed = cap_allowed
+            if allowed:
+                stat["available"] += 1
+
+        out: list[dict[str, Any]] = []
+        for key, row in by_class.items():
+            stat = class_counts.get(key) or {"total": 0, "available": 0}
+            total_count = int(stat.get("total") or 0)
+            available_count = int(stat.get("available") or 0)
+            if not include_empty and total_count <= 0:
+                continue
+            available = available_count > 0
+            if not include_unavailable and not available:
+                continue
+            out.append(
+                {
+                    "key": key,
+                    "display_name": str(row.get("display_name") or key),
+                    "description": str(row.get("description") or "").strip() or None,
+                    "parent_key": str(row.get("parent_key") or "").strip() or None,
+                    "path": str(row.get("path") or class_key_to_path(key)),
+                    "origin": str(row.get("origin") or "custom"),
+                    "scope": str(row.get("scope") or "global"),
+                    "is_enabled": bool(row.get("is_enabled", True)),
+                    "available": available,
+                    "total_tools": total_count,
+                    "available_tools": available_count,
+                }
+            )
+
+        out.sort(key=lambda row: str(row.get("key") or ""))
+        return {
+            "project_id": project_id,
+            "branch": ctx.branch,
+            "chat_id": ctx.chat_id,
+            "user": ctx.user_id,
+            "count": len(out),
+            "classes": out,
+        }
+    except Exception as err:
+        logger.exception("tools.classes.availability.error project=%s", project_id)
+        raise HTTPException(500, f"Could not load tool class availability: {err}")
 
 
 @router.get("/projects/{project_id}/metadata", response_model=ProjectMetadataResponse)

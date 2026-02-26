@@ -8,8 +8,16 @@ export async function GET(req: Request) {
     try {
         const parsed = new URL(req.url)
         const projectId = parsed.searchParams.get("projectId") || parsed.searchParams.get("project_id")
+        const classKey = parsed.searchParams.get("classKey") || parsed.searchParams.get("class_key")
+        const includeSubclasses = parsed.searchParams.get("include_subclasses")
         if (projectId) {
             url.searchParams.set("project_id", projectId)
+        }
+        if (classKey) {
+            url.searchParams.set("class_key", classKey)
+        }
+        if (includeSubclasses != null) {
+            url.searchParams.set("include_subclasses", includeSubclasses)
         }
     } catch {
         // ignore malformed request url

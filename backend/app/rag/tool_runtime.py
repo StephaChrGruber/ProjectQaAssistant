@@ -43,6 +43,10 @@ from ..models.tools import (
     ListAutomationTemplatesRequest,
     ListAutomationsRequest,
     ListChatTasksRequest,
+    ListToolClassesRequest,
+    ListToolClassesResponse,
+    ListToolsByClassRequest,
+    ListToolsByClassResponse,
     KeywordSearchRequest,
     ListToolsRequest,
     ListToolsResponse,
@@ -55,6 +59,8 @@ from ..models.tools import (
     RunTestsRequest,
     SearchToolsRequest,
     SearchToolsResponse,
+    GetToolClassDetailsRequest,
+    GetToolClassDetailsResponse,
     SymbolSearchRequest,
     ToolEnvelope,
     ToolError,
@@ -63,6 +69,15 @@ from ..models.tools import (
     UpdateChatTaskRequest,
     WriteDocumentationFileRequest,
     WorkspaceGetContextRequest,
+)
+from ..services.tool_classes import (
+    VIRTUAL_CUSTOM_UNCATEGORIZED_KEY,
+    class_descendants,
+    class_key_to_path,
+    class_map as tool_class_map,
+    class_path_chain,
+    list_tool_classes,
+    normalize_class_key,
 )
 from .tool_exec import (
     compare_branches,
@@ -111,6 +126,55 @@ logger = logging.getLogger(__name__)
 
 BROWSER_LOCAL_REPO_PREFIX = "browser-local://"
 
+_TOOL_CLASS_MAP: dict[str, str] = {
+    "list_tools": "system.discovery",
+    "search_tools": "system.discovery",
+    "get_tool_details": "system.discovery",
+    "list_tool_classes": "system.discovery",
+    "list_tools_by_class": "system.discovery",
+    "get_tool_class_details": "system.discovery",
+    "get_project_metadata": "system.context",
+    "read_chat_messages": "system.context",
+    "request_user_input": "system.context",
+    "workspace_get_context": "system.context",
+    "repo_tree": "repository.read",
+    "repo_grep": "repository.read",
+    "open_file": "repository.read",
+    "symbol_search": "repository.read",
+    "keyword_search": "repository.read",
+    "git_list_branches": "git.branches",
+    "git_checkout_branch": "git.branches",
+    "git_create_branch": "git.branches",
+    "git_fetch": "git.sync",
+    "git_pull": "git.sync",
+    "git_push": "git.sync",
+    "git_status": "git.changes",
+    "git_diff": "git.changes",
+    "git_log": "git.changes",
+    "git_show_file_at_ref": "git.changes",
+    "compare_branches": "git.changes",
+    "git_stage_files": "git.commit",
+    "git_unstage_files": "git.commit",
+    "git_commit": "git.commit",
+    "read_docs_folder": "documentation.read",
+    "write_documentation_file": "documentation.write",
+    "generate_project_docs": "documentation.write",
+    "run_tests": "quality.testing",
+    "create_jira_issue": "issues.jira",
+    "create_chat_task": "tasks.chat",
+    "list_chat_tasks": "tasks.chat",
+    "update_chat_task": "tasks.chat",
+    "create_automation": "automation",
+    "list_automations": "automation",
+    "update_automation": "automation",
+    "delete_automation": "automation",
+    "run_automation": "automation",
+    "list_automation_templates": "automation",
+    "chroma_count": "knowledge.vector",
+    "chroma_search_chunks": "knowledge.vector",
+    "chroma_open_chunks": "knowledge.vector",
+}
+
 
 @dataclass
 class ToolContext:
@@ -137,6 +201,8 @@ class ToolSpec:
     runtime: str = "backend"
     version: str = ""
     allow_extra_args: bool = False
+    class_key: str = "util"
+    class_display: str | None = None
 
 
 class ToolRuntime:
@@ -145,6 +211,7 @@ class ToolRuntime:
         self._windows: Dict[str, Deque[float]] = defaultdict(deque)
         self._cache: Dict[str, tuple[float, ToolEnvelope]] = {}
         self._capability_cache: Dict[str, tuple[float, dict[str, Any]]] = {}
+        self._tool_class_cache: tuple[float, list[dict[str, Any]]] | None = None
 
     def register(self, spec: ToolSpec) -> None:
         self._tools[spec.name] = spec
@@ -178,6 +245,72 @@ class ToolRuntime:
                 out.add(s)
         return out
 
+    def _as_class_key_set(self, raw: Any) -> set[str]:
+        out: set[str] = set()
+        if not isinstance(raw, list):
+            return out
+        for item in raw:
+            key = normalize_class_key(item)
+            if key:
+                out.add(key)
+        return out
+
+    def _default_class_for_spec(self, name: str, spec: ToolSpec) -> str:
+        mapped = normalize_class_key(_TOOL_CLASS_MAP.get(name))
+        if mapped:
+            return mapped
+        return "util" if bool(spec.read_only) else "system"
+
+    def _effective_spec_class_key(self, name: str, spec: ToolSpec) -> str:
+        key = normalize_class_key(spec.class_key)
+        if key:
+            return key
+        if spec.origin == "custom":
+            return VIRTUAL_CUSTOM_UNCATEGORIZED_KEY
+        return self._default_class_for_spec(name, spec)
+
+    def _default_class_display(self, class_key: str) -> str:
+        leaf = str(class_key or "").strip().split(".")[-1]
+        if not leaf:
+            return "Class"
+        return leaf.replace("_", " ").title()
+
+    async def _load_tool_classes_cached(self) -> list[dict[str, Any]]:
+        now = time.time()
+        cached = self._tool_class_cache
+        if cached and now < cached[0]:
+            return list(cached[1])
+        rows = await list_tool_classes(
+            include_builtin=True,
+            include_custom=True,
+            include_disabled=False,
+            include_virtual_uncategorized=True,
+        )
+        self._tool_class_cache = (now + 15.0, list(rows))
+        return list(rows)
+
+    async def _tool_class_info(self, name: str, spec: ToolSpec) -> dict[str, Any]:
+        class_key = self._effective_spec_class_key(name, spec)
+        rows = await self._load_tool_classes_cached()
+        by_key = tool_class_map(rows)
+        row = by_key.get(class_key)
+        if row:
+            chain = class_path_chain(rows, class_key)
+            return {
+                "class_key": class_key,
+                "class_display": str(row.get("display_name") or class_key),
+                "class_path": class_key_to_path(class_key),
+                "class_chain": chain,
+                "class_origin": str(row.get("origin") or "custom"),
+            }
+        return {
+            "class_key": class_key,
+            "class_display": spec.class_display or class_key,
+            "class_path": class_key_to_path(class_key),
+            "class_chain": [class_key],
+            "class_origin": "custom" if spec.origin == "custom" else "builtin",
+        }
+
     def _coerce_int(self, raw: Any, default: int, min_value: int, max_value: int) -> int:
         if raw is None:
             return default
@@ -201,6 +334,14 @@ class ToolRuntime:
         if isinstance(raw, dict):
             return self._coerce_int(raw.get(name), fallback, min_value, max_value)
         return fallback
+
+    def _class_key_matches(self, tool_class_key: str, class_filters: set[str]) -> bool:
+        if not tool_class_key or not class_filters:
+            return False
+        for item in class_filters:
+            if tool_class_key == item or tool_class_key.startswith(f"{item}."):
+                return True
+        return False
 
     def _capability_cache_key(self, ctx: ToolContext) -> str:
         return "|".join(
@@ -336,7 +477,15 @@ class ToolRuntime:
         return dict(capabilities)
 
     async def _tool_capability_allowed(self, name: str, spec: ToolSpec, ctx: ToolContext) -> tuple[bool, str]:
-        if name in {"list_tools", "search_tools", "get_tool_details", "get_project_metadata"}:
+        if name in {
+            "list_tools",
+            "search_tools",
+            "get_tool_details",
+            "list_tool_classes",
+            "list_tools_by_class",
+            "get_tool_class_details",
+            "get_project_metadata",
+        }:
             return True, ""
 
         caps = await self._context_capabilities(ctx)
@@ -423,18 +572,36 @@ class ToolRuntime:
         return True, ""
 
     def _is_tool_allowed(self, name: str, spec: ToolSpec, policy: dict[str, Any]) -> tuple[bool, str]:
-        always_allowed = {"list_tools", "search_tools", "get_tool_details", "request_user_input"}
+        always_allowed = {
+            "list_tools",
+            "search_tools",
+            "get_tool_details",
+            "list_tool_classes",
+            "list_tools_by_class",
+            "get_tool_class_details",
+            "request_user_input",
+        }
         if name in always_allowed:
             return True, ""
 
         allowed = self._as_tool_name_set(policy.get("allowed_tools") or policy.get("allow_tools"))
         blocked = self._as_tool_name_set(policy.get("blocked_tools") or policy.get("deny_tools"))
+        allowed_classes = self._as_class_key_set(policy.get("allowed_classes"))
+        blocked_classes = self._as_class_key_set(policy.get("blocked_classes"))
         approved = self._as_tool_name_set(policy.get("approved_tools"))
+        class_key = self._effective_spec_class_key(name, spec)
 
         if name in blocked:
             return False, "blocked_by_policy"
-        if allowed and name not in allowed:
-            return False, "not_in_allowed_tools"
+        explicit_allow = name in allowed
+
+        if not explicit_allow and self._class_key_matches(class_key, blocked_classes):
+            return False, "blocked_by_class_policy"
+
+        strict_allowlist = bool(policy.get("strict_allowlist"))
+        class_allowed = self._class_key_matches(class_key, allowed_classes)
+        if strict_allowlist and not explicit_allow and not class_allowed:
+            return False, "not_in_allowed_tools_or_classes"
 
         read_only_only = bool(policy.get("read_only_only"))
         if read_only_only and not spec.read_only:
@@ -802,8 +969,10 @@ class ToolRuntime:
         lines: list[str] = []
         for name in self.tool_names():
             spec = self._tools[name]
+            class_key = self._effective_spec_class_key(name, spec)
             lines.append(name)
             lines.append(f"  Description: {spec.description}")
+            lines.append(f"  Class: {class_key} ({class_key_to_path(class_key)})")
             lines.append(f"  Timeout: {spec.timeout_sec}s")
             lines.append(f"  Rate limit: {spec.rate_limit_per_min}/min")
             lines.append(f"  Retries: {spec.max_retries}")
@@ -870,6 +1039,10 @@ class ToolRuntime:
                 {
                     "name": name,
                     "description": spec.description,
+                    "class_key": self._effective_spec_class_key(name, spec),
+                    "class_path": class_key_to_path(self._effective_spec_class_key(name, spec)),
+                    "class_display": spec.class_display or self._default_class_display(self._effective_spec_class_key(name, spec)),
+                    "class_origin": "custom" if spec.origin == "custom" else "builtin",
                     "timeout_sec": spec.timeout_sec,
                     "rate_limit_per_min": spec.rate_limit_per_min,
                     "max_retries": spec.max_retries,
@@ -909,6 +1082,9 @@ class ToolRuntime:
                 continue
             lines.append(name)
             lines.append(f"  Description: {str(row.get('description') or '')}")
+            lines.append(
+                f"  Class: {str(row.get('class_key') or '')} ({str(row.get('class_path') or '')})"
+            )
             lines.append(f"  Timeout: {int(row.get('timeout_sec') or 0)}s")
             lines.append(f"  Rate limit: {int(row.get('rate_limit_per_min') or 0)}/min")
             lines.append(f"  Retries: {int(row.get('max_retries') or 0)}")
@@ -970,12 +1146,23 @@ async def _catalog_with_policy(
     *,
     include_unavailable: bool,
     include_parameters: bool,
+    class_key: str | None = None,
+    include_subclasses: bool = True,
     query: str | None = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     query_lc = str(query or "").strip().lower()
+    class_filter = normalize_class_key(class_key)
     policy = runtime._policy_dict(ctx)
     rows = runtime.catalog()
+    class_rows = await runtime._load_tool_classes_cached()
+    class_rows_map = tool_class_map(class_rows)
+    allowed_class_keys: set[str] | None = None
+    if class_filter:
+        if include_subclasses:
+            allowed_class_keys = class_descendants(class_rows, class_filter)
+        else:
+            allowed_class_keys = {class_filter}
     out: list[dict[str, Any]] = []
 
     for row in rows:
@@ -984,6 +1171,18 @@ async def _catalog_with_policy(
             continue
         spec = runtime._tools.get(name)
         if not spec:
+            continue
+        effective_class_key = runtime._effective_spec_class_key(name, spec)
+        class_row = class_rows_map.get(effective_class_key)
+        class_display = (
+            str((class_row or {}).get("display_name") or "")
+            or spec.class_display
+            or runtime._default_class_display(effective_class_key)
+        )
+        class_origin = str((class_row or {}).get("origin") or ("custom" if spec.origin == "custom" else "builtin"))
+        class_chain = class_path_chain(class_rows, effective_class_key)
+
+        if allowed_class_keys is not None and effective_class_key not in allowed_class_keys:
             continue
 
         allowed, reason = runtime._is_tool_allowed(name, spec, policy)
@@ -1002,6 +1201,9 @@ async def _catalog_with_policy(
                 str(row.get("origin") or ""),
                 str(row.get("runtime") or ""),
                 str(row.get("version") or ""),
+                effective_class_key,
+                class_display,
+                class_key_to_path(effective_class_key),
             ]
             params = row.get("parameters")
             if isinstance(params, list):
@@ -1015,6 +1217,11 @@ async def _catalog_with_policy(
                 continue
 
         item = dict(row)
+        item["class_key"] = effective_class_key
+        item["class_path"] = class_key_to_path(effective_class_key)
+        item["class_display"] = class_display
+        item["class_origin"] = class_origin
+        item["class_chain"] = class_chain
         item["available"] = bool(allowed)
         if not allowed:
             item["blocked_reason"] = reason
@@ -1023,6 +1230,66 @@ async def _catalog_with_policy(
         out.append(item)
 
     out.sort(key=lambda x: str(x.get("name") or ""))
+    return out[: max(1, min(int(limit or 200), 1000))]
+
+
+async def _classes_with_policy(
+    runtime: ToolRuntime,
+    ctx: ToolContext,
+    *,
+    include_unavailable: bool,
+    include_empty: bool,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    class_rows = await runtime._load_tool_classes_cached()
+    by_key = tool_class_map(class_rows)
+    class_stats: dict[str, dict[str, int]] = {}
+    for key in by_key.keys():
+        class_stats[key] = {"total": 0, "available": 0}
+
+    tools = await _catalog_with_policy(
+        runtime,
+        ctx,
+        include_unavailable=True,
+        include_parameters=False,
+        limit=5000,
+    )
+    for tool in tools:
+        c_key = normalize_class_key(tool.get("class_key"))
+        if not c_key:
+            continue
+        stat = class_stats.setdefault(c_key, {"total": 0, "available": 0})
+        stat["total"] += 1
+        if bool(tool.get("available")):
+            stat["available"] += 1
+
+    out: list[dict[str, Any]] = []
+    for key, cls in by_key.items():
+        stat = class_stats.get(key) or {"total": 0, "available": 0}
+        total_count = int(stat.get("total") or 0)
+        available_count = int(stat.get("available") or 0)
+        if not include_empty and total_count <= 0:
+            continue
+        is_available = available_count > 0
+        if not include_unavailable and not is_available:
+            continue
+        out.append(
+            {
+                "key": key,
+                "display_name": str(cls.get("display_name") or key),
+                "description": str(cls.get("description") or "").strip() or None,
+                "parent_key": str(cls.get("parent_key") or "").strip() or None,
+                "path": str(cls.get("path") or class_key_to_path(key)),
+                "scope": str(cls.get("scope") or "global"),
+                "origin": str(cls.get("origin") or "custom"),
+                "is_enabled": bool(cls.get("is_enabled", True)),
+                "available": is_available,
+                "total_tools": total_count,
+                "available_tools": available_count,
+            }
+        )
+
+    out.sort(key=lambda x: str(x.get("key") or ""))
     return out[: max(1, min(int(limit or 200), 1000))]
 
 
@@ -1037,8 +1304,10 @@ def build_default_tool_runtime(
         rows = await _catalog_with_policy(
             rt,
             ctx,
-            include_unavailable=False,
+            include_unavailable=bool(req.include_unavailable),
             include_parameters=bool(req.include_parameters),
+            class_key=normalize_class_key(req.class_key),
+            include_subclasses=bool(req.include_subclasses),
             limit=max(1, min(int(req.limit or 200), 500)),
         )
         return ListToolsResponse(count=len(rows), tools=rows)
@@ -1047,8 +1316,10 @@ def build_default_tool_runtime(
         rows = await _catalog_with_policy(
             rt,
             ctx,
-            include_unavailable=False,
+            include_unavailable=bool(req.include_unavailable),
             include_parameters=bool(req.include_parameters),
+            class_key=normalize_class_key(req.class_key),
+            include_subclasses=bool(req.include_subclasses),
             query=str(req.query or ""),
             limit=max(1, min(int(req.limit or 20), 200)),
         )
@@ -1058,13 +1329,72 @@ def build_default_tool_runtime(
         rows = await _catalog_with_policy(
             rt,
             ctx,
-            include_unavailable=False,
+            include_unavailable=bool(req.include_unavailable),
             include_parameters=True,
             limit=1000,
         )
         needle = str(req.tool_name or "").strip().lower()
         item = next((row for row in rows if str(row.get("name") or "").strip().lower() == needle), None)
         return GetToolDetailsResponse(found=bool(item), tool=item)
+
+    async def _list_tool_classes_handler(req: ListToolClassesRequest, ctx: ToolContext) -> ListToolClassesResponse:
+        rows = await _classes_with_policy(
+            rt,
+            ctx,
+            include_unavailable=bool(req.include_unavailable),
+            include_empty=bool(req.include_empty),
+            limit=max(1, min(int(req.limit or 200), 500)),
+        )
+        return ListToolClassesResponse(count=len(rows), classes=rows)
+
+    async def _list_tools_by_class_handler(req: ListToolsByClassRequest, ctx: ToolContext) -> ListToolsByClassResponse:
+        class_key = normalize_class_key(req.class_key) or ""
+        rows = await _catalog_with_policy(
+            rt,
+            ctx,
+            include_unavailable=bool(req.include_unavailable),
+            include_parameters=bool(req.include_parameters),
+            class_key=class_key,
+            include_subclasses=bool(req.include_subclasses),
+            limit=max(1, min(int(req.limit or 200), 500)),
+        )
+        return ListToolsByClassResponse(
+            class_key=class_key,
+            include_subclasses=bool(req.include_subclasses),
+            count=len(rows),
+            tools=rows,
+        )
+
+    async def _get_tool_class_details_handler(
+        req: GetToolClassDetailsRequest, ctx: ToolContext
+    ) -> GetToolClassDetailsResponse:
+        class_key = normalize_class_key(req.class_key)
+        if not class_key:
+            return GetToolClassDetailsResponse(found=False, class_item=None, tools_count=0, sample_tools=[])
+        class_rows = await _classes_with_policy(
+            rt,
+            ctx,
+            include_unavailable=True,
+            include_empty=True,
+            limit=500,
+        )
+        class_item = next((row for row in class_rows if str(row.get("key") or "") == class_key), None)
+        tool_rows = await _catalog_with_policy(
+            rt,
+            ctx,
+            include_unavailable=False,
+            include_parameters=False,
+            class_key=class_key,
+            include_subclasses=True,
+            limit=5000,
+        )
+        sample = [str(row.get("name") or "") for row in tool_rows[:12] if str(row.get("name") or "").strip()]
+        return GetToolClassDetailsResponse(
+            found=bool(class_item),
+            class_item=class_item,
+            tools_count=len(tool_rows),
+            sample_tools=sample,
+        )
 
     rt.register(
         ToolSpec(
@@ -1112,6 +1442,45 @@ def build_default_tool_runtime(
             rate_limit_per_min=120,
             max_retries=1,
             cache_ttl_sec=5,
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="list_tool_classes",
+            description="Lists available tool classes with availability counts for the current context.",
+            model=ListToolClassesRequest,
+            handler=_list_tool_classes_handler,
+            timeout_sec=10,
+            rate_limit_per_min=120,
+            max_retries=1,
+            cache_ttl_sec=5,
+            class_key="system.discovery",
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="list_tools_by_class",
+            description="Lists tools for a specific class (optionally including subclasses).",
+            model=ListToolsByClassRequest,
+            handler=_list_tools_by_class_handler,
+            timeout_sec=10,
+            rate_limit_per_min=120,
+            max_retries=1,
+            cache_ttl_sec=5,
+            class_key="system.discovery",
+        )
+    )
+    rt.register(
+        ToolSpec(
+            name="get_tool_class_details",
+            description="Returns details for one tool class and sample tools available in current context.",
+            model=GetToolClassDetailsRequest,
+            handler=_get_tool_class_details_handler,
+            timeout_sec=10,
+            rate_limit_per_min=120,
+            max_retries=1,
+            cache_ttl_sec=5,
+            class_key="system.discovery",
         )
     )
     rt.register(
@@ -1566,6 +1935,11 @@ def build_default_tool_runtime(
             cache_ttl_sec=10,
         )
     )
+
+    for _name, _spec in rt._tools.items():
+        _spec.class_key = rt._effective_spec_class_key(_name, _spec)
+        if not _spec.class_display:
+            _spec.class_display = rt._default_class_display(_spec.class_key)
 
     if enabled_names is not None:
         allowed = set(str(x).strip() for x in enabled_names if str(x).strip())

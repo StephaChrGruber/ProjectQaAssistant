@@ -30,7 +30,7 @@ import UploadFileRounded from "@mui/icons-material/UploadFileRounded"
 import ContentCopyRounded from "@mui/icons-material/ContentCopyRounded"
 import RefreshRounded from "@mui/icons-material/RefreshRounded"
 import { EditorCodePreview } from "@/features/custom-tools/EditorCodePreview"
-import type { ProjectRow, ToolForm, ToolVersionRow } from "@/features/custom-tools/types"
+import type { ProjectRow, ToolClassRow, ToolForm, ToolVersionRow } from "@/features/custom-tools/types"
 
 const MonacoEditor = dynamic(() => import("@monaco-editor/react"), { ssr: false })
 
@@ -46,6 +46,7 @@ type CustomToolEditorCardProps = {
     form: ToolForm
     setForm: Dispatch<SetStateAction<ToolForm>>
     projects: ProjectRow[]
+    toolClasses: ToolClassRow[]
     versions: ToolVersionRow[]
     busy: boolean
     runtimeTemplates: RuntimeTemplate[]
@@ -76,6 +77,7 @@ export function CustomToolEditorCard({
     form,
     setForm,
     projects,
+    toolClasses,
     versions,
     busy,
     runtimeTemplates,
@@ -154,6 +156,24 @@ export function CustomToolEditorCard({
                             onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
                             fullWidth
                         />
+                        <FormControl size="small" fullWidth sx={{ gridColumn: { xs: "auto", md: "1 / span 2" } }}>
+                            <InputLabel id="tool-class-label">Tool Class</InputLabel>
+                            <Select
+                                labelId="tool-class-label"
+                                label="Tool Class"
+                                value={form.classKey || ""}
+                                onChange={(e) => setForm((f) => ({ ...f, classKey: String(e.target.value || "") }))}
+                            >
+                                <MenuItem value="">Uncategorized (custom/uncategorized)</MenuItem>
+                                {toolClasses
+                                    .filter((row) => row.key !== "custom.uncategorized")
+                                    .map((row) => (
+                                        <MenuItem key={row.key} value={row.key}>
+                                            {row.path || row.key}
+                                        </MenuItem>
+                                    ))}
+                            </Select>
+                        </FormControl>
                         <TextField
                             label="Timeout (sec)"
                             size="small"

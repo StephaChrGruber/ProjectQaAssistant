@@ -34,12 +34,15 @@ export function ToolSelectorCard({ tools, selectedToolId, onSelectTool, onCreate
                                 sx={{ justifyContent: "space-between" }}
                             >
                                 <span>{tool.name}</span>
-                                <Chip
-                                    size="small"
-                                    label={tool.runtime === "local_typescript" ? "Local TS" : "Backend Py"}
-                                    color={tool.runtime === "local_typescript" ? "secondary" : "primary"}
-                                    variant="outlined"
-                                />
+                                <Stack direction="row" spacing={0.5}>
+                                    {tool.classKey ? <Chip size="small" label={tool.classKey} variant="outlined" /> : null}
+                                    <Chip
+                                        size="small"
+                                        label={tool.runtime === "local_typescript" ? "Local TS" : "Backend Py"}
+                                        color={tool.runtime === "local_typescript" ? "secondary" : "primary"}
+                                        variant="outlined"
+                                    />
+                                </Stack>
                             </Button>
                         ))}
                         {!tools.length && (

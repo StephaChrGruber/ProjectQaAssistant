@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 from ..db import get_db
 from ..models.base_mongo_models import CustomTool, CustomToolAudit, CustomToolVersion, LocalToolJob
 from ..rag.tool_runtime import ToolContext, ToolRuntime, ToolSpec, build_default_tool_runtime
+from .tool_classes import VIRTUAL_CUSTOM_UNCATEGORIZED_KEY, normalize_class_key
 
 logger = logging.getLogger(__name__)
 
@@ -626,6 +627,7 @@ async def build_runtime_for_project(project_id: str) -> ToolRuntime:
                 runtime=str(tool_doc.get("runtime") or "backend_python"),
                 version=str(version_doc.get("version") or ""),
                 allow_extra_args=allow_extra,
+                class_key=normalize_class_key(tool_doc.get("classKey")) or VIRTUAL_CUSTOM_UNCATEGORIZED_KEY,
             )
         )
         existing_names.add(tool_name)
@@ -669,12 +671,14 @@ def normalize_secret_map(raw: Any) -> dict[str, str]:
 
 
 def serialize_custom_tool(tool_doc: dict[str, Any], *, include_secrets: bool = False) -> dict[str, Any]:
+    class_key = normalize_class_key(tool_doc.get("classKey"))
     out = {
         "id": str(tool_doc.get("_id") or ""),
         "projectId": tool_doc.get("projectId"),
         "name": tool_doc.get("name"),
         "slug": tool_doc.get("slug"),
         "description": tool_doc.get("description"),
+        "classKey": class_key,
         "runtime": tool_doc.get("runtime"),
         "isEnabled": bool(tool_doc.get("isEnabled", True)),
         "readOnly": bool(tool_doc.get("readOnly", True)),

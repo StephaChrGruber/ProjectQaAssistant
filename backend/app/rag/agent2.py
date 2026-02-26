@@ -22,7 +22,14 @@ class LLMUpstreamError(RuntimeError):
 
 _RUNTIME: ToolRuntime = build_default_tool_runtime()
 
-_DISCOVERY_TOOLS = {"list_tools", "search_tools", "get_tool_details"}
+_DISCOVERY_TOOLS = {
+    "list_tools",
+    "search_tools",
+    "get_tool_details",
+    "list_tool_classes",
+    "list_tools_by_class",
+    "get_tool_class_details",
+}
 
 
 def _as_text(v: Any) -> str:
@@ -121,7 +128,7 @@ def _system_prompt(
         "- If evidence is missing, ask the user for more input using request_user_input.\n"
         "- Do not browse/search the web or use external actions unless the user explicitly asks and confirms.\n"
         "- If external information/action is needed but not confirmed, ask first via request_user_input.\n"
-        "- Start tool discovery with list_tools/search_tools/get_tool_details.\n"
+        "- Start tool discovery with list_tool_classes, then list_tools_by_class, then get_tool_details.\n"
         "- If discovery says a tool is unavailable/blocked, do not claim the tool is missing; explain the blocked_reason and how to unblock it.\n"
         "- If the user asks you to perform a change/action (e.g. create/switch branch, commit, push/pull, write/update), you MUST execute the corresponding tool before final answer.\n"
         "- Never stop at planning language like 'I will now do X' without an actual tool call.\n"
@@ -138,6 +145,9 @@ def _system_prompt(
         "- If enough info is available, answer in normal text (NOT JSON).\n\n"
         "BOOTSTRAP TOOLS\n"
         "────────────────────────────────\n"
+        "- list_tool_classes(args): include_unavailable?:bool, include_empty?:bool, limit?:int\n"
+        "- list_tools_by_class(args): class_key:str, include_subclasses?:bool, include_parameters?:bool, limit?:int\n"
+        "- get_tool_class_details(args): class_key:str\n"
         "- list_tools(args): include_parameters?:bool, limit?:int\n"
         "- search_tools(args): query:str, include_parameters?:bool, limit?:int\n"
         "- get_tool_details(args): tool_name:str\n"
@@ -178,6 +188,8 @@ def _question_is_tool_catalog_request(text: str) -> bool:
         "available tools",
         "tool catalog",
         "search tools",
+        "tool classes",
+        "tool class",
     )
     return any(m in q for m in markers)
 

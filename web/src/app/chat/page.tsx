@@ -1172,6 +1172,20 @@ export default function GlobalChatPage() {
             const enabledNames = Array.from(toolEnabledSet).sort()
             const allNames = toolCatalog.map((tool) => tool.name)
             const blockedNames = allNames.filter((name) => !toolEnabledSet.has(name)).sort()
+            const byClass = toolCatalog.reduce<Record<string, ToolCatalogItem[]>>((acc, tool) => {
+                const key = String(tool.class_key || "custom.uncategorized")
+                if (!acc[key]) acc[key] = []
+                acc[key].push(tool)
+                return acc
+            }, {})
+            const allowedClasses: string[] = []
+            const blockedClasses: string[] = []
+            for (const [classKey, tools] of Object.entries(byClass)) {
+                if (!tools.length) continue
+                const enabledCount = tools.filter((tool) => toolEnabledSet.has(tool.name)).length
+                if (enabledCount === 0) blockedClasses.push(classKey)
+                if (enabledCount === tools.length) allowedClasses.push(classKey)
+            }
             await backendJson<ChatToolPolicyResponse>(`/api/chats/${encodeURIComponent(chatId)}/tool-policy`, {
                 method: "PUT",
                 body: JSON.stringify({
@@ -1180,7 +1194,9 @@ export default function GlobalChatPage() {
                     branch: selectedBranch || "main",
                     strict_allowlist: true,
                     allowed_tools: enabledNames,
+                    allowed_classes: allowedClasses.sort(),
                     blocked_tools: blockedNames,
+                    blocked_classes: blockedClasses.sort(),
                     read_only_only: toolReadOnlyOnly,
                     dry_run: toolDryRun,
                     require_approval_for_write_tools: requireApprovalForWriteTools,

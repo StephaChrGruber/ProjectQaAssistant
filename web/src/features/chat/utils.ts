@@ -187,15 +187,52 @@ function sanitizeToolNames(values: string[] | undefined): string[] {
   return out
 }
 
+function sanitizeClassKeys(values: string[] | undefined): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const raw of values || []) {
+    const s = String(raw || "")
+      .trim()
+      .replaceAll("/", ".")
+      .replace(/^\.+|\.+$/g, "")
+    if (!s || seen.has(s)) continue
+    seen.add(s)
+    out.push(s)
+  }
+  return out
+}
+
+function classMatches(classKey: string, classFilters: string[]): boolean {
+  if (!classKey || !classFilters.length) return false
+  return classFilters.some((item) => classKey === item || classKey.startsWith(`${item}.`))
+}
+
 export function enabledToolsFromPolicy(catalog: ToolCatalogItem[], policy: ChatToolPolicy | null): Set<string> {
   const all = new Set(catalog.map((t) => t.name))
   if (!policy) return all
   const allowed = sanitizeToolNames(policy.allowed_tools)
+  const allowedClasses = sanitizeClassKeys(policy.allowed_classes)
   const blocked = new Set(sanitizeToolNames(policy.blocked_tools))
-  if (!allowed.length) {
-    return new Set(Array.from(all).filter((name) => !blocked.has(name)))
+  const blockedClasses = sanitizeClassKeys(policy.blocked_classes)
+  const hasAllowlist = allowed.length > 0 || allowedClasses.length > 0
+
+  const out = new Set<string>()
+  for (const tool of catalog) {
+    const name = String(tool.name || "").trim()
+    if (!name || !all.has(name)) continue
+    const classKey = String(tool.class_key || "").trim().replaceAll("/", ".")
+    const explicitlyAllowed = allowed.includes(name)
+    if (blocked.has(name)) continue
+    if (!explicitlyAllowed && classMatches(classKey, blockedClasses)) continue
+    if (!hasAllowlist) {
+      out.add(name)
+      continue
+    }
+    if (explicitlyAllowed || classMatches(classKey, allowedClasses)) {
+      out.add(name)
+    }
   }
-  return new Set(allowed.filter((name) => all.has(name) && !blocked.has(name)))
+  return out
 }
 
 export function parseChartSpec(raw: string): ChatChartSpec | null {

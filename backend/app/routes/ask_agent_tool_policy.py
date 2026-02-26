@@ -6,6 +6,7 @@ from typing import Any
 
 from ..db import get_db
 from .ask_agent_clarification import as_text
+from ..services.tool_classes import normalize_class_key
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,20 @@ def as_tool_name_list(raw: object) -> list[str]:
         s = str(item or "").strip()
         if s:
             out.append(s)
+    return out
+
+
+def as_class_key_list(raw: object) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        key = normalize_class_key(item)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
     return out
 
 
@@ -35,11 +50,17 @@ def extract_tool_policy(project: dict) -> dict:
 
     policy: dict[str, object] = {}
     allowed = as_tool_name_list(raw.get("allowed_tools") or raw.get("allow_tools"))
+    allowed_classes = as_class_key_list(raw.get("allowed_classes"))
     blocked = as_tool_name_list(raw.get("blocked_tools") or raw.get("deny_tools"))
+    blocked_classes = as_class_key_list(raw.get("blocked_classes"))
     if allowed:
         policy["allowed_tools"] = allowed
+    if allowed_classes:
+        policy["allowed_classes"] = allowed_classes
     if blocked:
         policy["blocked_tools"] = blocked
+    if blocked_classes:
+        policy["blocked_classes"] = blocked_classes
     if bool(raw.get("read_only_only")):
         policy["read_only_only"] = True
     if bool(raw.get("dry_run")):
@@ -179,21 +200,33 @@ def merge_tool_policies(base_policy: dict, chat_policy: dict) -> dict:
     strict_allowlist = bool(base.get("strict_allowlist") or chat.get("strict_allowlist"))
     base_allowed = as_tool_name_list(base.get("allowed_tools") or [])
     chat_allowed = as_tool_name_list(chat.get("allowed_tools") or [])
+    base_allowed_classes = as_class_key_list(base.get("allowed_classes") or [])
+    chat_allowed_classes = as_class_key_list(chat.get("allowed_classes") or [])
     if strict_allowlist:
         allowed = sorted(set(base_allowed) | set(chat_allowed))
+        allowed_classes = sorted(set(base_allowed_classes) | set(chat_allowed_classes))
     else:
         allowed = sorted(set(base_allowed))
+        allowed_classes = sorted(set(base_allowed_classes))
 
     blocked = sorted(
         set(as_tool_name_list(base.get("blocked_tools") or []))
         | set(as_tool_name_list(chat.get("blocked_tools") or []))
     )
+    blocked_classes = sorted(
+        set(as_class_key_list(base.get("blocked_classes") or []))
+        | set(as_class_key_list(chat.get("blocked_classes") or []))
+    )
 
     out: dict[str, Any] = {}
     if allowed:
         out["allowed_tools"] = allowed
+    if allowed_classes:
+        out["allowed_classes"] = allowed_classes
     if blocked:
         out["blocked_tools"] = blocked
+    if blocked_classes:
+        out["blocked_classes"] = blocked_classes
 
     out["strict_allowlist"] = strict_allowlist
     out["read_only_only"] = bool(base.get("read_only_only") or chat.get("read_only_only"))
@@ -216,12 +249,16 @@ def merge_tool_policies(base_policy: dict, chat_policy: dict) -> dict:
             out[key] = merged
 
     logger.info(
-        "ask_agent.policy_merge strict_allowlist=%s base_allowed=%s chat_allowed=%s merged_allowed=%s blocked=%s read_only_only=%s",
+        "ask_agent.policy_merge strict_allowlist=%s base_allowed=%s chat_allowed=%s merged_allowed=%s base_allowed_classes=%s chat_allowed_classes=%s merged_allowed_classes=%s blocked=%s blocked_classes=%s read_only_only=%s",
         strict_allowlist,
         len(base_allowed),
         len(chat_allowed),
         len(allowed),
+        len(base_allowed_classes),
+        len(chat_allowed_classes),
+        len(allowed_classes),
         len(blocked),
+        len(blocked_classes),
         bool(out.get("read_only_only")),
     )
 

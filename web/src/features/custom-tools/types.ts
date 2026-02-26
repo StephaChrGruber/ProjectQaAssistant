@@ -12,6 +12,7 @@ export type CustomToolRow = {
     name: string
     slug: string
     description?: string
+    classKey?: string | null
     runtime: "backend_python" | "local_typescript"
     isEnabled: boolean
     readOnly: boolean
@@ -50,6 +51,9 @@ export type SystemToolRow = {
     maxRetries: number
     cacheTtlSec: number
     requireApproval: boolean
+    classKey?: string | null
+    classPath?: string | null
+    classDisplay?: string | null
 }
 
 export type ToolDetailResponse = {
@@ -62,6 +66,7 @@ export type ToolForm = {
     projectId: string
     name: string
     description: string
+    classKey: string
     runtime: "backend_python" | "local_typescript"
     isEnabled: boolean
     readOnly: boolean
@@ -90,4 +95,14 @@ export type ToolTemplate = {
     inputSchema?: Record<string, unknown>
     outputSchema?: Record<string, unknown>
     testArgs?: Record<string, unknown>
+}
+
+export type ToolClassRow = {
+    key: string
+    displayName: string
+    description?: string | null
+    parentKey?: string | null
+    path?: string
+    origin?: string
+    isEnabled?: boolean
 }

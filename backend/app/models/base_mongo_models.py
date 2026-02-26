@@ -121,11 +121,33 @@ class SystemToolConfig(Document):
         indexes = [[("projectId", 1), ("name", 1)]]
 
 
+class ToolClass(Document):
+    key: str
+    displayName: str
+    description: Optional[str] = None
+    parentKey: Optional[str] = None
+    scope: Literal["global"] = "global"
+    origin: Literal["builtin", "custom"] = "custom"
+    isEnabled: bool = True
+    createdBy: Optional[str] = None
+    createdAt: datetime = Field(default_factory=datetime.utcnow)
+    updatedAt: datetime = Field(default_factory=datetime.utcnow)
+
+    class Settings:
+        name = "tool_classes"
+        indexes = [
+            [("key", 1)],
+            [("parentKey", 1)],
+            [("scope", 1), ("origin", 1), ("isEnabled", 1)],
+        ]
+
+
 class CustomTool(Document):
     projectId: Optional[str] = None  # None => global tool
     name: str
     slug: str
     description: Optional[str] = None
+    classKey: Optional[str] = None
     runtime: CustomToolRuntime = "backend_python"
     isEnabled: bool = True
     readOnly: bool = True

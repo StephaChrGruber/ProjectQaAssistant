@@ -99,6 +99,7 @@ export function emptyForm(): ToolForm {
         projectId: "",
         name: "",
         description: "",
+        classKey: "",
         runtime: "backend_python",
         isEnabled: true,
         readOnly: true,

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from ..db import get_db
 from ..deps import current_user
 from ..models.base_mongo_models import CustomTool, CustomToolVersion
+from ..rag.tool_runtime import build_default_tool_runtime
 from ..services.custom_tools import (
     CustomToolServiceError,
     claim_local_tool_job_for_user,
@@ -29,6 +30,13 @@ from ..services.custom_tools import (
     slugify_tool_name,
     utc_now,
 )
+from ..services.tool_classes import (
+    VIRTUAL_CUSTOM_UNCATEGORIZED_KEY,
+    class_map as tool_class_map,
+    ensure_tool_class_indexes,
+    list_tool_classes,
+    normalize_class_key,
+)
 
 router = APIRouter(tags=["custom_tools"])
 
@@ -37,6 +45,7 @@ class CreateCustomToolReq(BaseModel):
     projectId: str | None = None
     name: str
     description: str | None = None
+    classKey: str | None = None
     runtime: Literal["backend_python", "local_typescript"] = "backend_python"
     isEnabled: bool = True
     readOnly: bool = True
@@ -57,6 +66,7 @@ class CreateCustomToolReq(BaseModel):
 class UpdateCustomToolReq(BaseModel):
     name: str | None = None
     description: str | None = None
+    classKey: str | None = None
     runtime: Literal["backend_python", "local_typescript"] | None = None
     isEnabled: bool | None = None
     readOnly: bool | None = None
@@ -113,6 +123,21 @@ class UpdateSystemToolReq(BaseModel):
     maxRetries: int | None = None
     cacheTtlSec: int | None = None
     requireApproval: bool | None = None
+
+
+class CreateToolClassReq(BaseModel):
+    key: str
+    displayName: str
+    description: str | None = None
+    parentKey: str | None = None
+    isEnabled: bool = True
+
+
+class UpdateToolClassReq(BaseModel):
+    displayName: str | None = None
+    description: str | None = None
+    parentKey: str | None = None
+    isEnabled: bool | None = None
 
 
 def _as_iso(v: Any) -> str | None:
@@ -210,10 +235,29 @@ def _system_tool_to_public(row: dict[str, Any]) -> dict[str, Any]:
         "maxRetries": int(row.get("maxRetries") or 0),
         "cacheTtlSec": int(row.get("cacheTtlSec") or 0),
         "requireApproval": bool(row.get("requireApproval", False)),
+        "classKey": str(row.get("classKey") or "").strip() or None,
+        "classPath": str(row.get("classPath") or "").strip() or None,
+        "classDisplay": str(row.get("classDisplay") or "").strip() or None,
         "createdAt": _as_iso(row.get("createdAt")),
         "updatedAt": _as_iso(row.get("updatedAt")),
     }
     return out
+
+
+def _tool_class_to_public(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "key": str(row.get("key") or ""),
+        "displayName": str(row.get("display_name") or row.get("displayName") or row.get("key") or ""),
+        "description": str(row.get("description") or "").strip() or None,
+        "parentKey": str(row.get("parent_key") or row.get("parentKey") or "").strip() or None,
+        "path": str(row.get("path") or ""),
+        "scope": str(row.get("scope") or "global"),
+        "origin": str(row.get("origin") or "custom"),
+        "isEnabled": bool(row.get("is_enabled", row.get("isEnabled", True))),
+        "createdAt": _as_iso(row.get("created_at") or row.get("createdAt")),
+        "updatedAt": _as_iso(row.get("updated_at") or row.get("updatedAt")),
+        "createdBy": str(row.get("created_by") or row.get("createdBy") or "").strip() or None,
+    }
 
 
 async def _load_tool_or_404(tool_id: str) -> CustomTool:
@@ -231,6 +275,19 @@ async def _ensure_unique_tool_name(*, project_id: str | None, name: str, ignore_
     row = await get_db()["custom_tools"].find_one(q, {"_id": 1})
     if row and str(row.get("_id")) != str(ignore_id or ""):
         raise HTTPException(409, "A custom tool with this name already exists in this scope")
+
+
+async def _validate_class_key(class_key: str | None) -> str | None:
+    normalized = normalize_class_key(class_key)
+    if not normalized:
+        return None
+    if normalized == VIRTUAL_CUSTOM_UNCATEGORIZED_KEY:
+        return None
+    rows = await list_tool_classes(include_builtin=True, include_custom=True, include_virtual_uncategorized=False)
+    by_key = tool_class_map(rows)
+    if normalized not in by_key:
+        raise HTTPException(400, f"Unknown tool class '{normalized}'")
+    return normalized
 
 
 @router.get("/admin/custom-tools")
@@ -256,6 +313,99 @@ async def list_custom_tools(
     return {"items": out}
 
 
+@router.get("/admin/tool-classes")
+async def list_admin_tool_classes(
+    include_builtin: bool = Query(default=True),
+    include_disabled: bool = Query(default=True),
+    user=Depends(current_user),
+):
+    _require_admin(user)
+    rows = await list_tool_classes(
+        include_builtin=bool(include_builtin),
+        include_custom=True,
+        include_disabled=bool(include_disabled),
+        include_virtual_uncategorized=True,
+    )
+    return {"items": [_tool_class_to_public(row) for row in rows]}
+
+
+@router.post("/admin/tool-classes")
+async def create_tool_class(req: CreateToolClassReq, user=Depends(current_user)):
+    _require_admin(user)
+    await ensure_tool_class_indexes()
+    key = normalize_class_key(req.key)
+    if not key:
+        raise HTTPException(400, "Tool class key is required")
+    if key in {"system", "util", "custom", VIRTUAL_CUSTOM_UNCATEGORIZED_KEY}:
+        raise HTTPException(400, "Reserved tool class key")
+    parent_key = normalize_class_key(req.parentKey)
+    rows = await list_tool_classes(include_builtin=True, include_custom=True, include_disabled=True, include_virtual_uncategorized=False)
+    by_key = tool_class_map(rows)
+    if key in by_key:
+        raise HTTPException(409, "Tool class already exists")
+    if parent_key and parent_key not in by_key:
+        raise HTTPException(400, f"Unknown parent class '{parent_key}'")
+
+    now = utc_now()
+    db = get_db()
+    existing = await db["tool_classes"].find_one({"key": key}, {"_id": 1, "origin": 1})
+    if existing:
+        raise HTTPException(409, "Tool class already exists")
+
+    doc = {
+        "key": key,
+        "displayName": str(req.displayName or key).strip() or key,
+        "description": str(req.description or "").strip() or None,
+        "parentKey": parent_key,
+        "scope": "global",
+        "origin": "custom",
+        "isEnabled": bool(req.isEnabled),
+        "createdBy": str(getattr(user, "email", "") or ""),
+        "createdAt": now,
+        "updatedAt": now,
+    }
+    await db["tool_classes"].insert_one(doc)
+    rows = await list_tool_classes(include_builtin=True, include_custom=True, include_disabled=True, include_virtual_uncategorized=True)
+    created = next((r for r in rows if str(r.get("key") or "") == key), None)
+    return {"item": _tool_class_to_public(created or doc)}
+
+
+@router.patch("/admin/tool-classes/{class_key:path}")
+async def update_tool_class(class_key: str, req: UpdateToolClassReq, user=Depends(current_user)):
+    _require_admin(user)
+    await ensure_tool_class_indexes()
+    key = normalize_class_key(class_key)
+    if not key:
+        raise HTTPException(400, "Invalid class key")
+    db = get_db()
+    current = await db["tool_classes"].find_one({"key": key})
+    if not isinstance(current, dict):
+        raise HTTPException(404, "Custom tool class not found")
+
+    data = req.model_dump(exclude_unset=True)
+    patch: dict[str, Any] = {"updatedAt": utc_now()}
+    if "displayName" in data and data["displayName"] is not None:
+        patch["displayName"] = str(data["displayName"]).strip() or key
+    if "description" in data:
+        patch["description"] = str(data["description"] or "").strip() or None
+    if "isEnabled" in data and data["isEnabled"] is not None:
+        patch["isEnabled"] = bool(data["isEnabled"])
+    if "parentKey" in data:
+        parent_key = normalize_class_key(data["parentKey"])
+        if parent_key == key:
+            raise HTTPException(400, "Class parent cannot reference itself")
+        rows = await list_tool_classes(include_builtin=True, include_custom=True, include_disabled=True, include_virtual_uncategorized=False)
+        by_key = tool_class_map(rows)
+        if parent_key and parent_key not in by_key:
+            raise HTTPException(400, f"Unknown parent class '{parent_key}'")
+        patch["parentKey"] = parent_key
+
+    await db["tool_classes"].update_one({"key": key}, {"$set": patch})
+    rows = await list_tool_classes(include_builtin=True, include_custom=True, include_disabled=True, include_virtual_uncategorized=True)
+    updated = next((r for r in rows if str(r.get("key") or "") == key), None)
+    return {"item": _tool_class_to_public(updated or current)}
+
+
 @router.get("/admin/system-tools")
 async def list_system_tools(
     project_id: str | None = Query(default=None),
@@ -269,7 +419,20 @@ async def list_system_tools(
     else:
         q = {"projectId": None}
     rows = await get_db()["system_tool_configs"].find(q).sort([("name", 1), ("projectId", 1)]).to_list(length=1000)
-    items = [_system_tool_to_public(row) for row in rows]
+    runtime_catalog = build_default_tool_runtime().catalog()
+    class_by_name: dict[str, dict[str, Any]] = {
+        str(item.get("name") or ""): item for item in runtime_catalog if str(item.get("name") or "").strip()
+    }
+    enriched_rows: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        cls = class_by_name.get(str(item.get("name") or ""))
+        if isinstance(cls, dict):
+            item["classKey"] = str(cls.get("class_key") or "").strip() or None
+            item["classPath"] = str(cls.get("class_path") or "").strip() or None
+            item["classDisplay"] = str(cls.get("class_display") or "").strip() or None
+        enriched_rows.append(item)
+    items = [_system_tool_to_public(row) for row in enriched_rows]
     effective: list[dict[str, Any]] = []
     if project_id:
         enabled, overrides = await load_effective_system_tool_settings(project_id)
@@ -286,6 +449,9 @@ async def list_system_tools(
                     "maxRetries": ov.get("max_retries"),
                     "cacheTtlSec": ov.get("cache_ttl_sec"),
                     "requireApproval": ov.get("require_approval"),
+                    "classKey": (class_by_name.get(name) or {}).get("class_key"),
+                    "classPath": (class_by_name.get(name) or {}).get("class_path"),
+                    "classDisplay": (class_by_name.get(name) or {}).get("class_display"),
                 }
             )
     return {"items": items, "effective": effective}
@@ -348,6 +514,7 @@ async def create_custom_tool(req: CreateCustomToolReq, user=Depends(current_user
 
     now = utc_now()
     secret_map = normalize_secret_map(req.secrets)
+    class_key = await _validate_class_key(req.classKey)
     if req.runtime == "local_typescript" and secret_map:
         raise HTTPException(400, "Local TypeScript tools cannot store backend secrets")
 
@@ -356,6 +523,7 @@ async def create_custom_tool(req: CreateCustomToolReq, user=Depends(current_user
         name=name,
         slug=slugify_tool_name(name),
         description=(req.description or "").strip() or None,
+        classKey=class_key,
         runtime=req.runtime,
         isEnabled=bool(req.isEnabled),
         readOnly=bool(req.readOnly),
@@ -433,6 +601,8 @@ async def update_custom_tool(tool_id: str, req: UpdateCustomToolReq, user=Depend
         tool.slug = slugify_tool_name(name)
     if "description" in data:
         tool.description = (str(data["description"]).strip() or None) if data["description"] is not None else None
+    if "classKey" in data:
+        tool.classKey = await _validate_class_key(data["classKey"])
     if "runtime" in data and data["runtime"] is not None:
         tool.runtime = str(data["runtime"])
     if "isEnabled" in data and data["isEnabled"] is not None:

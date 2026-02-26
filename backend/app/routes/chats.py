@@ -23,6 +23,7 @@ from ..repositories.chat_repository import (
 from ..services.feature_flags import load_project_feature_flags
 from ..services.global_chat_v2 import build_context_key, get_context_config, upsert_context_config
 from ..services.hierarchical_memory import derive_memory_summary, derive_task_state
+from ..services.tool_classes import normalize_class_key
 
 router = APIRouter(prefix="/chats", tags=["chats"])
 logger = logging.getLogger(__name__)
@@ -33,7 +34,9 @@ class ChatToolPolicyReq(BaseModel):
     project_id: str | None = None
     branch: str | None = None
     allowed_tools: list[str] = Field(default_factory=list)
+    allowed_classes: list[str] = Field(default_factory=list)
     blocked_tools: list[str] = Field(default_factory=list)
+    blocked_classes: list[str] = Field(default_factory=list)
     strict_allowlist: bool = False
     read_only_only: bool = False
     dry_run: bool = False
@@ -158,10 +161,14 @@ def _clean_policy(req: ChatToolPolicyReq) -> dict[str, Any]:
 
     strict_allowlist = bool(req.strict_allowlist)
     allowed_tools = clean_list(req.allowed_tools) if strict_allowlist else []
+    allowed_classes = [c for c in (normalize_class_key(v) for v in (req.allowed_classes or [])) if c] if strict_allowlist else []
     blocked_tools = clean_list(req.blocked_tools)
+    blocked_classes = [c for c in (normalize_class_key(v) for v in (req.blocked_classes or [])) if c]
     return {
         "allowed_tools": allowed_tools,
+        "allowed_classes": sorted(set(allowed_classes)),
         "blocked_tools": blocked_tools,
+        "blocked_classes": sorted(set(blocked_classes)),
         "strict_allowlist": strict_allowlist,
         "read_only_only": bool(req.read_only_only),
         "dry_run": bool(req.dry_run),
@@ -619,12 +626,14 @@ async def get_chat_tool_policy(
 async def put_chat_tool_policy(chat_id: str, req: ChatToolPolicyReq):
     policy = _clean_policy(req)
     logger.info(
-        "chat.tool_policy.update chat_id=%s strict_allowlist=%s read_only_only=%s allowed=%s blocked=%s",
+        "chat.tool_policy.update chat_id=%s strict_allowlist=%s read_only_only=%s allowed=%s allowed_classes=%s blocked=%s blocked_classes=%s",
         chat_id,
         bool(policy.get("strict_allowlist")),
         bool(policy.get("read_only_only")),
         len(policy.get("allowed_tools") or []),
+        len(policy.get("allowed_classes") or []),
         len(policy.get("blocked_tools") or []),
+        len(policy.get("blocked_classes") or []),
     )
     if _is_global_chat(chat_id):
         chat = await repo_get_chat(chat_id, {"_id": 0, "chat_id": 1, "user": 1, "project_id": 1, "branch": 1})

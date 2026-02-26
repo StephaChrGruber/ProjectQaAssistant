@@ -210,6 +210,11 @@ export type ChatTasksResponse = {
 export type ToolCatalogItem = {
   name: string
   description?: string
+  class_key?: string
+  class_path?: string
+  class_display?: string
+  class_origin?: string
+  class_chain?: string[]
   timeout_sec?: number
   rate_limit_per_min?: number
   max_retries?: number
@@ -219,15 +224,38 @@ export type ToolCatalogItem = {
   origin?: string
   runtime?: string
   version?: string
+  available?: boolean
+  blocked_reason?: string
 }
 
 export type ToolCatalogResponse = {
   tools: ToolCatalogItem[]
 }
 
+export type ToolClassItem = {
+  key: string
+  display_name?: string
+  description?: string | null
+  parent_key?: string | null
+  path?: string
+  origin?: string
+  scope?: string
+  is_enabled?: boolean
+  available?: boolean
+  total_tools?: number
+  available_tools?: number
+}
+
+export type ToolClassCatalogResponse = {
+  classes: ToolClassItem[]
+  count?: number
+}
+
 export type ChatToolPolicy = {
   allowed_tools?: string[]
+  allowed_classes?: string[]
   blocked_tools?: string[]
+  blocked_classes?: string[]
   read_only_only?: boolean
   dry_run?: boolean
   require_approval_for_write_tools?: boolean

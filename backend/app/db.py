@@ -3,7 +3,7 @@ from beanie import init_beanie
 from .settings import settings
 from .models.base_mongo_models import (
     User, Group, GroupMembership, Project, Membership, Connector, AuditLog, LlmProfile,
-    CustomTool, CustomToolVersion, CustomToolAudit, LocalToolJob, ChatToolApproval, SystemToolConfig,
+    CustomTool, CustomToolVersion, CustomToolAudit, LocalToolJob, ChatToolApproval, SystemToolConfig, ToolClass,
 )
 import os
 
@@ -30,6 +30,7 @@ async def init_db():
             LocalToolJob,
             ChatToolApproval,
             SystemToolConfig,
+            ToolClass,
         ],
     )
     # Non-Beanie collections used by runtime/analytics.
@@ -66,6 +67,9 @@ async def init_db():
     await db["chat_context_config"].create_index([("chat_id", 1), ("updated_at", -1)], name="chat_ctx_cfg_chat_recent")
     await db["chat_code_artifacts"].create_index([("chat_id", 1), ("message_id", 1), ("artifact_id", 1)], name="chat_code_artifacts_msg")
     await db["chat_code_artifacts"].create_index([("project_id", 1), ("context_key", 1), ("created_at", -1)], name="chat_code_artifacts_ctx_recent")
+    await db["tool_classes"].create_index([("key", 1)], unique=True, name="tool_classes_key_unique")
+    await db["tool_classes"].create_index([("parentKey", 1)], name="tool_classes_parent")
+    await db["custom_tools"].create_index([("classKey", 1)], name="custom_tools_class_key")
 
 def get_client() -> AsyncIOMotorClient:
     global _client
