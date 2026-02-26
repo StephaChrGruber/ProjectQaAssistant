@@ -210,7 +210,20 @@ function appendTraceStep(prev: ThinkingTrace | null, payload: Record<string, unk
         summary: payload.summary == null ? null : String(payload.summary || ""),
         details: typeof payload.details === "object" && payload.details ? (payload.details as Record<string, unknown>) : {},
     }
-    steps.push(step)
+    const existingIdx = steps.findIndex((row) => String(row.id || "") === step.id)
+    if (existingIdx >= 0) {
+        const existing = steps[existingIdx]
+        steps[existingIdx] = {
+            ...existing,
+            ...step,
+            details: {
+                ...(typeof existing?.details === "object" && existing?.details ? existing.details : {}),
+                ...(step.details || {}),
+            },
+        }
+    } else {
+        steps.push(step)
+    }
     return {
         version: String(prev?.version || "v1"),
         started_at: String(prev?.started_at || new Date().toISOString()),

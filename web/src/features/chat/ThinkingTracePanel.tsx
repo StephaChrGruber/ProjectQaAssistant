@@ -101,8 +101,8 @@ export function ThinkingTracePanel({
       </Stack>
       <Collapse in={open}>
         <List dense sx={{ py: 0.2 }}>
-          {steps.map((step) => (
-            <ListItem key={step.id} sx={{ px: 0.4, py: 0.2, alignItems: "flex-start" }}>
+          {steps.map((step, idx) => (
+            <ListItem key={`${step.id}-${idx}`} sx={{ px: 0.4, py: 0.2, alignItems: "flex-start" }}>
               <ListItemText
                 primary={
                   <Stack direction="row" spacing={0.6} alignItems="center" useFlexGap flexWrap="wrap">
