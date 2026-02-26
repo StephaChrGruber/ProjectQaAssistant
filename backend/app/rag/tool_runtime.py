@@ -311,6 +311,11 @@ class ToolRuntime:
                 remote_git_configured = True
                 break
 
+        local_connector_configured = False
+        local_row = by_type.get("local")
+        if local_row and self._connector_is_configured("local", local_row.get("config") or {}):
+            local_connector_configured = True
+
         jira_configured = False
         jira_row = by_type.get("jira")
         if jira_row and self._connector_is_configured("jira", jira_row.get("config") or {}):
@@ -321,6 +326,7 @@ class ToolRuntime:
             "repo_path": repo_path,
             "browser_local_repo": browser_local,
             "local_repo_exists": local_repo_exists,
+            "local_connector_configured": local_connector_configured,
             "remote_git_configured": remote_git_configured,
             "jira_configured": jira_configured,
             "has_user": has_user,
@@ -339,19 +345,26 @@ class ToolRuntime:
             caps.get("local_repo_exists")
             or caps.get("remote_git_configured")
             or (caps.get("browser_local_repo") and caps.get("has_user"))
+            or (caps.get("local_connector_configured") and caps.get("has_user"))
         )
         has_git_branch = bool(
             caps.get("local_repo_exists")
             or caps.get("remote_git_configured")
             or (caps.get("browser_local_repo") and caps.get("has_user"))
+            or (caps.get("local_connector_configured") and caps.get("has_user"))
         )
         has_local_repo = bool(caps.get("local_repo_exists") and not caps.get("browser_local_repo"))
         has_docs_read = bool(
             caps.get("local_repo_exists")
             or caps.get("remote_git_configured")
             or (caps.get("browser_local_repo") and caps.get("has_user"))
+            or (caps.get("local_connector_configured") and caps.get("has_user"))
         )
-        has_docs_generate = bool(has_local_repo or (caps.get("browser_local_repo") and caps.get("has_user")))
+        has_docs_generate = bool(
+            has_local_repo
+            or (caps.get("browser_local_repo") and caps.get("has_user"))
+            or (caps.get("local_connector_configured") and caps.get("has_user"))
+        )
         has_git_fetch = bool(caps.get("local_repo_exists") or (caps.get("browser_local_repo") and caps.get("has_user")))
 
         if name in {"repo_tree", "repo_grep", "open_file", "symbol_search", "git_show_file_at_ref"}:

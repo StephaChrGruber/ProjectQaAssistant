@@ -339,20 +339,20 @@ async function run(args, context, helpers) {
     .slice(0, maxFiles)
 
   const selectedPaths = []
-  let context = ""
+  let contextText = ""
   for (const path of filtered) {
     const content = String(helpers.localRepo.readFile(path, maxCharsPerFile) || "")
     if (!content.trim()) continue
     const block = `### FILE: ${path}\\n${content}\\n\\n`
-    if ((context.length + block.length) > maxContextChars) break
-    context += block
+    if ((contextText.length + block.length) > maxContextChars) break
+    contextText += block
     selectedPaths.push(path)
   }
   return {
     root_name: String(info?.rootName || ""),
     file_paths: allFiles,
     selected_paths: selectedPaths,
-    context,
+    context: contextText,
     indexed_at: String(info?.indexedAt || ""),
   }
 }
