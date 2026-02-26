@@ -20,6 +20,8 @@ class RepoGrepRequest(BaseModel):
     branch: Optional[str] = None
     pattern: str = Field(alias="query")
     glob: Optional[str] = None
+    include_file_patterns: List[str] = Field(default_factory=list)
+    exclude_file_patterns: List[str] = Field(default_factory=list)
     case_sensitive: bool = False
     regex: bool = True
     max_results: int = 50

@@ -184,6 +184,30 @@ async function run(args, context, helpers) {
   if (!pattern) {
     throw new Error("repo_grep requires args.pattern")
   }
+  const includePatterns = Array.isArray(args.include_file_patterns)
+    ? args.include_file_patterns.map((x) => String(x || "").trim()).filter(Boolean)
+    : []
+  const excludePatterns = Array.isArray(args.exclude_file_patterns)
+    ? args.exclude_file_patterns.map((x) => String(x || "").trim()).filter(Boolean)
+    : []
+
+  function matchesGlob(path, pattern) {
+    if (!pattern) return true
+    const escaped = pattern.replace(/[.+^${}()|[\\]\\\\]/g, "\\\\$&").replace(/\\*/g, ".*").replace(/\\?/g, ".")
+    try {
+      return new RegExp(`^${escaped}$`).test(path)
+    } catch {
+      return true
+    }
+  }
+
+  function pathAllowed(path) {
+    const rel = String(path || "")
+    if (includePatterns.length > 0 && !includePatterns.some((pat) => matchesGlob(rel, pat))) return false
+    if (excludePatterns.length > 0 && excludePatterns.some((pat) => matchesGlob(rel, pat))) return false
+    return true
+  }
+
   const matches = helpers.localRepo.grep(pattern, {
     regex: args.regex !== false,
     caseSensitive: Boolean(args.case_sensitive),
@@ -191,7 +215,8 @@ async function run(args, context, helpers) {
     contextLines: Number(args.context_lines || 2),
     glob: args.glob ? String(args.glob) : undefined,
   })
-  return { matches: Array.isArray(matches) ? matches : [] }
+  const filtered = Array.isArray(matches) ? matches.filter((m) => pathAllowed(m?.path)) : []
+  return { matches: filtered }
 }
 """.strip(),
     "open_file": """
@@ -468,6 +493,51 @@ def _glob_match(path: str, glob_pat: Optional[str]) -> bool:
     if not glob_pat:
         return True
     return fnmatch.fnmatch(path, glob_pat)
+
+
+def _normalize_glob_patterns(raw_patterns: Optional[list[str]]) -> list[str]:
+    out: list[str] = []
+    for raw in raw_patterns or []:
+        pat = str(raw or "").strip()
+        if not pat or pat in out:
+            continue
+        out.append(pat)
+    return out[:64]
+
+
+def _path_matches_patterns(path: str, include_patterns: list[str], exclude_patterns: list[str]) -> bool:
+    if include_patterns and not any(_glob_match(path, pat) for pat in include_patterns):
+        return False
+    if exclude_patterns and any(_glob_match(path, pat) for pat in exclude_patterns):
+        return False
+    return True
+
+
+def _open_file_path_candidates(raw_path: str) -> list[str]:
+    seed = str(raw_path or "").strip()
+    if not seed:
+        return []
+    cleaned = seed.strip().strip("`'\"")
+    candidates: list[str] = [seed]
+    if cleaned and cleaned not in candidates:
+        candidates.append(cleaned)
+    if cleaned.startswith("./"):
+        alt = cleaned[2:]
+        if alt and alt not in candidates:
+            candidates.append(alt)
+
+    # Common LLM path artifact: punctuation appended to markdown file paths (e.g. "foo.md.").
+    trail = cleaned
+    while trail and trail[-1] in ".,;:!?)]}":
+        trail = trail[:-1].strip()
+        if trail and trail not in candidates:
+            candidates.append(trail)
+    return candidates
+
+
+def _is_browser_local_snapshot_not_found(err: Exception) -> bool:
+    msg = str(err or "").lower()
+    return "file not found in browser-local snapshot" in msg or "file not found:" in msg
 
 
 def _limit_text(text: str, max_chars: int) -> tuple[str, bool]:
@@ -1601,6 +1671,8 @@ async def generate_project_docs(project_id: str, branch: Optional[str] = None, c
 async def repo_grep(req: RepoGrepRequest, ctx: Any = None) -> RepoGrepResponse:
     req.max_results = max(1, min(req.max_results, 500))
     req.context_lines = max(0, min(req.context_lines, 12))
+    req.include_file_patterns = _normalize_glob_patterns(req.include_file_patterns)
+    req.exclude_file_patterns = _normalize_glob_patterns(req.exclude_file_patterns)
     pat = _compile_search_pattern(req)
 
     meta = await get_project_metadata(req.project_id)
@@ -1615,6 +1687,8 @@ async def repo_grep(req: RepoGrepRequest, ctx: Any = None) -> RepoGrepResponse:
             args={
                 "pattern": req.pattern,
                 "glob": req.glob,
+                "include_file_patterns": req.include_file_patterns,
+                "exclude_file_patterns": req.exclude_file_patterns,
                 "case_sensitive": req.case_sensitive,
                 "regex": req.regex,
                 "max_results": req.max_results,
@@ -1679,6 +1753,8 @@ async def repo_grep(req: RepoGrepRequest, ctx: Any = None) -> RepoGrepResponse:
         for rel in files:
             if not _glob_match(rel, req.glob):
                 continue
+            if not _path_matches_patterns(rel, req.include_file_patterns, req.exclude_file_patterns):
+                continue
             try:
                 text, _ = await _remote_open_file(remote, rel, req.branch)
             except Exception:
@@ -1722,6 +1798,8 @@ async def repo_grep(req: RepoGrepRequest, ctx: Any = None) -> RepoGrepResponse:
     for rel in files:
         if scanned >= 1800:
             break
+        if not _path_matches_patterns(rel, req.include_file_patterns, req.exclude_file_patterns):
+            continue
         scanned += 1
 
         try:
@@ -1760,15 +1838,16 @@ async def repo_grep(req: RepoGrepRequest, ctx: Any = None) -> RepoGrepResponse:
 async def open_file(req: OpenFileRequest, ctx: Any = None) -> OpenFileResponse:
     req.max_chars = max(1000, min(req.max_chars, 400_000))
     meta = await get_project_metadata(req.project_id)
+    path_candidates = _open_file_path_candidates(req.path) or [str(req.path or "").strip()]
 
     repo_path_raw = str(meta.repo_path or "").strip()
-    async def _run_browser_local() -> OpenFileResponse:
+    async def _run_browser_local(path_value: str) -> OpenFileResponse:
         result = await _run_browser_local_git_tool(
             tool_name="open_file",
             project_id=req.project_id,
             ctx=ctx,
             args={
-                "path": req.path,
+                "path": path_value,
                 "branch": req.branch or meta.default_branch or "main",
                 "ref": req.ref,
                 "start_line": req.start_line,
@@ -1791,7 +1870,7 @@ async def open_file(req: OpenFileRequest, ctx: Any = None) -> OpenFileResponse:
         start = max(1, start)
         end = max(start, end)
         return OpenFileResponse(
-            path=str(result.get("path") or req.path),
+            path=str(result.get("path") or path_value),
             ref=ref,
             start_line=start,
             end_line=end,
@@ -1799,7 +1878,17 @@ async def open_file(req: OpenFileRequest, ctx: Any = None) -> OpenFileResponse:
         )
 
     if _is_browser_local_repo_path(repo_path_raw):
-        return await _run_browser_local()
+        last_err: Exception | None = None
+        for candidate in path_candidates:
+            try:
+                return await _run_browser_local(candidate)
+            except Exception as err:
+                last_err = err
+                if not _is_browser_local_snapshot_not_found(err):
+                    raise
+        if last_err is not None:
+            raise last_err
+        raise FileNotFoundError(f"File not found: {req.path}")
 
     root = Path(repo_path_raw) if repo_path_raw else None
     if root and root.exists():
@@ -1808,32 +1897,64 @@ async def open_file(req: OpenFileRequest, ctx: Any = None) -> OpenFileResponse:
         branch = (req.branch or "").strip()
 
         if req.ref:
-            text = _read_file_from_branch(repo_path, req.ref, req.path, max_chars=req.max_chars)
+            text = ""
+            found_path = req.path
+            for candidate in path_candidates:
+                text = _read_file_from_branch(repo_path, req.ref, candidate, max_chars=req.max_chars)
+                if text:
+                    found_path = candidate
+                    break
             if not text:
                 raise FileNotFoundError(f"File not found at ref: {req.ref}:{req.path}")
             s, e, sliced = _line_slice(text, req.start_line, req.end_line)
-            return OpenFileResponse(path=req.path, ref=req.ref, start_line=s, end_line=e, content=sliced)
+            return OpenFileResponse(path=found_path, ref=req.ref, start_line=s, end_line=e, content=sliced)
 
         if branch and branch != current and _branch_exists(repo_path, branch):
-            text = _read_file_from_branch(repo_path, branch, req.path, max_chars=req.max_chars)
+            text = ""
+            found_path = req.path
+            for candidate in path_candidates:
+                text = _read_file_from_branch(repo_path, branch, candidate, max_chars=req.max_chars)
+                if text:
+                    found_path = candidate
+                    break
             if not text:
                 raise FileNotFoundError(f"File not found at branch: {branch}:{req.path}")
             s, e, sliced = _line_slice(text, req.start_line, req.end_line)
-            return OpenFileResponse(path=req.path, ref=branch, start_line=s, end_line=e, content=sliced)
+            return OpenFileResponse(path=found_path, ref=branch, start_line=s, end_line=e, content=sliced)
 
-        full = _safe_join_repo(repo_path, req.path)
-        if not full.exists() or not full.is_file():
+        full: Path | None = None
+        chosen_path = req.path
+        for candidate in path_candidates:
+            maybe_full = _safe_join_repo(repo_path, candidate)
+            if maybe_full.exists() and maybe_full.is_file():
+                full = maybe_full
+                chosen_path = candidate
+                break
+        if full is None:
             raise FileNotFoundError(f"File not found: {req.path}")
         text = _read_text_file(full, req.max_chars)
         s, e, sliced = _line_slice(text, req.start_line, req.end_line)
-        return OpenFileResponse(path=req.path, ref=None, start_line=s, end_line=e, content=sliced)
+        return OpenFileResponse(path=chosen_path, ref=None, start_line=s, end_line=e, content=sliced)
 
     remote = await _remote_repo_connector(req.project_id)
     if remote:
-        text, _ = await _remote_open_file(remote, req.path, req.ref or req.branch)
+        text = ""
+        chosen_path = req.path
+        last_remote_err: Exception | None = None
+        for candidate in path_candidates:
+            try:
+                text, _ = await _remote_open_file(remote, candidate, req.ref or req.branch)
+                chosen_path = candidate
+                break
+            except Exception as err:
+                last_remote_err = err
+        if not text:
+            if last_remote_err is not None:
+                raise last_remote_err
+            raise FileNotFoundError(f"File not found: {req.path}")
         text, _ = _limit_text(text, req.max_chars)
         s, e, sliced = _line_slice(text, req.start_line, req.end_line)
-        return OpenFileResponse(path=req.path, ref=req.ref or req.branch, start_line=s, end_line=e, content=sliced)
+        return OpenFileResponse(path=chosen_path, ref=req.ref or req.branch, start_line=s, end_line=e, content=sliced)
 
     if _ctx_field(ctx, "user_id"):
         logger.info(
@@ -1842,7 +1963,13 @@ async def open_file(req: OpenFileRequest, ctx: Any = None) -> OpenFileResponse:
             req.path,
         )
         try:
-            return await _run_browser_local()
+            for candidate in path_candidates:
+                try:
+                    return await _run_browser_local(candidate)
+                except Exception as inner:
+                    if not _is_browser_local_snapshot_not_found(inner):
+                        raise
+            return await _run_browser_local(req.path)
         except Exception as err:
             logger.warning(
                 "open_file.browser_local_fallback_failed project=%s path=%s err=%s",
