@@ -175,7 +175,7 @@ export const CodeComposerEditor = forwardRef<CodeComposerEditorHandle, CodeCompo
                 border: "1px solid",
                 borderColor: "divider",
                 borderRadius: 1.2,
-                backgroundColor: "rgba(2,6,23,0.34)",
+                backgroundColor: "rgba(255,255,255,0.98)",
                 height: { xs: 190, sm: 220 },
                 overflow: "hidden",
             }}
@@ -183,7 +183,7 @@ export const CodeComposerEditor = forwardRef<CodeComposerEditorHandle, CodeCompo
             <MonacoEditor
                 height="100%"
                 language={language || "plaintext"}
-                theme="vs-dark"
+                theme="vs"
                 value={value}
                 onMount={handleMount}
                 onChange={(next) => onChange(next || "")}
@@ -200,6 +200,7 @@ export const CodeComposerEditor = forwardRef<CodeComposerEditorHandle, CodeCompo
                     glyphMargin: false,
                     lineDecorationsWidth: 0,
                     overviewRulerLanes: 0,
+                    bracketPairColorization: { enabled: true },
                     renderLineHighlight: "none",
                     padding: { top: 10, bottom: 10 },
                     scrollbar: {

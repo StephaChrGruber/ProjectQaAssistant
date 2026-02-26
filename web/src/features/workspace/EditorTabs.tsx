@@ -295,7 +295,7 @@ export function EditorTabs({
               <MonacoEditor
                 height="100%"
                 language={activeTab.language || extLanguage(activeTab.path)}
-                theme="vs-dark"
+                theme="vs"
                 value={activeTab.draftContent}
                 onMount={(editor, monaco) => {
                   editorRef.current = editor

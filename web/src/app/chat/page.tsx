@@ -48,6 +48,7 @@ import FolderRoundedIcon from "@mui/icons-material/FolderRounded"
 import DescriptionOutlined from "@mui/icons-material/DescriptionOutlined"
 import ExpandMoreRounded from "@mui/icons-material/ExpandMoreRounded"
 import ChevronRightRounded from "@mui/icons-material/ChevronRightRounded"
+import DragIndicatorRounded from "@mui/icons-material/DragIndicatorRounded"
 import { backendJson } from "@/lib/backend"
 import { requestOpenGlobalNotifications } from "@/features/notifications/events"
 import { ChatComposer } from "@/features/chat/ChatComposer"
@@ -159,12 +160,72 @@ function isUrl(value: string): boolean {
 }
 
 function FloatingIsland({
+    islandId,
     position,
     children,
 }: {
+    islandId: string
     position: { top?: number; right?: number; bottom?: number; left?: number }
     children: React.ReactNode
 }) {
+    const [offset, setOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
+    const dragRef = useRef<{ pointerId: number; startX: number; startY: number; baseX: number; baseY: number } | null>(null)
+
+    useEffect(() => {
+        try {
+            const raw = window.localStorage.getItem(`pqa.chat.island.${islandId}`)
+            if (!raw) return
+            const parsed = JSON.parse(raw) as { x?: unknown; y?: unknown }
+            const x = Number(parsed?.x)
+            const y = Number(parsed?.y)
+            if (Number.isFinite(x) && Number.isFinite(y)) {
+                setOffset({ x, y })
+            }
+        } catch {
+            // ignore invalid stored positions
+        }
+    }, [islandId])
+
+    useEffect(() => {
+        try {
+            window.localStorage.setItem(`pqa.chat.island.${islandId}`, JSON.stringify(offset))
+        } catch {
+            // ignore persistence errors
+        }
+    }, [islandId, offset])
+
+    const handlePointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+        dragRef.current = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            baseX: offset.x,
+            baseY: offset.y,
+        }
+        event.currentTarget.setPointerCapture(event.pointerId)
+        event.preventDefault()
+        event.stopPropagation()
+    }, [offset.x, offset.y])
+
+    const handlePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+        const drag = dragRef.current
+        if (!drag || drag.pointerId !== event.pointerId) return
+        setOffset({
+            x: drag.baseX + (event.clientX - drag.startX),
+            y: drag.baseY + (event.clientY - drag.startY),
+        })
+        event.preventDefault()
+    }, [])
+
+    const handlePointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+        const drag = dragRef.current
+        if (!drag || drag.pointerId !== event.pointerId) return
+        dragRef.current = null
+        event.currentTarget.releasePointerCapture(event.pointerId)
+    }, [])
+
+    const resetOffset = useCallback(() => setOffset({ x: 0, y: 0 }), [])
+
     return (
         <Paper
             variant="outlined"
@@ -172,6 +233,7 @@ function FloatingIsland({
                 position: "fixed",
                 zIndex: 15,
                 ...position,
+                transform: `translate(${offset.x}px, ${offset.y}px)`,
                 borderRadius: 99,
                 px: 0.5,
                 py: 0.4,
@@ -181,7 +243,31 @@ function FloatingIsland({
                 boxShadow: "0 10px 22px rgba(15,23,42,0.08)",
             }}
         >
-            <Stack direction="row" spacing={0.25}>
+            <Stack direction="row" spacing={0.25} alignItems="center">
+                <Box
+                    title="Drag to move (double-click to reset)"
+                    onDoubleClick={resetOffset}
+                    onPointerDown={handlePointerDown}
+                    onPointerMove={handlePointerMove}
+                    onPointerUp={handlePointerUp}
+                    onPointerCancel={handlePointerUp}
+                    sx={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        width: 16,
+                        height: 20,
+                        color: "text.secondary",
+                        borderRight: "1px solid",
+                        borderColor: "divider",
+                        mr: 0.25,
+                        cursor: "grab",
+                        userSelect: "none",
+                        touchAction: "none",
+                    }}
+                >
+                    <DragIndicatorRounded sx={{ fontSize: 14 }} />
+                </Box>
                 {children}
             </Stack>
         </Paper>
@@ -1070,7 +1156,7 @@ export default function GlobalChatPage() {
 
     return (
         <Box sx={{ minHeight: "100dvh", height: "100dvh", px: { xs: 0.6, md: 1.2 }, py: { xs: 0.6, md: 0.9 } }}>
-            <FloatingIsland position={{ top: 12, left: 14 }}>
+            <FloatingIsland islandId="context" position={{ top: 12, left: 14 }}>
                 <Tooltip title="Context (project/branch/LLM)" enterTouchDelay={0}>
                     <IconButton size="small" onClick={() => setContextDialogOpen(true)}>
                         <FolderRounded fontSize="small" />
@@ -1083,7 +1169,7 @@ export default function GlobalChatPage() {
                 </Tooltip>
             </FloatingIsland>
 
-            <FloatingIsland position={{ top: 12, right: 14 }}>
+            <FloatingIsland islandId="work" position={{ top: 12, right: 14 }}>
                 <Tooltip title="Tools">
                     <IconButton
                         size="small"
@@ -1127,7 +1213,7 @@ export default function GlobalChatPage() {
                 </Tooltip>
             </FloatingIsland>
 
-            <FloatingIsland position={{ bottom: 16, right: 14 }}>
+            <FloatingIsland islandId="utility" position={{ bottom: 16, right: 14 }}>
                 <Tooltip title="Notifications">
                     <IconButton size="small" onClick={requestOpenGlobalNotifications}>
                         <Badge color="error" badgeContent={unreadNotifications > 99 ? "99+" : unreadNotifications} invisible={unreadNotifications <= 0}>
@@ -1284,9 +1370,9 @@ export default function GlobalChatPage() {
                     <Paper
                         variant="outlined"
                         sx={{
-                            mt: { xs: 4.9, md: 5.2 },
+                            mt: 0,
                             maxWidth: "100%",
-                            minHeight: "calc(100dvh - 70px)",
+                            minHeight: "calc(100dvh - 12px)",
                             display: "flex",
                             flexDirection: "column",
                             borderRadius: 2.6,
