@@ -27,8 +27,10 @@ from .routes.notifications import router as notifications_router
 from .routes.projects import router as projects_router
 from .routes.qa import router as qa_router
 from .routes.tools import router as tools_router
+from .routes.runtime import router as runtime_router
 from .routes.workspace import router as workspace_router
 from .services.automations import start_automation_worker, stop_automation_worker
+from .services.runtime_state import mark_failed, mark_ready, mark_starting, mark_stopping
 from .settings import settings
 
 configure_logging()
@@ -66,18 +68,25 @@ def _allowed_origins() -> list[str]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("startup.begin")
-    await init_db()
+    mark_starting()
+    try:
+        await init_db()
 
-    if settings.LLM_BASE_URL and "ollama:11434" in settings.LLM_BASE_URL:
-        wait_for_ollama("http://ollama:11434", settings.LLM_MODEL)
+        if settings.LLM_BASE_URL and "ollama:11434" in settings.LLM_BASE_URL:
+            wait_for_ollama("http://ollama:11434", settings.LLM_MODEL)
 
-    default_project = await ensure_default_project()
-    await seed_connectors_for_project(str(default_project.id))
-    start_automation_worker()
-    logger.info("startup.ready")
+        default_project = await ensure_default_project()
+        await seed_connectors_for_project(str(default_project.id))
+        start_automation_worker()
+        mark_ready()
+        logger.info("startup.ready")
+    except Exception as err:
+        mark_failed(str(err))
+        raise
     try:
         yield
     finally:
+        mark_stopping()
         await stop_automation_worker()
         mongo_client = getattr(app.state, "mongo_client", None)
         if mongo_client is not None:
@@ -110,6 +119,7 @@ app.include_router(ask_stream_router)
 app.include_router(projects_router)
 app.include_router(workspace_router)
 app.include_router(tools_router)
+app.include_router(runtime_router)
 app.include_router(chats_router)
 app.include_router(custom_tools_router)
 app.include_router(automations_router)

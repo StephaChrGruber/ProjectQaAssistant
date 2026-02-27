@@ -18,6 +18,7 @@ import httpx
 from bson import ObjectId
 
 from ..db import get_db
+from ..repositories.factory import repository_factory
 from ..models.base_mongo_models import LocalToolJob
 from ..models.tools import (
     ChromaCountRequest,
@@ -553,21 +554,16 @@ def _proc_output(proc: subprocess.CompletedProcess, max_chars: int = 50_000) -> 
 
 
 async def _project_doc(project_id: str) -> dict[str, Any]:
-    db = get_db()
-    if ObjectId.is_valid(project_id):
-        q: dict[str, Any] = {"_id": ObjectId(project_id)}
-    else:
-        q = {"key": project_id}
-    doc = await db["projects"].find_one(q)
+    doc = await repository_factory().access_policy.find_project_doc(project_id)
     if not doc:
         raise KeyError(f"Project not found: {project_id}")
     return doc
 
 
 async def _find_enabled_connector(project_id: str, connector_type: str) -> dict[str, Any] | None:
-    db = get_db()
-    return await db["connectors"].find_one(
-        {"projectId": project_id, "type": connector_type, "isEnabled": True}
+    return await repository_factory().access_policy.find_enabled_connector(
+        project_id=project_id,
+        connector_type=connector_type,
     )
 
 
@@ -767,9 +763,9 @@ async def _store_browser_local_branch_state(
     if set_default_branch and active_branch:
         update_doc["default_branch"] = str(active_branch)
 
-    await get_db()["projects"].update_one(
-        {"_id": project.get("_id")},
-        {"$set": update_doc},
+    await repository_factory().access_policy.update_project_fields_by_id(
+        project_id=str(project.get("_id") or ""),
+        patch=update_doc,
     )
 
 
@@ -1003,10 +999,11 @@ async def _azure_open_file_content(config: dict, path: str, ref: Optional[str] =
 
 
 async def _remote_repo_connector(project_id: str) -> Optional[dict[str, Any]]:
-    db = get_db()
-    rows = await db["connectors"].find(
-        {"projectId": project_id, "isEnabled": True, "type": {"$in": ["github", "git", "bitbucket", "azure_devops"]}}
-    ).to_list(length=20)
+    rows = await repository_factory().access_policy.list_enabled_connectors(
+        project_id=project_id,
+        types=["github", "git", "bitbucket", "azure_devops"],
+        limit=20,
+    )
     by_type = {str(r.get("type") or ""): r for r in rows}
     for t in ("github", "git", "bitbucket", "azure_devops"):
         row = by_type.get(t)
@@ -1450,33 +1447,30 @@ async def _create_remote_branch(remote: dict[str, Any], branch: str, source_ref:
 
 async def _set_project_default_branch(project_id: str, branch: str) -> None:
     project = await _project_doc(project_id)
-    db = get_db()
-    await db["projects"].update_one(
-        {"_id": project.get("_id")},
-        {"$set": {"default_branch": branch}},
+    await repository_factory().access_policy.update_project_fields_by_id(
+        project_id=str(project.get("_id") or ""),
+        patch={"default_branch": branch},
     )
 
 
 async def _set_remote_branch_config(project_id: str, remote: dict[str, Any], branch: str, *, set_default_branch: bool) -> None:
-    db = get_db()
     remote_type = str(remote.get("connector_type") or remote.get("type") or "")
     if remote_type == "github":
         # Backward compatibility: prefer updating legacy "git" connector rows if present.
-        legacy = await db["connectors"].find_one(
-            {"projectId": project_id, "type": "git"},
-            {"_id": 1},
+        legacy = await repository_factory().access_policy.find_enabled_connector(
+            project_id=project_id,
+            connector_type="git",
         )
         if legacy:
             remote_type = "git"
     if not remote_type:
         return
-    await db["connectors"].update_one(
-        {"projectId": project_id, "type": remote_type},
-        {
-            "$set": {
-                "config.branch": branch,
-                "updatedAt": datetime.utcnow(),
-            }
+    await repository_factory().access_policy.update_connector_fields(
+        project_id=project_id,
+        connector_type=remote_type,
+        patch={
+            "config.branch": branch,
+            "updatedAt": datetime.utcnow(),
         },
     )
     if set_default_branch:
@@ -3271,17 +3265,15 @@ async def read_chat_messages(req: ReadChatMessagesRequest) -> ReadChatMessagesRe
     req.limit = max(1, min(req.limit, 300))
     req.max_chars_per_message = max(100, min(req.max_chars_per_message, 20_000))
 
-    db = get_db()
-    q: dict[str, Any] = {"chat_id": req.chat_id, "project_id": req.project_id}
-    if req.branch:
-        q["branch"] = req.branch
-    if req.user:
-        q["user"] = req.user
-
-    chat = await db["chats"].find_one(q, {"chat_id": 1, "messages": 1})
-    if not chat:
-        # Backward compatibility for legacy chat rows with inconsistent project_id/branch/user metadata.
-        chat = await db["chats"].find_one({"chat_id": req.chat_id}, {"chat_id": 1, "messages": 1})
+    chat_repo = repository_factory().global_chat
+    chat = await chat_repo.find_legacy_chat(
+        chat_id=req.chat_id,
+        project_id=req.project_id,
+        branch=req.branch,
+        user=req.user,
+        projection={"chat_id": 1, "messages": 1},
+        fallback_to_chat_id=True,
+    )
     if not chat:
         return ReadChatMessagesResponse(chat_id=req.chat_id, found=False)
 
@@ -3358,7 +3350,7 @@ async def request_user_input(req: RequestUserInputRequest) -> RequestUserInputRe
     else:
         options = []
 
-    db = get_db()
+    chat_repo = repository_factory().global_chat
     pending_id = str(ObjectId())
     now = datetime.utcnow()
     payload = {
@@ -3368,29 +3360,13 @@ async def request_user_input(req: RequestUserInputRequest) -> RequestUserInputRe
         "options": options,
         "created_at": now,
     }
-    res = await db["chats"].update_one(
-        {"chat_id": req.chat_id, "project_id": req.project_id},
-        {
-            "$set": {
-                "pending_user_question": payload,
-                "updated_at": now,
-            }
-        },
-        upsert=False,
+    updated = await chat_repo.set_legacy_pending_user_question(
+        chat_id=req.chat_id,
+        project_id=req.project_id,
+        payload=payload,
+        now=now,
     )
-    if res.matched_count == 0:
-        # Backward compatibility for older chats where project_id may be missing/outdated.
-        res = await db["chats"].update_one(
-            {"chat_id": req.chat_id},
-            {
-                "$set": {
-                    "pending_user_question": payload,
-                    "updated_at": now,
-                }
-            },
-            upsert=False,
-        )
-    if res.matched_count == 0:
+    if not updated:
         raise RuntimeError("Chat not found for request_user_input")
 
     return RequestUserInputResponse(
@@ -3539,9 +3515,9 @@ async def create_chat_task(req: CreateChatTaskRequest, ctx: Any | None = None) -
     resolved_chat_id = (req.chat_id or "").strip() or _ctx_field(ctx, "chat_id") or None
     if resolved_chat_id:
         resolved_chat_id = resolved_chat_id.strip()
-    db = get_db()
+    repo = repository_factory().chat_tasks
     doc: dict[str, Any] = {
-        "project_id": "",
+        "project_id": req.project_id,
         "chat_id": resolved_chat_id,
         "title": title,
         "details": (req.details or "").strip(),
@@ -3557,13 +3533,17 @@ async def create_chat_task(req: CreateChatTaskRequest, ctx: Any | None = None) -
         doc.get("chat_id") or "",
         title,
     )
-    res = await db["chat_tasks"].insert_one(doc)
-    task_id = str(res.inserted_id)
+    row = await repo.create_chat_task(doc=doc)
+    if not isinstance(row, dict):
+        raise RuntimeError("Failed to create task")
+    task_id = str(row.get("_id") or row.get("id") or "").strip()
+    if not task_id:
+        raise RuntimeError("Failed to create task")
     return CreateChatTaskResponse(id=task_id, title=title, status="open", created_at=now)
 
 
 async def list_chat_tasks(req: ListChatTasksRequest) -> ListChatTasksResponse:
-    db = get_db()
+    repo = repository_factory().chat_tasks
     q: dict[str, Any] = {"project_id": req.project_id}
     if (req.chat_id or "").strip():
         chat_id = (req.chat_id or "").strip()
@@ -3578,7 +3558,7 @@ async def list_chat_tasks(req: ListChatTasksRequest) -> ListChatTasksResponse:
     if (req.assignee or "").strip():
         q["assignee"] = (req.assignee or "").strip()
     limit = max(1, min(int(req.limit or 50), 500))
-    rows = await db["chat_tasks"].find(q).sort("updated_at", -1).limit(limit).to_list(length=limit)
+    rows = await repo.list_chat_tasks(query=q, limit=limit)
     items = [_task_item_from_doc(row) for row in rows if isinstance(row, dict)]
     return ListChatTasksResponse(total=len(items), items=items)
 
@@ -3594,8 +3574,8 @@ async def update_chat_task(req: UpdateChatTaskRequest) -> UpdateChatTaskResponse
     else:
         q["id"] = task_id
 
-    db = get_db()
-    row = await db["chat_tasks"].find_one(q)
+    repo = repository_factory().chat_tasks
+    row = await repo.find_chat_task(query=q)
     if not isinstance(row, dict):
         raise RuntimeError("Task not found")
 
@@ -3632,8 +3612,11 @@ async def update_chat_task(req: UpdateChatTaskRequest) -> UpdateChatTaskResponse
         return UpdateChatTaskResponse(item=_task_item_from_doc(row))
 
     changes["updated_at"] = _utc_iso_now()
-    await db["chat_tasks"].update_one({"_id": row["_id"]}, {"$set": changes})
-    next_row = await db["chat_tasks"].find_one({"_id": row["_id"]})
+    row_id_raw = row.get("_id")
+    row_id = str(row_id_raw).strip() if row_id_raw is not None else ""
+    if not row_id or not ObjectId.is_valid(row_id):
+        raise RuntimeError("Task update failed")
+    next_row = await repo.update_chat_task_by_id(task_id=row_id, patch=changes)
     if not isinstance(next_row, dict):
         raise RuntimeError("Task update failed")
     return UpdateChatTaskResponse(item=_task_item_from_doc(next_row))

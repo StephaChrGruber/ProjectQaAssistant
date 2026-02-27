@@ -4,9 +4,9 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from ..db import get_db
+from ..repositories.factory import repository_factory
 from ..services.global_chat_v2 import (
     append_global_message,
     build_context_key,
@@ -60,15 +60,16 @@ async def bootstrap_global_chat(
     branch: str | None = Query(default=None),
     x_dev_user: str | None = Header(default=None),
 ):
-    db = get_db()
+    repos = repository_factory()
+    chat_repo = repos.global_chat
     user_id = _resolve_user(user, x_dev_user)
     active_context_key = None
     if str(project_id or "").strip():
         active_context_key = build_context_key(str(project_id or "").strip(), str(branch or "main"))
-    chat = await ensure_global_chat_envelope(db, user=user_id, active_context_key=active_context_key)
+    chat = await ensure_global_chat_envelope(user=user_id, active_context_key=active_context_key)
     chat_id = str(chat.get("chat_id") or build_global_chat_id(user_id))
-    contexts_from_messages = await list_contexts_for_chat(db, chat_id=chat_id, limit=240)
-    contexts_from_config = await list_context_configs(db, chat_id=chat_id, user=user_id, limit=240)
+    contexts_from_messages = await list_contexts_for_chat(chat_id=chat_id, limit=240)
+    contexts_from_config = await list_context_configs(chat_id=chat_id, user=user_id, limit=240)
     merged: dict[str, dict[str, Any]] = {}
     for item in contexts_from_messages:
         key = str(item.get("context_key") or "").strip()
@@ -107,15 +108,14 @@ async def bootstrap_global_chat(
         key=lambda row: str(row.get("last_ts") or ""),
         reverse=True,
     )
-    unread_notifications = await db["notifications"].count_documents(
-        {"user_id": user_id, "dismissed": {"$ne": True}}
-    )
+    unread_notifications = await repos.notifications.count_unread_notifications(user_ids=[user_id])
     active_key = str(chat.get("active_context_key") or "").strip() or None
     if active_context_key:
         active_key = active_context_key
-        await db["chats"].update_one(
-            {"chat_id": chat_id},
-            {"$set": {"active_context_key": active_context_key, "updated_at": datetime.utcnow()}},
+        await chat_repo.set_chat_active_context(
+            chat_id=chat_id,
+            active_context_key=active_context_key,
+            now=datetime.utcnow(),
         )
     return {
         "chat_id": chat_id,
@@ -141,8 +141,8 @@ async def global_chat_messages(
     cursor: str | None = None,
     limit: int = 120,
 ):
-    db = get_db()
-    chat = await db["chats"].find_one({"chat_id": chat_id}, {"_id": 0, "active_context_key": 1})
+    chat_repo = repository_factory().global_chat
+    chat = await chat_repo.get_chat_envelope(chat_id=chat_id, projection={"_id": 0, "active_context_key": 1})
     if not isinstance(chat, dict):
         raise HTTPException(status_code=404, detail="Chat not found")
     explicit_context_key = str(context_key or "").strip()
@@ -150,7 +150,6 @@ async def global_chat_messages(
         explicit_context_key = build_context_key(str(project_id or "").strip(), str(branch or "main"))
     active_context_key = explicit_context_key or str(chat.get("active_context_key") or "").strip() or None
     rows = await list_global_messages(
-        db,
         chat_id=chat_id,
         active_context_key=active_context_key,
         mode=mode,
@@ -167,7 +166,6 @@ async def global_chat_messages(
 
 @router.post("/context/select")
 async def global_chat_select_context(req: SelectContextReq, x_dev_user: str | None = Header(default=None)):
-    db = get_db()
     user = _resolve_user(req.user, x_dev_user)
     chat_id = str(req.chat_id or "").strip()
     if not chat_id:
@@ -177,9 +175,8 @@ async def global_chat_select_context(req: SelectContextReq, x_dev_user: str | No
         raise HTTPException(status_code=400, detail="project_id is required")
     branch = str(req.branch or "main").strip() or "main"
     context_key = build_context_key(project_id, branch)
-    await ensure_global_chat_envelope(db, user=user, active_context_key=context_key)
+    await ensure_global_chat_envelope(user=user, active_context_key=context_key)
     cfg = await upsert_context_config(
-        db,
         chat_id=chat_id,
         user=user,
         context_key=context_key,
@@ -201,10 +198,8 @@ async def global_chat_select_context(req: SelectContextReq, x_dev_user: str | No
 
 @router.post("/pins/{message_id}")
 async def global_chat_pin_message(message_id: str, req: PinReq, chat_id: str):
-    db = get_db()
     try:
         row = await set_message_pin_state(
-            db,
             chat_id=chat_id,
             message_id=message_id,
             pin=bool(req.pin),
@@ -224,18 +219,16 @@ async def global_chat_get_context_config(
     user: str | None = Query(default=None),
     x_dev_user: str | None = Header(default=None),
 ):
-    db = get_db()
     user_id = _resolve_user(user, x_dev_user)
     key = str(context_key or "").strip()
     if not key:
         key = build_context_key(str(project_id or "").strip(), str(branch or "main"))
     if not str(key or "").strip():
         raise HTTPException(status_code=400, detail="context_key or project_id is required")
-    cfg = await get_context_config(db, chat_id=chat_id, user=user_id, context_key=key)
+    cfg = await get_context_config(chat_id=chat_id, user=user_id, context_key=key)
     if not cfg:
         parsed_project_id, parsed_branch = parse_context_key(key)
         cfg = await upsert_context_config(
-            db,
             chat_id=chat_id,
             user=user_id,
             context_key=key,
@@ -248,7 +241,6 @@ async def global_chat_get_context_config(
 
 @router.put("/context-config")
 async def global_chat_put_context_config(req: PutContextConfigReq, x_dev_user: str | None = Header(default=None)):
-    db = get_db()
     user = _resolve_user(req.user, x_dev_user)
     chat_id = str(req.chat_id or "").strip()
     if not chat_id:
@@ -269,7 +261,6 @@ async def global_chat_put_context_config(req: PutContextConfigReq, x_dev_user: s
     if req.tool_policy is not None:
         patch["tool_policy"] = req.tool_policy if isinstance(req.tool_policy, dict) else {}
     cfg = await upsert_context_config(
-        db,
         chat_id=chat_id,
         user=user,
         context_key=key,
@@ -291,11 +282,9 @@ async def global_chat_append_message(
     user: str | None = Query(default=None),
     x_dev_user: str | None = Header(default=None),
 ):
-    db = get_db()
     user_id = _resolve_user(user, x_dev_user)
     key = str(context_key or "").strip() or build_context_key(project_id, branch)
     item = await append_global_message(
-        db,
         chat_id=chat_id,
         user=user_id,
         role=role,

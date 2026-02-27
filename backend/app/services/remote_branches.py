@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from ..db import get_db
+from ..repositories.factory import repository_factory
 
 logger = logging.getLogger(__name__)
 
@@ -169,9 +169,11 @@ async def _azure_branches(config: dict[str, Any], limit: int = 1000) -> list[str
 
 async def remote_project_branches(project_id: str, default_branch: str) -> list[str]:
     logger.info("projects.branches.remote_lookup.start project=%s default=%s", project_id, default_branch)
-    rows = await get_db()["connectors"].find(
-        {"projectId": project_id, "isEnabled": True, "type": {"$in": ["github", "git", "bitbucket", "azure_devops"]}}
-    ).to_list(length=20)
+    rows = await repository_factory().access_policy.list_enabled_connectors(
+        project_id=project_id,
+        types=["github", "git", "bitbucket", "azure_devops"],
+        limit=20,
+    )
     by_type = {str(r.get("type") or ""): r for r in rows}
     for connector_type in ("github", "git", "bitbucket", "azure_devops"):
         row = by_type.get(connector_type)
@@ -288,4 +290,3 @@ async def list_project_branches(project_id: str, project_doc: dict[str, Any]) ->
 
     logger.info("projects.branches.done project=%s mode=local count=%s", project_id, len(branches))
     return branches
-

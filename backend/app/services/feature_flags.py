@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from bson import ObjectId
-
-from ..db import get_db
+from ..repositories.factory import repository_factory
 
 FEATURE_FLAGS_KEY = "feature_flags"
 
@@ -59,23 +57,12 @@ def project_feature_flags(project: dict[str, Any] | None) -> dict[str, bool]:
 
 
 async def load_project_feature_flags(project_id: str) -> dict[str, bool]:
-    q: dict[str, Any]
-    if ObjectId.is_valid(project_id):
-        q = {"_id": ObjectId(project_id)}
-    else:
-        q = {"key": project_id}
-    row = await get_db()["projects"].find_one(q, {"extra": 1})
+    row = await repository_factory().access_policy.find_project_doc(project_id, {"extra": 1})
     return project_feature_flags(row if isinstance(row, dict) else {})
 
 
 async def update_project_feature_flags(project_id: str, patch: dict[str, Any]) -> dict[str, bool]:
-    q: dict[str, Any]
-    if ObjectId.is_valid(project_id):
-        q = {"_id": ObjectId(project_id)}
-    else:
-        q = {"key": project_id}
-    db = get_db()
-    row = await db["projects"].find_one(q, {"extra": 1})
+    row = await repository_factory().access_policy.find_project_doc(project_id, {"extra": 1})
     if not isinstance(row, dict):
         raise ValueError("Project not found")
 
@@ -88,5 +75,8 @@ async def update_project_feature_flags(project_id: str, patch: dict[str, Any]) -
 
     next_extra = dict(current)
     next_extra[FEATURE_FLAGS_KEY] = current_flags
-    await db["projects"].update_one(q, {"$set": {"extra": next_extra}})
+    await repository_factory().access_policy.update_project_fields(
+        project_id_or_key=project_id,
+        patch={"extra": next_extra},
+    )
     return current_flags

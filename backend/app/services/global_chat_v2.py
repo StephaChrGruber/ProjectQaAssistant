@@ -5,6 +5,8 @@ from typing import Any
 
 from bson import ObjectId
 
+from ..repositories.factory import repository_factory
+
 
 def normalize_user_id(user: str) -> str:
     return str(user or "").strip().lower()
@@ -62,7 +64,7 @@ def _serialize_message(row: dict[str, Any], active_context_key: str | None) -> d
 
 
 async def ensure_global_chat_envelope(
-    db,
+    db=None,
     *,
     user: str,
     title: str = "Global Chat",
@@ -71,36 +73,19 @@ async def ensure_global_chat_envelope(
     chat_id = build_global_chat_id(user)
     now = datetime.utcnow()
     normalized_user = normalize_user_id(user)
-    await db["chats"].update_one(
-        {"chat_id": chat_id},
-        {
-            "$setOnInsert": {
-                "chat_id": chat_id,
-                "user": normalized_user,
-                "title": title,
-                "created_at": now,
-                "messages": [],
-                "tool_policy": {},
-                "llm_profile_id": None,
-            },
-            "$set": {
-                "updated_at": now,
-                "active_context_key": str(active_context_key or "").strip() or None,
-            },
-        },
-        upsert=True,
+    repo = repository_factory(db).global_chat
+    row = await repo.ensure_chat_envelope(
+        chat_id=chat_id,
+        user=normalized_user,
+        title=title,
+        active_context_key=str(active_context_key or "").strip() or None,
+        now=now,
     )
-    return (
-        await db["chats"].find_one(
-            {"chat_id": chat_id},
-            {"_id": 0, "chat_id": 1, "user": 1, "title": 1, "active_context_key": 1, "created_at": 1, "updated_at": 1},
-        )
-        or {}
-    )
+    return row or {}
 
 
 async def append_global_message(
-    db,
+    db=None,
     *,
     chat_id: str,
     user: str,
@@ -114,6 +99,7 @@ async def append_global_message(
     is_pinned: bool = False,
     pin_source: str | None = None,
 ) -> dict[str, Any]:
+    repo = repository_factory(db).global_chat
     now = ts or datetime.utcnow()
     doc = {
         "chat_id": chat_id,
@@ -128,32 +114,13 @@ async def append_global_message(
         "pin_source": str(pin_source or "").strip() or None,
         "meta": meta if isinstance(meta, dict) else {},
     }
-    res = await db["chat_messages_v2"].insert_one(doc)
-    row = await db["chat_messages_v2"].find_one({"_id": res.inserted_id})
-    if not isinstance(row, dict):
-        row = {**doc, "_id": res.inserted_id}
-    await db["chats"].update_one(
-        {"chat_id": chat_id},
-        {
-            "$set": {
-                "updated_at": now,
-                "last_message_at": now,
-                "last_message_preview": str(content or "")[:160],
-            }
-        },
-    )
+    row = await repo.append_message(doc=doc)
+    await repo.touch_chat_after_message(chat_id=chat_id, now=now, content=str(content or ""))
     return row
 
 
-def _decode_cursor(cursor: str | None) -> ObjectId | None:
-    value = str(cursor or "").strip()
-    if not value or not ObjectId.is_valid(value):
-        return None
-    return ObjectId(value)
-
-
 async def list_global_messages(
-    db,
+    db=None,
     *,
     chat_id: str,
     active_context_key: str | None,
@@ -162,23 +129,17 @@ async def list_global_messages(
     cursor: str | None = None,
     limit: int = 120,
 ) -> dict[str, Any]:
+    repo = repository_factory(db).global_chat
     safe_limit = max(1, min(int(limit or 120), 300))
-    q: dict[str, Any] = {"chat_id": chat_id}
-    decoded_cursor = _decode_cursor(cursor)
-    if decoded_cursor is not None:
-        q["_id"] = {"$lt": decoded_cursor}
     normalized_mode = str(mode or "mixed").strip().lower()
     active_key = str(active_context_key or "").strip() or None
     effective_context_key = str(context_key or "").strip() or active_key
-    if normalized_mode == "active" and effective_context_key:
-        q["context_key"] = effective_context_key
-
-    rows = (
-        await db["chat_messages_v2"]
-        .find(q)
-        .sort([("_id", -1)])
-        .limit(safe_limit + 1)
-        .to_list(length=safe_limit + 1)
+    rows = await repo.list_messages(
+        chat_id=chat_id,
+        context_key=effective_context_key if normalized_mode == "active" and effective_context_key else None,
+        before_id=cursor,
+        limit=safe_limit + 1,
+        descending=True,
     )
     has_more = len(rows) > safe_limit
     rows = rows[:safe_limit]
@@ -193,7 +154,7 @@ async def list_global_messages(
 
 
 async def list_llm_history_messages(
-    db,
+    db=None,
     *,
     chat_id: str,
     context_key: str,
@@ -201,15 +162,15 @@ async def list_llm_history_messages(
     active_limit: int = 280,
     pinned_limit: int = 64,
 ) -> list[dict[str, Any]]:
+    repo = repository_factory(db).global_chat
     safe_active = max(1, min(int(active_limit or 280), 500))
     safe_pins = max(0, min(int(pinned_limit or 64), 200))
 
-    active_rows = (
-        await db["chat_messages_v2"]
-        .find({"chat_id": chat_id, "context_key": context_key})
-        .sort([("_id", -1)])
-        .limit(safe_active)
-        .to_list(length=safe_active)
+    active_rows = await repo.list_messages(
+        chat_id=chat_id,
+        context_key=context_key,
+        limit=safe_active,
+        descending=True,
     )
     active_rows.reverse()
     active_messages: list[dict[str, Any]] = []
@@ -229,12 +190,11 @@ async def list_llm_history_messages(
     if not include_pinned_memory or safe_pins <= 0:
         return active_messages
 
-    pinned_rows = (
-        await db["chat_messages_v2"]
-        .find({"chat_id": chat_id, "is_pinned": True})
-        .sort([("_id", -1)])
-        .limit(safe_pins)
-        .to_list(length=safe_pins)
+    pinned_rows = await repo.list_messages(
+        chat_id=chat_id,
+        is_pinned=True,
+        limit=safe_pins,
+        descending=True,
     )
     pinned_rows.reverse()
     pinned_messages: list[dict[str, Any]] = []
@@ -256,49 +216,31 @@ async def list_llm_history_messages(
 
 
 async def set_message_pin_state(
-    db,
+    db=None,
     *,
     chat_id: str,
     message_id: str,
     pin: bool,
     reason: str | None = None,
 ) -> dict[str, Any]:
+    repo = repository_factory(db).global_chat
     if not ObjectId.is_valid(message_id):
         raise ValueError("Invalid message_id")
-    oid = ObjectId(message_id)
-    patch = {
-        "is_pinned": bool(pin),
-        "pin_source": str(reason or "manual").strip() or "manual",
-    }
-    await db["chat_messages_v2"].update_one({"_id": oid, "chat_id": chat_id}, {"$set": patch})
-    row = await db["chat_messages_v2"].find_one({"_id": oid, "chat_id": chat_id})
+    await repo.set_message_pin_state(
+        chat_id=chat_id,
+        message_id=message_id,
+        is_pinned=bool(pin),
+        pin_source=str(reason or "manual").strip() or "manual",
+    )
+    row = await repo.get_message(chat_id=chat_id, message_id=message_id)
     if not isinstance(row, dict):
         raise ValueError("Message not found")
     return row
 
 
-async def list_contexts_for_chat(db, *, chat_id: str, limit: int = 300) -> list[dict[str, Any]]:
-    safe_limit = max(1, min(int(limit or 300), 1000))
-    rows = (
-        await db["chat_messages_v2"]
-        .aggregate(
-            [
-                {"$match": {"chat_id": chat_id, "context_key": {"$exists": True, "$ne": ""}}},
-                {
-                    "$group": {
-                        "_id": "$context_key",
-                        "project_id": {"$last": "$project_id"},
-                        "branch": {"$last": "$branch"},
-                        "last_ts": {"$max": "$ts"},
-                        "count": {"$sum": 1},
-                    }
-                },
-                {"$sort": {"last_ts": -1}},
-                {"$limit": safe_limit},
-            ]
-        )
-        .to_list(length=safe_limit)
-    )
+async def list_contexts_for_chat(db=None, *, chat_id: str, limit: int = 300) -> list[dict[str, Any]]:
+    repo = repository_factory(db).global_chat
+    rows = await repo.list_context_summaries(chat_id=chat_id, limit=limit)
     out: list[dict[str, Any]] = []
     for row in rows:
         out.append(
@@ -314,23 +256,23 @@ async def list_contexts_for_chat(db, *, chat_id: str, limit: int = 300) -> list[
 
 
 async def get_context_config(
-    db,
+    db=None,
     *,
     chat_id: str,
     user: str,
     context_key: str,
 ) -> dict[str, Any]:
-    q = {
-        "chat_id": chat_id,
-        "user": normalize_user_id(user),
-        "context_key": str(context_key or "").strip(),
-    }
-    row = await db["chat_context_config"].find_one(q, {"_id": 0})
+    repo = repository_factory(db).global_chat
+    row = await repo.get_context_config(
+        chat_id=chat_id,
+        user=normalize_user_id(user),
+        context_key=str(context_key or "").strip(),
+    )
     return row or {}
 
 
 async def upsert_context_config(
-    db,
+    db=None,
     *,
     chat_id: str,
     user: str,
@@ -339,42 +281,25 @@ async def upsert_context_config(
     branch: str,
     patch: dict[str, Any],
 ) -> dict[str, Any]:
+    repo = repository_factory(db).global_chat
     now = datetime.utcnow()
-    q = {
-        "chat_id": chat_id,
-        "user": normalize_user_id(user),
-        "context_key": str(context_key or "").strip(),
-    }
-    set_doc = {
-        "updated_at": now,
-        "project_id": str(project_id or "").strip(),
-        "branch": str(branch or "main").strip() or "main",
-    }
-    for key, value in (patch or {}).items():
-        set_doc[key] = value
-    await db["chat_context_config"].update_one(
-        q,
-        {
-            "$set": set_doc,
-            "$setOnInsert": {
-                "chat_id": chat_id,
-                "user": normalize_user_id(user),
-                "context_key": str(context_key or "").strip(),
-                "created_at": now,
-            },
-        },
-        upsert=True,
+    row = await repo.upsert_context_config(
+        chat_id=chat_id,
+        user=normalize_user_id(user),
+        context_key=str(context_key or "").strip(),
+        project_id=str(project_id or "").strip(),
+        branch=str(branch or "main").strip() or "main",
+        patch=patch or {},
+        now=now,
     )
-    return await db["chat_context_config"].find_one(q, {"_id": 0}) or {}
+    return row or {}
 
 
-async def list_context_configs(db, *, chat_id: str, user: str, limit: int = 300) -> list[dict[str, Any]]:
-    safe_limit = max(1, min(int(limit or 300), 1000))
-    rows = (
-        await db["chat_context_config"]
-        .find({"chat_id": chat_id, "user": normalize_user_id(user)}, {"_id": 0})
-        .sort("updated_at", -1)
-        .limit(safe_limit)
-        .to_list(length=safe_limit)
+async def list_context_configs(db=None, *, chat_id: str, user: str, limit: int = 300) -> list[dict[str, Any]]:
+    repo = repository_factory(db).global_chat
+    rows = await repo.list_context_configs(
+        chat_id=chat_id,
+        user=normalize_user_id(user),
+        limit=limit,
     )
     return [row for row in rows if isinstance(row, dict)]

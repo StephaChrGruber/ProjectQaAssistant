@@ -8,7 +8,7 @@ from typing import Any
 
 from bson import ObjectId
 
-from ..db import get_db
+from ..repositories.factory import repository_factory
 from ..models.base_mongo_models import Project
 from ..rag.ingest import ingest_project
 from ..services.documentation import generate_project_documentation
@@ -507,8 +507,8 @@ async def _insert_custom_preset_version(
     meta: dict[str, Any] | None = None,
 ) -> None:
     now = _now()
-    await get_db()["automation_preset_versions"].insert_one(
-        {
+    await repository_factory().automations.insert_preset_version(
+        doc={
             "project_id": project_id,
             "preset_id": preset_id,
             "change_type": str(change_type or "").strip() or "update",
@@ -738,7 +738,7 @@ async def _resolve_project_role(project_id: str, user_id: str) -> str:
     if not uid:
         return "viewer"
 
-    db = get_db()
+    access_repo = repository_factory().access_policy
     project_ids: list[str] = []
     seen_project_ids: set[str] = set()
     for value in [project_id]:
@@ -748,17 +748,16 @@ async def _resolve_project_role(project_id: str, user_id: str) -> str:
         seen_project_ids.add(v)
         project_ids.append(v)
 
-    if project_id and not ObjectId.is_valid(project_id):
-        by_key = await db["projects"].find_one({"key": project_id}, {"_id": 1})
-        if isinstance(by_key, dict) and by_key.get("_id") is not None:
-            resolved = str(by_key.get("_id"))
-            if resolved not in seen_project_ids:
-                seen_project_ids.add(resolved)
-                project_ids.append(resolved)
+    project_doc = await access_repo.find_project_doc(project_id)
+    if isinstance(project_doc, dict) and project_doc.get("_id") is not None:
+        resolved = str(project_doc.get("_id"))
+        if resolved not in seen_project_ids:
+            seen_project_ids.add(resolved)
+            project_ids.append(resolved)
 
-    user_doc = await db["users"].find_one({"email": uid}, {"_id": 1, "isGlobalAdmin": 1})
+    user_doc = await access_repo.find_user_by_email(uid)
     if not user_doc and ObjectId.is_valid(uid):
-        user_doc = await db["users"].find_one({"_id": ObjectId(uid)}, {"_id": 1, "isGlobalAdmin": 1, "email": 1})
+        user_doc = await access_repo.find_user_by_id(uid)
     if isinstance(user_doc, dict) and bool(user_doc.get("isGlobalAdmin")):
         return "admin"
 
@@ -766,14 +765,11 @@ async def _resolve_project_role(project_id: str, user_id: str) -> str:
     if isinstance(user_doc, dict) and user_doc.get("_id") is not None:
         user_candidates.append(str(user_doc.get("_id")))
 
-    membership = await db["memberships"].find_one(
-        {"projectId": {"$in": project_ids}, "userId": {"$in": user_candidates}},
-        {"role": 1},
-    )
-    if isinstance(membership, dict):
-        role = str(membership.get("role") or "").strip().lower()
-        if role in {"admin", "member", "viewer"}:
-            return role
+    for pid in project_ids:
+        for u in user_candidates:
+            role = str(await access_repo.find_membership_role(user_id=u, project_id=pid) or "").strip().lower()
+            if role in {"admin", "member", "viewer"}:
+                return role
     return "viewer"
 
 
@@ -934,14 +930,7 @@ async def list_custom_automation_presets(
     *,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
-    safe_limit = max(1, min(int(limit or 200), 1000))
-    rows = (
-        await get_db()["automation_presets"]
-        .find({"project_id": project_id})
-        .sort("updated_at", -1)
-        .limit(safe_limit)
-        .to_list(length=safe_limit)
-    )
+    rows = await repository_factory().automations.list_presets(project_id=project_id, limit=limit)
     return [_serialize_automation_preset(row) for row in rows if isinstance(row, dict)]
 
 
@@ -983,28 +972,23 @@ async def create_custom_automation_preset(
         "created_at": now,
         "updated_at": now,
     }
-    res = await get_db()["automation_presets"].insert_one(doc)
-    row = await get_db()["automation_presets"].find_one({"_id": res.inserted_id})
+    row = await repository_factory().automations.insert_preset(doc=doc)
     if not isinstance(row, dict):
         raise RuntimeError("Failed to create automation preset")
+    preset_id = str(row.get("_id") or "")
     await _insert_custom_preset_version(
         project_id=project_id,
-        preset_id=str(res.inserted_id),
+        preset_id=preset_id,
         snapshot=_preset_snapshot(row),
         created_by=str(user_id or "").strip(),
         change_type="create",
     )
-    logger.info("automations.presets.create project=%s preset_id=%s", project_id, str(res.inserted_id))
+    logger.info("automations.presets.create project=%s preset_id=%s", project_id, preset_id)
     return _serialize_automation_preset(row)
 
 
 async def get_custom_automation_preset(project_id: str, preset_id: str) -> dict[str, Any] | None:
-    query: dict[str, Any] = {"project_id": project_id}
-    if ObjectId.is_valid(preset_id):
-        query["_id"] = ObjectId(preset_id)
-    else:
-        return None
-    row = await get_db()["automation_presets"].find_one(query)
+    row = await repository_factory().automations.find_preset(project_id=project_id, preset_id=preset_id)
     if not isinstance(row, dict):
         return None
     return _serialize_automation_preset(row)
@@ -1017,13 +1001,10 @@ async def update_custom_automation_preset(
     user_id: str,
     patch: dict[str, Any],
 ) -> dict[str, Any]:
-    query: dict[str, Any] = {"project_id": project_id}
-    if ObjectId.is_valid(preset_id):
-        query["_id"] = ObjectId(preset_id)
-    else:
+    if not ObjectId.is_valid(preset_id):
         raise ValueError("Invalid preset_id")
 
-    existing = await get_db()["automation_presets"].find_one(query)
+    existing = await repository_factory().automations.find_preset(project_id=project_id, preset_id=preset_id)
     if not isinstance(existing, dict):
         raise KeyError("Preset not found")
 
@@ -1054,8 +1035,10 @@ async def update_custom_automation_preset(
     next_doc["updated_at"] = now
     next_doc["updated_by"] = str(user_id or "").strip()
 
-    await get_db()["automation_presets"].update_one({"_id": existing["_id"]}, {"$set": next_doc})
-    row = await get_db()["automation_presets"].find_one({"_id": existing["_id"]})
+    row = await repository_factory().automations.update_preset_by_id(
+        preset_id=str(existing.get("_id") or ""),
+        patch=next_doc,
+    )
     if not isinstance(row, dict):
         raise RuntimeError("Automation preset update failed")
     await _insert_custom_preset_version(
@@ -1070,15 +1053,12 @@ async def update_custom_automation_preset(
 
 
 async def delete_custom_automation_preset(project_id: str, preset_id: str) -> bool:
-    query: dict[str, Any] = {"project_id": project_id}
-    if ObjectId.is_valid(preset_id):
-        query["_id"] = ObjectId(preset_id)
-    else:
+    if not ObjectId.is_valid(preset_id):
         raise ValueError("Invalid preset_id")
-    row = await get_db()["automation_presets"].find_one(query, {"_id": 1})
+    row = await repository_factory().automations.find_preset(project_id=project_id, preset_id=preset_id)
     if not isinstance(row, dict):
         return False
-    await get_db()["automation_presets"].delete_one({"_id": row["_id"]})
+    await repository_factory().automations.delete_preset_by_id(preset_id=str(row.get("_id") or ""))
     logger.info("automations.presets.delete project=%s preset_id=%s", project_id, str(row["_id"]))
     return True
 
@@ -1091,13 +1071,10 @@ async def list_custom_automation_preset_versions(
 ) -> list[dict[str, Any]]:
     if not ObjectId.is_valid(preset_id):
         raise ValueError("Invalid preset_id")
-    safe_limit = max(1, min(int(limit or 100), 1000))
-    rows = (
-        await get_db()["automation_preset_versions"]
-        .find({"project_id": project_id, "preset_id": str(preset_id)})
-        .sort("created_at", -1)
-        .limit(safe_limit)
-        .to_list(length=safe_limit)
+    rows = await repository_factory().automations.list_preset_versions(
+        project_id=project_id,
+        preset_id=str(preset_id),
+        limit=limit,
     )
     return [_serialize_automation_preset_version(row) for row in rows if isinstance(row, dict)]
 
@@ -1114,12 +1091,14 @@ async def rollback_custom_automation_preset(
     if not ObjectId.is_valid(version_id):
         raise ValueError("Invalid version_id")
 
-    preset_row = await get_db()["automation_presets"].find_one({"project_id": project_id, "_id": ObjectId(preset_id)})
+    preset_row = await repository_factory().automations.find_preset(project_id=project_id, preset_id=preset_id)
     if not isinstance(preset_row, dict):
         raise KeyError("Preset not found")
 
-    version_row = await get_db()["automation_preset_versions"].find_one(
-        {"project_id": project_id, "preset_id": str(preset_id), "_id": ObjectId(version_id)}
+    version_row = await repository_factory().automations.find_preset_version(
+        project_id=project_id,
+        preset_id=str(preset_id),
+        version_id=version_id,
     )
     if not isinstance(version_row, dict):
         raise KeyError("Preset version not found")
@@ -1141,17 +1120,14 @@ async def rollback_custom_automation_preset(
         raise RuntimeError("Preset version snapshot is invalid (missing name)")
 
     now = _now()
-    await get_db()["automation_presets"].update_one(
-        {"_id": preset_row["_id"]},
-        {
-            "$set": {
-                **restored_doc,
-                "updated_by": str(user_id or "").strip(),
-                "updated_at": now,
-            }
+    next_row = await repository_factory().automations.update_preset_by_id(
+        preset_id=str(preset_row.get("_id") or ""),
+        patch={
+            **restored_doc,
+            "updated_by": str(user_id or "").strip(),
+            "updated_at": now,
         },
     )
-    next_row = await get_db()["automation_presets"].find_one({"_id": preset_row["_id"]})
     if not isinstance(next_row, dict):
         raise RuntimeError("Preset rollback failed")
     await _insert_custom_preset_version(
@@ -1178,21 +1154,16 @@ async def list_automations(
     include_disabled: bool = True,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
-    query: dict[str, Any] = {"project_id": project_id}
-    if not include_disabled:
-        query["enabled"] = True
-    safe_limit = max(1, min(int(limit or 200), 1000))
-    rows = await get_db()["automations"].find(query).sort("updated_at", -1).limit(safe_limit).to_list(length=safe_limit)
+    rows = await repository_factory().automations.list_automations(
+        project_id=project_id,
+        include_disabled=include_disabled,
+        limit=limit,
+    )
     return [_serialize_automation(row) for row in rows if isinstance(row, dict)]
 
 
 async def get_automation(project_id: str, automation_id: str) -> dict[str, Any] | None:
-    query: dict[str, Any] = {"project_id": project_id}
-    if ObjectId.is_valid(automation_id):
-        query["_id"] = ObjectId(automation_id)
-    else:
-        return None
-    row = await get_db()["automations"].find_one(query)
+    row = await repository_factory().automations.find_automation(project_id=project_id, automation_id=automation_id)
     if not isinstance(row, dict):
         return None
     return _serialize_automation(row)
@@ -1243,14 +1214,14 @@ async def create_automation(
         "created_at": now,
         "updated_at": now,
     }
-    res = await get_db()["automations"].insert_one(doc)
-    row = await get_db()["automations"].find_one({"_id": res.inserted_id})
+    row = await repository_factory().automations.insert_automation(doc=doc)
     if not isinstance(row, dict):
         raise RuntimeError("Failed to create automation")
+    automation_id = str(row.get("_id") or "")
     logger.info(
         "automations.create project=%s automation_id=%s trigger=%s action=%s enabled=%s",
         project_id,
-        str(res.inserted_id),
+        automation_id,
         str(normalized_trigger.get("type") or ""),
         str(normalized_action.get("type") or ""),
         bool(enabled),
@@ -1265,13 +1236,10 @@ async def update_automation(
     user_id: str,
     patch: dict[str, Any],
 ) -> dict[str, Any]:
-    query: dict[str, Any] = {"project_id": project_id}
-    if ObjectId.is_valid(automation_id):
-        query["_id"] = ObjectId(automation_id)
-    else:
+    if not ObjectId.is_valid(automation_id):
         raise ValueError("Invalid automation_id")
 
-    existing = await get_db()["automations"].find_one(query)
+    existing = await repository_factory().automations.find_automation(project_id=project_id, automation_id=automation_id)
     if not isinstance(existing, dict):
         raise KeyError("Automation not found")
 
@@ -1308,8 +1276,10 @@ async def update_automation(
     elif str((next_doc.get("trigger") or {}).get("type") or "") in {"schedule", "daily", "weekly", "once"}:
         next_doc["next_run_at"] = _next_scheduled_run(next_doc.get("trigger") or {}, base=now)
 
-    await get_db()["automations"].update_one({"_id": existing["_id"]}, {"$set": next_doc})
-    row = await get_db()["automations"].find_one({"_id": existing["_id"]})
+    row = await repository_factory().automations.update_automation_by_id(
+        automation_id=str(existing.get("_id") or ""),
+        patch=next_doc,
+    )
     if not isinstance(row, dict):
         raise RuntimeError("Automation update failed")
     logger.info("automations.update project=%s automation_id=%s", project_id, automation_id)
@@ -1317,17 +1287,15 @@ async def update_automation(
 
 
 async def delete_automation(project_id: str, automation_id: str) -> bool:
-    query: dict[str, Any] = {"project_id": project_id}
-    if ObjectId.is_valid(automation_id):
-        query["_id"] = ObjectId(automation_id)
-    else:
+    if not ObjectId.is_valid(automation_id):
         raise ValueError("Invalid automation_id")
 
-    row = await get_db()["automations"].find_one(query, {"_id": 1})
+    row = await repository_factory().automations.find_automation(project_id=project_id, automation_id=automation_id)
     if not isinstance(row, dict):
         return False
-    await get_db()["automations"].delete_one({"_id": row["_id"]})
-    await get_db()["automation_runs"].delete_many({"project_id": project_id, "automation_id": str(row["_id"])})
+    row_id = str(row.get("_id") or "")
+    await repository_factory().automations.delete_automation_by_id(automation_id=row_id)
+    await repository_factory().automations.delete_automation_runs(project_id=project_id, automation_id=row_id)
     logger.info("automations.delete project=%s automation_id=%s", project_id, str(row["_id"]))
     return True
 
@@ -1338,20 +1306,16 @@ async def list_automation_runs(
     automation_id: str | None = None,
     limit: int = 120,
 ) -> list[dict[str, Any]]:
-    query: dict[str, Any] = {"project_id": project_id}
-    if automation_id:
-        query["automation_id"] = str(automation_id).strip()
-    safe_limit = max(1, min(int(limit or 120), 1000))
-    rows = await get_db()["automation_runs"].find(query).sort("started_at", -1).limit(safe_limit).to_list(length=safe_limit)
+    rows = await repository_factory().automations.list_automation_runs(
+        project_id=project_id,
+        automation_id=automation_id,
+        limit=limit,
+    )
     return [_serialize_run(row) for row in rows if isinstance(row, dict)]
 
 
 async def _resolve_default_chat_id(project_id: str) -> str | None:
-    row = await get_db()["chats"].find_one(
-        {"project_id": project_id},
-        {"chat_id": 1},
-        sort=[("updated_at", -1)],
-    )
+    row = await repository_factory().automations.find_latest_chat_for_project(project_id=project_id)
     if not isinstance(row, dict):
         return None
     chat_id = str(row.get("chat_id") or "").strip()
@@ -1384,8 +1348,10 @@ async def _action_create_chat_task(
     }
     if doc["status"] not in VALID_STATUS_SET:
         doc["status"] = "open"
-    res = await get_db()["chat_tasks"].insert_one(doc)
-    task_id = str(res.inserted_id)
+    row = await repository_factory().chat_tasks.create_chat_task(doc=doc)
+    task_id = str((row or {}).get("_id") or "")
+    if not task_id:
+        raise RuntimeError("Failed to create chat task")
     try:
         await dispatch_automation_event(
             project_id,
@@ -1431,18 +1397,14 @@ async def _action_append_chat_message(
         "ts": started_at,
         "meta": {"automation": {"generated": True}},
     }
-    res = await get_db()["chats"].update_one(
-        {"chat_id": chat_id, "project_id": project_id},
-        {
-            "$push": {"messages": msg},
-            "$set": {
-                "updated_at": started_at,
-                "last_message_at": started_at,
-                "last_message_preview": content[:160],
-            },
-        },
+    matched = await repository_factory().automations.append_chat_message(
+        project_id=project_id,
+        chat_id=chat_id,
+        msg=msg,
+        updated_at=started_at,
+        preview=content[:160],
     )
-    if res.matched_count == 0:
+    if matched == 0:
         raise RuntimeError("Chat not found for append_chat_message")
     try:
         await dispatch_automation_event(
@@ -1497,11 +1459,13 @@ async def _action_request_user_input(
         "created_at": _iso(started_at),
         "source": "automation",
     }
-    res = await get_db()["chats"].update_one(
-        {"chat_id": chat_id, "project_id": project_id},
-        {"$set": {"pending_user_question": payload_doc, "updated_at": started_at}},
+    matched = await repository_factory().automations.set_pending_user_question(
+        project_id=project_id,
+        chat_id=chat_id,
+        payload=payload_doc,
+        updated_at=started_at,
     )
-    if res.matched_count == 0:
+    if matched == 0:
         raise RuntimeError("Chat not found for request_user_input action")
     try:
         await dispatch_automation_event(
@@ -1542,8 +1506,8 @@ async def _action_run_incremental_ingestion(
     connectors = params.get("connectors") if isinstance(params.get("connectors"), list) else []
     connectors_filter = [str(x).strip() for x in connectors if str(x).strip()]
     stats = await ingest_project(project, connectors_filter=connectors_filter or None)
-    await get_db()["ingestion_runs"].insert_one(
-        {
+    await repository_factory().automations.insert_ingestion_run(
+        doc={
             "project_id": project_id,
             "mode": "incremental",
             "reason": "automation",
@@ -1614,7 +1578,7 @@ async def _action_update_chat_task(
     started_at: datetime,
 ) -> dict[str, Any]:
     params = _render_template((action.get("params") if isinstance(action.get("params"), dict) else {}), payload)
-    db = get_db()
+    task_repo = repository_factory().chat_tasks
     task_id = str(params.get("task_id") or "").strip()
     chat_id = str(params.get("chat_id") or payload.get("chat_id") or "").strip() or None
     row: dict[str, Any] | None = None
@@ -1624,7 +1588,7 @@ async def _action_update_chat_task(
             q["_id"] = ObjectId(task_id)
         else:
             q["id"] = task_id
-        found = await db["chat_tasks"].find_one(q)
+        found = await task_repo.find_chat_task(query=q)
         row = found if isinstance(found, dict) else None
     else:
         title_contains = str(params.get("task_title_contains") or "").strip()
@@ -1633,7 +1597,7 @@ async def _action_update_chat_task(
         q = {"project_id": project_id, "title": {"$regex": re.escape(title_contains), "$options": "i"}}
         if chat_id:
             q["$or"] = [{"chat_id": chat_id}, {"chat_id": None}, {"chat_id": ""}, {"chat_id": {"$exists": False}}]
-        found = await db["chat_tasks"].find_one(q, sort=[("updated_at", -1)])
+        found = await task_repo.find_chat_task(query=q, sort=[("updated_at", -1)])
         row = found if isinstance(found, dict) else None
     if not isinstance(row, dict):
         raise RuntimeError("Task not found for update_chat_task")
@@ -1664,7 +1628,9 @@ async def _action_update_chat_task(
         raise RuntimeError("update_chat_task requires at least one mutable field")
 
     updates["updated_at"] = _iso(started_at)
-    await db["chat_tasks"].update_one({"_id": row["_id"]}, {"$set": updates})
+    updated = await task_repo.update_chat_task_by_id(task_id=str(row.get("_id") or ""), patch=updates)
+    if not isinstance(updated, dict):
+        raise RuntimeError("update_chat_task failed to persist changes")
     task_id_out = str(row.get("_id") or "")
     try:
         await dispatch_automation_event(
@@ -1702,11 +1668,13 @@ async def _action_set_chat_title(
         chat_id = fallback_chat_id or ""
     if not chat_id:
         raise RuntimeError("set_chat_title action requires chat_id (or an existing chat)")
-    res = await get_db()["chats"].update_one(
-        {"chat_id": chat_id, "project_id": project_id},
-        {"$set": {"title": title, "updated_at": started_at}},
+    matched = await repository_factory().automations.set_chat_title(
+        project_id=project_id,
+        chat_id=chat_id,
+        title=title,
+        updated_at=started_at,
     )
-    if res.matched_count == 0:
+    if matched == 0:
         raise RuntimeError("Chat not found for set_chat_title")
     return {"chat_id": chat_id, "title": title}
 
@@ -1754,16 +1722,15 @@ async def _action_run_automation(
     if not target_id and not target_name:
         raise RuntimeError("run_automation action requires params.automation_id or params.automation_name")
 
-    db = get_db()
     target_doc: dict[str, Any] | None = None
     if target_id and ObjectId.is_valid(target_id):
-        row = await db["automations"].find_one({"_id": ObjectId(target_id), "project_id": project_id})
+        row = await repository_factory().automations.find_automation(project_id=project_id, automation_id=target_id)
         target_doc = row if isinstance(row, dict) else None
     elif target_id:
-        row = await db["automations"].find_one({"project_id": project_id, "name": target_id})
+        row = await repository_factory().automations.find_automation_by_name(project_id=project_id, name=target_id)
         target_doc = row if isinstance(row, dict) else None
     if not target_doc and target_name:
-        row = await db["automations"].find_one({"project_id": project_id, "name": target_name})
+        row = await repository_factory().automations.find_automation_by_name(project_id=project_id, name=target_name)
         target_doc = row if isinstance(row, dict) else None
     if not isinstance(target_doc, dict):
         raise RuntimeError("run_automation target not found")
@@ -1816,7 +1783,17 @@ async def _action_set_automation_enabled(
     elif target_name:
         q["name"] = target_name
 
-    row = await get_db()["automations"].find_one(q)
+    row: dict[str, Any] | None = None
+    if "_id" in q:
+        row = await repository_factory().automations.find_automation(
+            project_id=project_id,
+            automation_id=str(target_id),
+        )
+    elif "name" in q:
+        row = await repository_factory().automations.find_automation_by_name(
+            project_id=project_id,
+            name=str(q.get("name") or ""),
+        )
     if not isinstance(row, dict):
         raise RuntimeError("set_automation_enabled target not found")
     row_id = str(row.get("_id") or "")
@@ -1825,9 +1802,9 @@ async def _action_set_automation_enabled(
 
     trigger = row.get("trigger") if isinstance(row.get("trigger"), dict) else {}
     next_run_at = _next_scheduled_run(trigger, base=started_at) if enabled else None
-    await get_db()["automations"].update_one(
-        {"_id": row["_id"]},
-        {"$set": {"enabled": enabled, "next_run_at": next_run_at, "updated_at": started_at}},
+    await repository_factory().automations.update_automation_by_id(
+        automation_id=row_id,
+        patch={"enabled": enabled, "next_run_at": next_run_at, "updated_at": started_at},
     )
     return {"automation_id": row_id, "enabled": enabled}
 
@@ -1844,17 +1821,12 @@ async def _action_upsert_state_value(
     if not key:
         raise RuntimeError("upsert_state_value action requires params.key")
     value = params.get("value")
-    await get_db()["automation_state"].update_one(
-        {"project_id": project_id, "key": key},
-        {
-            "$set": {
-                "value": value,
-                "updated_at": started_at,
-                "updated_by": str(payload.get("user_id") or ""),
-            },
-            "$setOnInsert": {"created_at": started_at},
-        },
-        upsert=True,
+    await repository_factory().automations.upsert_state_value(
+        project_id=project_id,
+        key=key,
+        value=value,
+        updated_at=started_at,
+        updated_by=str(payload.get("user_id") or ""),
     )
     return {"key": key, "value": value}
 
@@ -1976,9 +1948,9 @@ async def _store_run(
         "finished_at": finished_at,
         "duration_ms": duration_ms,
     }
-    res = await get_db()["automation_runs"].insert_one(doc)
-    row = await get_db()["automation_runs"].find_one({"_id": res.inserted_id})
-    return _serialize_run(row if isinstance(row, dict) else {**doc, "_id": res.inserted_id})
+    row = await repository_factory().automations.insert_automation_run(doc=doc)
+    fallback = {**doc, "_id": (row or {}).get("_id") or ObjectId()}
+    return _serialize_run(row if isinstance(row, dict) else fallback)
 
 
 async def run_automation(
@@ -1991,12 +1963,9 @@ async def run_automation(
     user_id: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    query: dict[str, Any] = {"project_id": project_id}
-    if ObjectId.is_valid(automation_id):
-        query["_id"] = ObjectId(automation_id)
-    else:
+    if not ObjectId.is_valid(automation_id):
         raise ValueError("Invalid automation_id")
-    doc = await get_db()["automations"].find_one(query)
+    doc = await repository_factory().automations.find_automation(project_id=project_id, automation_id=automation_id)
     if not isinstance(doc, dict):
         raise KeyError("Automation not found")
 
@@ -2090,7 +2059,10 @@ async def run_automation(
             update_doc["enabled"] = False
         elif trigger_type in {"schedule", "daily", "weekly"} and bool(doc.get("enabled")):
             update_doc["next_run_at"] = _next_scheduled_run(trigger, base=finished_at)
-        await get_db()["automations"].update_one({"_id": doc["_id"]}, {"$set": update_doc})
+        await repository_factory().automations.update_automation_by_id(
+            automation_id=str(doc.get("_id") or ""),
+            patch=update_doc,
+        )
     logger.info(
         "automations.run project=%s automation_id=%s status=%s event=%s triggered_by=%s",
         project_id,
@@ -2181,14 +2153,11 @@ async def dispatch_automation_event(
         return []
     base_payload = dict(payload or {})
     base_payload.setdefault("project_id", project_id)
-    rows = await get_db()["automations"].find(
-        {
-            "project_id": project_id,
-            "enabled": True,
-            "trigger.type": "event",
-            "trigger.event_type": normalized_event_type,
-        }
-    ).to_list(length=500)
+    rows = await repository_factory().automations.list_enabled_event_automations(
+        project_id=project_id,
+        event_type=normalized_event_type,
+        limit=500,
+    )
     out: list[dict[str, Any]] = []
     skip_id = str(skip_automation_id or "").strip()
     for row in rows:
@@ -2220,13 +2189,10 @@ async def dispatch_automation_event(
 
 async def run_due_scheduled_automations(*, limit: int = 20) -> int:
     now = _now()
-    rows = await get_db()["automations"].find(
-        {
-            "enabled": True,
-            "trigger.type": {"$in": ["schedule", "daily", "weekly", "once"]},
-            "next_run_at": {"$lte": now},
-        }
-    ).sort("next_run_at", 1).limit(max(1, min(int(limit or 20), 200))).to_list(length=max(1, min(int(limit or 20), 200)))
+    rows = await repository_factory().automations.list_due_scheduled_automations(
+        now=now,
+        limit=max(1, min(int(limit or 20), 200)),
+    )
     ran = 0
     for row in rows:
         if not isinstance(row, dict):
@@ -2249,9 +2215,9 @@ async def run_due_scheduled_automations(*, limit: int = 20) -> int:
             # Move next_run_at forward to avoid hot-looping on permanently failing automations.
             trigger = row.get("trigger") if isinstance(row.get("trigger"), dict) else {}
             next_run = _next_scheduled_run(trigger, base=now)
-            await get_db()["automations"].update_one(
-                {"_id": row.get("_id")},
-                {"$set": {"next_run_at": next_run, "updated_at": _now(), "last_status": "failed"}},
+            await repository_factory().automations.update_automation_by_id(
+                automation_id=str(row.get("_id") or ""),
+                patch={"next_run_at": next_run, "updated_at": _now(), "last_status": "failed"},
             )
     return ran
 

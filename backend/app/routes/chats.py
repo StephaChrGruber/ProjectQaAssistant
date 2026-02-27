@@ -6,6 +6,7 @@ from bson import ObjectId
 from ..models.chat import ChatDoc, AppendReq, ChatResponse, ChatMessage
 from pydantic import BaseModel, Field
 from ..db import get_db
+from ..repositories.factory import repository_factory
 from ..repositories.chat_repository import (
     append_chat_message,
     clear_chat_messages,
@@ -13,12 +14,9 @@ from ..repositories.chat_repository import (
     get_chat as repo_get_chat,
     get_chat_owner,
     get_is_global_admin,
-    list_active_tool_approvals,
     list_project_chats,
-    revoke_tool_approval,
     update_chat_llm_profile,
     update_chat_tool_policy,
-    upsert_tool_approval,
 )
 from ..services.feature_flags import load_project_feature_flags
 from ..services.global_chat_v2 import build_context_key, get_context_config, upsert_context_config
@@ -415,6 +413,7 @@ async def list_chat_tasks(
     x_dev_user: str | None = Header(default=None),
 ):
     chat = await _get_chat_owner_or_403(chat_id, x_dev_user)
+    task_repo = repository_factory().chat_tasks
     if _is_global_chat(chat_id):
         resolved_context_key = _resolve_context_key(
             chat=chat,
@@ -444,7 +443,7 @@ async def list_chat_tasks(
     if (status or "").strip():
         q["status"] = status.strip().lower()
     safe_limit = max(1, min(int(limit or 120), 500))
-    rows = await get_db()["chat_tasks"].find(q).sort("updated_at", -1).limit(safe_limit).to_list(length=safe_limit)
+    rows = await task_repo.list_chat_tasks(query=q, limit=safe_limit)
     items = [_serialize_task_row(row) for row in rows if isinstance(row, dict)]
     return {"chat_id": chat_id, "items": items}
 
@@ -452,6 +451,7 @@ async def list_chat_tasks(
 @router.post("/{chat_id}/tasks")
 async def create_chat_task(chat_id: str, req: CreateChatTaskReq, x_dev_user: str | None = Header(default=None)):
     chat = await _get_chat_owner_or_403(chat_id, x_dev_user)
+    task_repo = repository_factory().chat_tasks
     title = str(req.title or "").strip()
     if not title:
         raise HTTPException(status_code=400, detail="title is required")
@@ -488,8 +488,7 @@ async def create_chat_task(chat_id: str, req: CreateChatTaskReq, x_dev_user: str
     }
     if doc["status"] not in {"open", "in_progress", "blocked", "done", "cancelled"}:
         raise HTTPException(status_code=400, detail="Invalid status")
-    res = await get_db()["chat_tasks"].insert_one(doc)
-    row = await get_db()["chat_tasks"].find_one({"_id": res.inserted_id})
+    row = await task_repo.create_chat_task(doc=doc)
     if not isinstance(row, dict):
         raise HTTPException(status_code=500, detail="Failed to create task")
     return {"chat_id": chat_id, "item": _serialize_task_row(row)}
@@ -503,6 +502,7 @@ async def patch_chat_task(
     x_dev_user: str | None = Header(default=None),
 ):
     chat = await _get_chat_owner_or_403(chat_id, x_dev_user)
+    task_repo = repository_factory().chat_tasks
     if _is_global_chat(chat_id):
         resolved_context_key = _resolve_context_key(
             chat=chat,
@@ -531,7 +531,7 @@ async def patch_chat_task(
     else:
         q["id"] = task_id
 
-    row = await get_db()["chat_tasks"].find_one(q)
+    row = await task_repo.find_chat_task(query=q)
     if not isinstance(row, dict):
         raise HTTPException(status_code=404, detail="Task not found")
 
@@ -555,8 +555,7 @@ async def patch_chat_task(
     if not patch:
         return {"chat_id": chat_id, "item": _serialize_task_row(row)}
     patch["updated_at"] = datetime.utcnow().isoformat() + "Z"
-    await get_db()["chat_tasks"].update_one({"_id": row["_id"]}, {"$set": patch})
-    next_row = await get_db()["chat_tasks"].find_one({"_id": row["_id"]})
+    next_row = await task_repo.update_chat_task_by_id(task_id=str(row["_id"]), patch=patch)
     if not isinstance(next_row, dict):
         raise HTTPException(status_code=500, detail="Task update failed")
     return {"chat_id": chat_id, "item": _serialize_task_row(next_row)}
@@ -742,6 +741,7 @@ async def list_chat_tool_approvals(
     x_dev_user: str | None = Header(default=None),
 ):
     await _get_chat_owner_or_403(chat_id, x_dev_user)
+    access_repo = repository_factory().access_policy
     now = datetime.utcnow()
     if _is_global_chat(chat_id):
         owner = await _get_chat_owner_or_403(chat_id, x_dev_user)
@@ -751,17 +751,15 @@ async def list_chat_tool_approvals(
             project_id=project_id,
             branch=branch,
         )
-        q: dict[str, Any] = {"chatId": chat_id, "expiresAt": {"$gt": now}}
-        if resolved_context_key:
-            q["$or"] = [
-                {"contextKey": resolved_context_key},
-                {"contextKey": {"$exists": False}},
-                {"contextKey": ""},
-                {"contextKey": None},
-            ]
-        rows = await get_db()["chat_tool_approvals"].find(q, {"_id": 0}).sort("createdAt", -1).limit(200).to_list(length=200)
+        rows = await access_repo.list_active_tool_approvals(
+            chat_id=chat_id,
+            now=now,
+            context_key=resolved_context_key,
+            include_legacy_when_context_set=True,
+            limit=200,
+        )
     else:
-        rows = await list_active_tool_approvals(chat_id, now, limit=200)
+        rows = await access_repo.list_active_tool_approvals(chat_id=chat_id, now=now, limit=200)
     caller = str(x_dev_user or "").strip().lower()
     items: list[dict[str, Any]] = []
     for row in rows:
@@ -779,6 +777,7 @@ async def list_chat_tool_approvals(
 @router.post("/{chat_id}/tool-approvals")
 async def approve_chat_tool(chat_id: str, req: ChatToolApprovalReq, x_dev_user: str | None = Header(default=None)):
     chat = await _get_chat_owner_or_403(chat_id, x_dev_user)
+    access_repo = repository_factory().access_policy
     name = _norm_tool_name(req.tool_name)
     if not name:
         raise HTTPException(status_code=400, detail="tool_name is required")
@@ -797,29 +796,15 @@ async def approve_chat_tool(chat_id: str, req: ChatToolApprovalReq, x_dev_user: 
             project_id=req.project_id,
             branch=req.branch,
         )
-    if resolved_context_key:
-        await get_db()["chat_tool_approvals"].update_one(
-            {"chatId": chat_id, "toolName": name, "userId": approval_user, "contextKey": resolved_context_key},
-            {
-                "$set": {
-                    "approved": True,
-                    "approvedBy": str(x_dev_user or chat.get("user") or ""),
-                    "createdAt": now,
-                    "expiresAt": exp,
-                    "contextKey": resolved_context_key,
-                }
-            },
-            upsert=True,
-        )
-    else:
-        await upsert_tool_approval(
-            chat_id=chat_id,
-            tool_name=name,
-            user_id=approval_user,
-            approved_by=str(x_dev_user or chat.get("user") or ""),
-            created_at=now,
-            expires_at=exp,
-        )
+    await access_repo.upsert_tool_approval(
+        chat_id=chat_id,
+        tool_name=name,
+        user_id=approval_user,
+        approved_by=str(x_dev_user or chat.get("user") or ""),
+        created_at=now,
+        expires_at=exp,
+        context_key=resolved_context_key,
+    )
     return {
         "chat_id": chat_id,
         "tool_name": name,
@@ -841,6 +826,7 @@ async def revoke_chat_tool_approval(
     x_dev_user: str | None = Header(default=None),
 ):
     chat = await _get_chat_owner_or_403(chat_id, x_dev_user)
+    access_repo = repository_factory().access_policy
     name = _norm_tool_name(tool_name)
     if not name:
         raise HTTPException(status_code=400, detail="tool_name is required")
@@ -853,10 +839,10 @@ async def revoke_chat_tool_approval(
             project_id=project_id,
             branch=branch,
         )
-    if resolved_context_key:
-        await get_db()["chat_tool_approvals"].delete_many(
-            {"chatId": chat_id, "toolName": name, "userId": approval_user, "contextKey": resolved_context_key}
-        )
-    else:
-        await revoke_tool_approval(chat_id, name, approval_user)
+    await access_repo.revoke_tool_approval(
+        chat_id=chat_id,
+        tool_name=name,
+        user_id=approval_user,
+        context_key=resolved_context_key,
+    )
     return {"chat_id": chat_id, "tool_name": name, "context_key": resolved_context_key, "revoked": True}

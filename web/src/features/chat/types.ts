@@ -398,6 +398,55 @@ export type GlobalChatMessagesResponse = {
   has_more?: boolean
 }
 
+export type RuntimeInfoResponse = {
+  mode?: "server" | "desktop_local_fullstack" | "desktop_remote_slim" | string
+  storage_engine?: string
+  backend_origin?: "local" | "remote" | string
+  version?: string
+  build_sha?: string | null
+  desktop_session_id?: string | null
+  profile_path?: string | null
+  profile_loaded?: boolean
+  data_dir?: string | null
+  local_ports?: Record<string, number>
+  features?: Record<string, boolean>
+  runtime_status?: "starting" | "ready" | "failed" | "stopping" | string
+  started_at?: string | null
+  ready_at?: string | null
+  last_error?: string | null
+}
+
+export type DesktopRuntimeStatus = {
+  running: boolean
+  mode: "local_fullstack" | "remote_slim" | string
+  web_pid?: number | null
+  backend_pid?: number | null
+  mongo_pid?: number | null
+  started_at_ms?: number | null
+  last_error?: string | null
+  web_port: number
+  backend_port: number
+  mongo_port: number
+  backend_url: string
+  auto_restart?: boolean
+  restart_count?: number
+  last_restart_ms?: number | null
+  diagnostics_path?: string | null
+}
+
+export type DesktopRuntimeDiagEvent = {
+  ts_ms: number
+  level: string
+  source: string
+  message: string
+}
+
+export type DesktopRuntimeDiagnostics = {
+  generated_at_ms: number
+  status: DesktopRuntimeStatus
+  events: DesktopRuntimeDiagEvent[]
+}
+
 export type TokenKind = "plain" | "keyword" | "string" | "number" | "comment" | "operator" | "type" | "builtin"
 
 export type Token = {

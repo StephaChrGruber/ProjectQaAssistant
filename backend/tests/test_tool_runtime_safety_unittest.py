@@ -44,6 +44,12 @@ class ToolRuntimeSafetyTests(unittest.TestCase):
             )
         )
 
+        async def _allow_without_capability_db(_name: str, _spec: ToolSpec, _ctx: ToolContext):
+            # Keep unit tests hermetic: policy behavior is what we validate here.
+            return True, ""
+
+        self.rt._tool_capability_allowed = _allow_without_capability_db  # type: ignore[method-assign]
+
     def _run(self, coro):
         return asyncio.run(coro)
 

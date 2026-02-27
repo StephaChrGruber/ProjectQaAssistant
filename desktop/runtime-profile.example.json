@@ -1,0 +1,20 @@
+{
+  "mode": "local_fullstack",
+  "backend_origin": "local",
+  "data_dir": "~/Library/Application Support/ProjectQaAssist",
+  "local_ports": {
+    "web": 3000,
+    "backend": 8080,
+    "mongo": 27017
+  },
+  "llm_defaults": {
+    "provider": "openai",
+    "model": "gpt-4.1"
+  },
+  "feature_flags": {
+    "workspace_docked_v2": true,
+    "workspace_inline_ai": true,
+    "workspace_diagnostics": true
+  }
+}
+

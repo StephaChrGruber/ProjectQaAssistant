@@ -6,7 +6,7 @@ from typing import Any
 
 from bson import ObjectId
 
-from ..db import get_db
+from ..repositories.factory import repository_factory
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +83,9 @@ async def create_notification(
         "created_at": now,
         "updated_at": now,
     }
-    res = await get_db()["notifications"].insert_one(doc)
-    row = await get_db()["notifications"].find_one({"_id": res.inserted_id})
+    repo = repository_factory().notifications
+    notification_id = await repo.insert_notification(doc)
+    row = await repo.get_notification_by_id(notification_id)
     if not isinstance(row, dict):
         raise RuntimeError("Failed to create notification")
     logger.info(
@@ -93,7 +94,7 @@ async def create_notification(
         doc["user_id"],
         doc["severity"],
         doc["source"],
-        str(res.inserted_id),
+        notification_id,
     )
     return _serialize_notification(row)
 
@@ -106,19 +107,13 @@ async def list_notifications(
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     user = _normalize_user(user_id)
-    query: dict[str, Any] = {"user_id": {"$in": [user, GLOBAL_NOTIFICATION_USER]}}
+    repo = repository_factory().notifications
     project = str(project_id or "").strip()
-    if project:
-        query["project_id"] = project
-    if not include_dismissed:
-        query["dismissed"] = {"$ne": True}
-    safe_limit = max(1, min(int(limit or 200), 1000))
-    rows = (
-        await get_db()["notifications"]
-        .find(query)
-        .sort("created_at", -1)
-        .limit(safe_limit)
-        .to_list(length=safe_limit)
+    rows = await repo.list_notifications(
+        user_ids=[user, GLOBAL_NOTIFICATION_USER],
+        project_id=project or None,
+        include_dismissed=include_dismissed,
+        limit=limit,
     )
     return [_serialize_notification(row) for row in rows if isinstance(row, dict)]
 
@@ -129,11 +124,13 @@ async def set_notification_dismissed(
     user_id: str,
     dismissed: bool,
 ) -> dict[str, Any] | None:
-    query: dict[str, Any] = {"user_id": {"$in": [_normalize_user(user_id), GLOBAL_NOTIFICATION_USER]}}
     if not ObjectId.is_valid(notification_id):
         raise ValueError("Invalid notification_id")
-    query["_id"] = ObjectId(notification_id)
-    row = await get_db()["notifications"].find_one(query)
+    repo = repository_factory().notifications
+    row = await repo.get_notification_for_user(
+        notification_id=notification_id,
+        user_ids=[_normalize_user(user_id), GLOBAL_NOTIFICATION_USER],
+    )
     if not isinstance(row, dict):
         return None
     now = _now()
@@ -153,8 +150,8 @@ async def set_notification_dismissed(
             },
             "$unset": {"dismissed_at": ""},
         }
-    await get_db()["notifications"].update_one({"_id": row["_id"]}, update)
-    next_row = await get_db()["notifications"].find_one({"_id": row["_id"]})
+    await repo.update_notification_by_id(str(row["_id"]), update)
+    next_row = await repo.get_notification_by_id(str(row["_id"]))
     if not isinstance(next_row, dict):
         return None
     return _serialize_notification(next_row)
@@ -173,7 +170,8 @@ async def dismiss_all_notifications(
     if project:
         query["project_id"] = project
     now = _now()
-    res = await get_db()["notifications"].update_many(
+    repo = repository_factory().notifications
+    count = await repo.update_notifications_many(
         query,
         {
             "$set": {
@@ -183,7 +181,6 @@ async def dismiss_all_notifications(
             }
         },
     )
-    count = int(res.modified_count or 0)
     logger.info(
         "notifications.dismiss_all user=%s project=%s modified=%s",
         _normalize_user(user_id),
@@ -191,4 +188,3 @@ async def dismiss_all_notifications(
         count,
     )
     return count
-

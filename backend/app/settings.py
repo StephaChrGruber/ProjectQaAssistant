@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     PATH_PICKER_ROOTS: str = "/host/repos"
 
     BACKEND_DEBUG_MODE: bool = True
+    APP_RUNTIME_MODE: str = "server"
+    APP_BACKEND_ORIGIN: str = ""
+    APP_STORAGE_ENGINE: str = "mongo"
+    APP_VERSION: str = "dev"
+    APP_BUILD_SHA: str | None = None
+    DESKTOP_SESSION_ID: str | None = None
+    RUNTIME_PROFILE_PATH: str | None = None
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

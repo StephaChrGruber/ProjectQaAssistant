@@ -26,6 +26,7 @@ import {
     Select,
     Stack,
     Switch,
+    TextField,
     Tooltip,
     Typography,
     Button,
@@ -37,6 +38,7 @@ import FilterAltRounded from "@mui/icons-material/FilterAltRounded"
 import NotificationsRounded from "@mui/icons-material/NotificationsRounded"
 import SettingsRounded from "@mui/icons-material/SettingsRounded"
 import AdminPanelSettingsRounded from "@mui/icons-material/AdminPanelSettingsRounded"
+import DesktopWindowsRounded from "@mui/icons-material/DesktopWindowsRounded"
 import DescriptionRounded from "@mui/icons-material/DescriptionRounded"
 import AssignmentTurnedInRounded from "@mui/icons-material/AssignmentTurnedInRounded"
 import CodeRounded from "@mui/icons-material/CodeRounded"
@@ -59,6 +61,8 @@ import type {
     ChatCodeArtifact,
     ChatCodeArtifactsExtractResponse,
     ChatCodeArtifactsPromoteResponse,
+    DesktopRuntimeDiagnostics,
+    DesktopRuntimeStatus,
     ChatTaskItem,
     ChatTasksResponse,
     ChatToolApprovalsResponse,
@@ -78,6 +82,7 @@ import type {
     MeResponse,
     PendingUserQuestion,
     ProjectDoc,
+    RuntimeInfoResponse,
     ThinkingTrace,
     ToolCatalogItem,
     ToolCatalogResponse,
@@ -192,6 +197,35 @@ function normalizeProjectsResponse(input: ProjectsResponseFlexible): ProjectDoc[
 function parseErr(err: unknown): string {
     if (err instanceof Error) return err.message
     return String(err || "Unknown error")
+}
+
+type RuntimeLiveStatus = {
+    status?: string
+    runtime_status?: string
+    started_at?: string | null
+    updated_at?: string | null
+}
+
+type RuntimeReadyStatus = {
+    status?: string
+    ready?: boolean
+    ready_at?: string | null
+    last_error?: string | null
+}
+
+function getTauriInvoke():
+    | ((command: string, args?: Record<string, unknown>) => Promise<unknown>)
+    | null {
+    if (typeof window === "undefined") return null
+    const tauriWindow = window as unknown as {
+        __TAURI__?: { core?: { invoke?: (command: string, args?: Record<string, unknown>) => Promise<unknown> } }
+        __TAURI_INTERNALS__?: { invoke?: (command: string, args?: Record<string, unknown>) => Promise<unknown> }
+    }
+    const invokeFromCore = tauriWindow.__TAURI__?.core?.invoke
+    if (typeof invokeFromCore === "function") return invokeFromCore
+    const invokeFromInternals = tauriWindow.__TAURI_INTERNALS__?.invoke
+    if (typeof invokeFromInternals === "function") return invokeFromInternals
+    return null
 }
 
 function parseNdjsonChunk(buffer: string): { events: AskAgentStreamEvent[]; rest: string } {
@@ -426,6 +460,21 @@ export default function GlobalChatPage() {
     const [loadingMessages, setLoadingMessages] = useState(false)
     const [sending, setSending] = useState(false)
     const [error, setError] = useState<string | null>(null)
+    const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfoResponse | null>(null)
+    const [runtimeInfoError, setRuntimeInfoError] = useState<string | null>(null)
+    const [runtimeLive, setRuntimeLive] = useState<RuntimeLiveStatus | null>(null)
+    const [runtimeReady, setRuntimeReady] = useState<RuntimeReadyStatus | null>(null)
+    const [runtimeHealthLoading, setRuntimeHealthLoading] = useState(false)
+    const [runtimeHealthError, setRuntimeHealthError] = useState<string | null>(null)
+    const [desktopRuntimeOpen, setDesktopRuntimeOpen] = useState(false)
+    const [desktopRuntimeLoading, setDesktopRuntimeLoading] = useState(false)
+    const [desktopRuntimeBusy, setDesktopRuntimeBusy] = useState(false)
+    const [desktopRuntimeStatus, setDesktopRuntimeStatus] = useState<DesktopRuntimeStatus | null>(null)
+    const [desktopRuntimeDiagnostics, setDesktopRuntimeDiagnostics] = useState<DesktopRuntimeDiagnostics | null>(null)
+    const [desktopRuntimeDiagLoading, setDesktopRuntimeDiagLoading] = useState(false)
+    const [desktopRuntimeMode, setDesktopRuntimeMode] = useState<"local_fullstack" | "remote_slim">("local_fullstack")
+    const [desktopRuntimeWebDev, setDesktopRuntimeWebDev] = useState(false)
+    const [desktopRuntimeProfilePath, setDesktopRuntimeProfilePath] = useState("")
 
     const [userId, setUserId] = useState("dev@local")
     const [isAdmin, setIsAdmin] = useState(false)
@@ -495,6 +544,8 @@ export default function GlobalChatPage() {
     const [thinkingExpandedByMessageKey, setThinkingExpandedByMessageKey] = useState<Record<string, boolean>>({})
     const [artifactsByMessageKey, setArtifactsByMessageKey] = useState<Record<string, ChatCodeArtifact[]>>({})
     const [artifactBusyKey, setArtifactBusyKey] = useState<string | null>(null)
+    const tauriInvoke = useMemo(() => getTauriInvoke(), [])
+    const desktopRuntimeAvailable = Boolean(tauriInvoke)
 
     const activeContextKey = useMemo(() => {
         if (!selectedProjectId) return ""
@@ -564,6 +615,183 @@ export default function GlobalChatPage() {
         [selectedBranch, selectedProjectId, userId]
     )
 
+    const refreshRuntimeHealth = useCallback(async () => {
+        setRuntimeHealthLoading(true)
+        try {
+            const [liveRes, readyRes] = await Promise.all([
+                fetch("/api/health/live", { method: "GET", cache: "no-store" }),
+                fetch("/api/health/ready", { method: "GET", cache: "no-store" }),
+            ])
+            const liveRaw = await liveRes.json().catch(() => null)
+            const readyRaw = await readyRes.json().catch(() => null)
+
+            if (liveRaw && typeof liveRaw === "object") {
+                setRuntimeLive(liveRaw as RuntimeLiveStatus)
+            } else {
+                setRuntimeLive(null)
+            }
+
+            if (readyRes.ok) {
+                setRuntimeReady(
+                    readyRaw && typeof readyRaw === "object" ? (readyRaw as RuntimeReadyStatus) : { ready: false }
+                )
+            } else if (
+                readyRaw &&
+                typeof readyRaw === "object" &&
+                "detail" in readyRaw &&
+                readyRaw.detail &&
+                typeof readyRaw.detail === "object"
+            ) {
+                setRuntimeReady(readyRaw.detail as RuntimeReadyStatus)
+            } else {
+                setRuntimeReady({
+                    ready: false,
+                    status: "unready",
+                    last_error: readyRes.statusText || `HTTP ${readyRes.status}`,
+                })
+            }
+            setRuntimeHealthError(null)
+        } catch (err) {
+            setRuntimeHealthError(parseErr(err))
+            setRuntimeLive(null)
+            setRuntimeReady(null)
+        } finally {
+            setRuntimeHealthLoading(false)
+        }
+    }, [])
+
+    const refreshRuntimeInfo = useCallback(async () => {
+        try {
+            const info = await backendJson<RuntimeInfoResponse>("/api/runtime/info")
+            setRuntimeInfo(info || null)
+            setRuntimeInfoError(null)
+        } catch (err) {
+            setRuntimeInfo(null)
+            setRuntimeInfoError(parseErr(err))
+        }
+    }, [])
+
+    const refreshRuntimeDiagnostics = useCallback(async () => {
+        await Promise.all([refreshRuntimeInfo(), refreshRuntimeHealth()])
+    }, [refreshRuntimeHealth, refreshRuntimeInfo])
+
+    const refreshDesktopRuntimeStatus = useCallback(async () => {
+        if (!tauriInvoke) return
+        setDesktopRuntimeLoading(true)
+        try {
+            const out = await tauriInvoke("desktop_runtime_status")
+            setDesktopRuntimeStatus((out || null) as DesktopRuntimeStatus | null)
+        } catch (err) {
+            setDesktopRuntimeStatus((prev) => ({
+                ...(prev || {
+                    running: false,
+                    mode: desktopRuntimeMode,
+                    web_port: 3000,
+                    backend_port: 8080,
+                    mongo_port: 27017,
+                    backend_url: "",
+                }),
+                last_error: parseErr(err),
+            }))
+        } finally {
+            setDesktopRuntimeLoading(false)
+        }
+    }, [desktopRuntimeMode, tauriInvoke])
+
+    const refreshDesktopRuntimeDiagnostics = useCallback(async () => {
+        if (!tauriInvoke) return
+        setDesktopRuntimeDiagLoading(true)
+        try {
+            const out = await tauriInvoke("desktop_runtime_diagnostics", { limit: 120 })
+            setDesktopRuntimeDiagnostics((out || null) as DesktopRuntimeDiagnostics | null)
+        } catch (err) {
+            setDesktopRuntimeDiagnostics((prev) => {
+                const events = Array.isArray(prev?.events) ? prev?.events : []
+                const nextEvents = [
+                    ...events.slice(Math.max(0, events.length - 80)),
+                    {
+                        ts_ms: Date.now(),
+                        level: "error",
+                        source: "ui",
+                        message: `Diagnostics refresh failed: ${parseErr(err)}`,
+                    },
+                ]
+                return {
+                    generated_at_ms: Date.now(),
+                    status:
+                        prev?.status || {
+                            running: false,
+                            mode: desktopRuntimeMode,
+                            web_port: 3000,
+                            backend_port: 8080,
+                            mongo_port: 27017,
+                            backend_url: "",
+                        },
+                    events: nextEvents,
+                }
+            })
+        } finally {
+            setDesktopRuntimeDiagLoading(false)
+        }
+    }, [desktopRuntimeMode, tauriInvoke])
+
+    const startDesktopRuntime = useCallback(async () => {
+        if (!tauriInvoke) return
+        setDesktopRuntimeBusy(true)
+        try {
+            const args: Record<string, unknown> = {
+                request: {
+                    mode: desktopRuntimeMode,
+                    web_dev: desktopRuntimeWebDev,
+                    profile_path: desktopRuntimeProfilePath.trim() || null,
+                },
+            }
+            const out = await tauriInvoke("desktop_runtime_start", args)
+            setDesktopRuntimeStatus((out || null) as DesktopRuntimeStatus | null)
+            await refreshDesktopRuntimeDiagnostics()
+            await refreshRuntimeDiagnostics()
+        } catch (err) {
+            setDesktopRuntimeStatus((prev) => ({
+                ...(prev || {
+                    running: false,
+                    mode: desktopRuntimeMode,
+                    web_port: 3000,
+                    backend_port: 8080,
+                    mongo_port: 27017,
+                    backend_url: "",
+                }),
+                last_error: parseErr(err),
+            }))
+        } finally {
+            setDesktopRuntimeBusy(false)
+        }
+    }, [desktopRuntimeMode, desktopRuntimeProfilePath, desktopRuntimeWebDev, refreshDesktopRuntimeDiagnostics, refreshRuntimeDiagnostics, tauriInvoke])
+
+    const stopDesktopRuntime = useCallback(async () => {
+        if (!tauriInvoke) return
+        setDesktopRuntimeBusy(true)
+        try {
+            const out = await tauriInvoke("desktop_runtime_stop")
+            setDesktopRuntimeStatus((out || null) as DesktopRuntimeStatus | null)
+            await refreshDesktopRuntimeDiagnostics()
+            await refreshRuntimeDiagnostics()
+        } catch (err) {
+            setDesktopRuntimeStatus((prev) => ({
+                ...(prev || {
+                    running: false,
+                    mode: desktopRuntimeMode,
+                    web_port: 3000,
+                    backend_port: 8080,
+                    mongo_port: 27017,
+                    backend_url: "",
+                }),
+                last_error: parseErr(err),
+            }))
+        } finally {
+            setDesktopRuntimeBusy(false)
+        }
+    }, [desktopRuntimeMode, refreshDesktopRuntimeDiagnostics, refreshRuntimeDiagnostics, tauriInvoke])
+
     const selectContext = useCallback(
         async (projectId: string, branch: string) => {
             if (!chatId) return
@@ -627,6 +855,7 @@ export default function GlobalChatPage() {
                     backendJson<ProjectsResponseFlexible>("/api/projects"),
                     backendJson<{ items?: LlmProfileDoc[]; profiles?: LlmProfileDoc[] }>("/api/llm/profiles"),
                 ])
+                void refreshRuntimeInfo()
                 const user = String(me?.user?.email || me?.user?.id || "dev@local").trim().toLowerCase()
                 const admin = Boolean(me?.user?.isGlobalAdmin)
                 const list = normalizeProjectsResponse(projectsRes)
@@ -695,7 +924,33 @@ export default function GlobalChatPage() {
         return () => {
             cancelled = true
         }
-    }, [])
+    }, [refreshRuntimeDiagnostics])
+
+    useEffect(() => {
+        if (booting) return
+        void refreshRuntimeDiagnostics()
+        const timer = window.setInterval(() => {
+            void refreshRuntimeDiagnostics()
+        }, 30000)
+        return () => {
+            window.clearInterval(timer)
+        }
+    }, [booting, refreshRuntimeDiagnostics])
+
+    useEffect(() => {
+        if (!desktopRuntimeOpen || !desktopRuntimeAvailable) return
+        void refreshDesktopRuntimeStatus()
+        void refreshDesktopRuntimeDiagnostics()
+        void refreshRuntimeHealth()
+        const timer = window.setInterval(() => {
+            void refreshDesktopRuntimeStatus()
+            void refreshDesktopRuntimeDiagnostics()
+            void refreshRuntimeHealth()
+        }, 4000)
+        return () => {
+            window.clearInterval(timer)
+        }
+    }, [desktopRuntimeAvailable, desktopRuntimeOpen, refreshDesktopRuntimeDiagnostics, refreshDesktopRuntimeStatus, refreshRuntimeHealth])
 
     useEffect(() => {
         if (projectsOpen) return
@@ -1087,6 +1342,19 @@ export default function GlobalChatPage() {
         () => projects.find((p) => String(p._id) === String(selectedProjectId)) || null,
         [projects, selectedProjectId]
     )
+    const runtimeModeLabel = useMemo(() => {
+        const mode = String(runtimeInfo?.mode || "server")
+        if (mode === "desktop_local_fullstack") return "Desktop Local"
+        if (mode === "desktop_remote_slim") return "Desktop Slim"
+        return "Server"
+    }, [runtimeInfo?.mode])
+    const runtimeStatusLabel = useMemo(() => {
+        const status = String(runtimeInfo?.runtime_status || "unknown")
+        return status.charAt(0).toUpperCase() + status.slice(1)
+    }, [runtimeInfo?.runtime_status])
+    const runtimeHealthy = String(runtimeInfo?.runtime_status || "").toLowerCase() === "ready"
+    const runtimeLiveOk = String(runtimeLive?.status || "").toLowerCase() === "alive"
+    const runtimeReadyOk = Boolean(runtimeReady?.ready)
     const browserLocalRepoMode = useMemo(
         () => isBrowserLocalRepoPath(String(selectedProject?.repo_path || "")),
         [selectedProject?.repo_path]
@@ -1739,6 +2007,17 @@ export default function GlobalChatPage() {
             </FloatingIsland>
 
             <FloatingIsland islandId="utility" position={{ bottom: 16, right: 14 }}>
+                <Tooltip title={desktopRuntimeAvailable ? "Desktop runtime" : "Desktop runtime (Tauri only)"}>
+                    <span>
+                        <IconButton
+                            size="small"
+                            disabled={!desktopRuntimeAvailable}
+                            onClick={() => setDesktopRuntimeOpen(true)}
+                        >
+                            <DesktopWindowsRounded fontSize="small" />
+                        </IconButton>
+                    </span>
+                </Tooltip>
                 <Tooltip title="Notifications">
                     <IconButton size="small" onClick={requestOpenGlobalNotifications}>
                         <Badge color="error" badgeContent={unreadNotifications > 99 ? "99+" : unreadNotifications} invisible={unreadNotifications <= 0}>
@@ -1945,6 +2224,19 @@ export default function GlobalChatPage() {
                                     {!contextConfirmed && (
                                         <Chip size="small" color="warning" label="Select context before sending" />
                                     )}
+                                    <Box sx={{ ml: "auto", display: "inline-flex", alignItems: "center", gap: 0.6 }}>
+                                        {runtimeInfo && (
+                                            <Chip
+                                                size="small"
+                                                variant="outlined"
+                                                color={runtimeHealthy && runtimeLiveOk && runtimeReadyOk ? "success" : "warning"}
+                                                label={`${runtimeModeLabel} · ${runtimeStatusLabel}`}
+                                            />
+                                        )}
+                                        {runtimeInfo?.storage_engine && (
+                                            <Chip size="small" variant="outlined" label={`Storage: ${runtimeInfo.storage_engine}`} />
+                                        )}
+                                    </Box>
                                 </Stack>
                                 <Stack direction="row" spacing={0.6} useFlexGap flexWrap="wrap">
                                     <Chip
@@ -1962,6 +2254,21 @@ export default function GlobalChatPage() {
                         {error && (
                             <Alert severity="error" onClose={() => setError(null)} sx={{ m: 1.1 }}>
                                 {error}
+                            </Alert>
+                        )}
+                        {runtimeInfoError && (
+                            <Alert severity="warning" sx={{ mx: 1.1, mt: error ? 0 : 1.1 }}>
+                                Runtime status is currently unavailable: {runtimeInfoError}
+                            </Alert>
+                        )}
+                        {runtimeHealthError && (
+                            <Alert severity="warning" sx={{ mx: 1.1, mt: error || runtimeInfoError ? 0.8 : 1.1 }}>
+                                Runtime health checks are unavailable: {runtimeHealthError}
+                            </Alert>
+                        )}
+                        {runtimeInfo && !runtimeHealthy && (
+                            <Alert severity="warning" sx={{ mx: 1.1, mt: error || runtimeInfoError || runtimeHealthError ? 0.8 : 1.1 }}>
+                                Backend runtime is {String(runtimeInfo.runtime_status || "unknown")}. Some features may be temporarily unavailable.
                             </Alert>
                         )}
 
@@ -2328,6 +2635,249 @@ export default function GlobalChatPage() {
                 onDocsErrorClose={() => setDocsError(null)}
                 onDocsNoticeClose={() => setDocsNotice(null)}
             />
+
+            <Dialog open={desktopRuntimeOpen} onClose={() => setDesktopRuntimeOpen(false)} fullWidth maxWidth="sm">
+                <AppDialogTitle title="Desktop Runtime" onClose={() => setDesktopRuntimeOpen(false)} />
+                <DialogContent>
+                    <Stack spacing={1.2} sx={{ pt: 0.5 }}>
+                        {!desktopRuntimeAvailable && (
+                            <Alert severity="info">Desktop runtime controls are available only inside the Tauri desktop app.</Alert>
+                        )}
+                        {desktopRuntimeStatus && (
+                            <Stack direction="row" spacing={0.7} useFlexGap flexWrap="wrap">
+                                <Chip
+                                    size="small"
+                                    color={desktopRuntimeStatus.running ? "success" : "default"}
+                                    label={desktopRuntimeStatus.running ? "Running" : "Stopped"}
+                                />
+                                <Chip size="small" variant="outlined" label={`Mode: ${desktopRuntimeStatus.mode}`} />
+                                <Chip size="small" variant="outlined" label={`Web: ${desktopRuntimeStatus.web_port}`} />
+                                <Chip size="small" variant="outlined" label={`Backend: ${desktopRuntimeStatus.backend_port}`} />
+                                <Chip size="small" variant="outlined" label={`Mongo: ${desktopRuntimeStatus.mongo_port}`} />
+                                <Chip
+                                    size="small"
+                                    variant="outlined"
+                                    color={desktopRuntimeStatus.auto_restart ? "success" : "default"}
+                                    label={`Auto-restart: ${desktopRuntimeStatus.auto_restart ? "On" : "Off"}`}
+                                />
+                                <Chip
+                                    size="small"
+                                    variant="outlined"
+                                    label={`Restarts: ${Math.max(0, Number(desktopRuntimeStatus.restart_count || 0))}`}
+                                />
+                            </Stack>
+                        )}
+                        <Stack direction="row" spacing={0.7} useFlexGap flexWrap="wrap">
+                            <Chip
+                                size="small"
+                                color={runtimeLiveOk ? "success" : "warning"}
+                                variant={runtimeLiveOk ? "filled" : "outlined"}
+                                label={`Live: ${runtimeLiveOk ? "OK" : "Issue"}`}
+                            />
+                            <Chip
+                                size="small"
+                                color={runtimeReadyOk ? "success" : "warning"}
+                                variant={runtimeReadyOk ? "filled" : "outlined"}
+                                label={`Ready: ${runtimeReadyOk ? "OK" : "Not ready"}`}
+                            />
+                            {runtimeHealthLoading && <Chip size="small" variant="outlined" label="Health checks running..." />}
+                        </Stack>
+                        {runtimeLive?.updated_at && (
+                            <Typography variant="caption" color="text.secondary">
+                                Live check updated: {runtimeLive.updated_at}
+                            </Typography>
+                        )}
+                        {runtimeReady?.ready_at && (
+                            <Typography variant="caption" color="text.secondary">
+                                Ready at: {runtimeReady.ready_at}
+                            </Typography>
+                        )}
+                        {desktopRuntimeStatus?.last_restart_ms ? (
+                            <Typography variant="caption" color="text.secondary">
+                                Last sidecar recovery: {new Date(desktopRuntimeStatus.last_restart_ms).toLocaleString()}
+                            </Typography>
+                        ) : null}
+                        {desktopRuntimeStatus?.started_at_ms ? (
+                            <Typography variant="caption" color="text.secondary">
+                                Runtime started: {new Date(desktopRuntimeStatus.started_at_ms).toLocaleString()}
+                            </Typography>
+                        ) : null}
+                        {desktopRuntimeStatus?.diagnostics_path ? (
+                            <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                sx={{ wordBreak: "break-all" }}
+                            >
+                                Diagnostics file: {desktopRuntimeStatus.diagnostics_path}
+                            </Typography>
+                        ) : null}
+                        {desktopRuntimeStatus?.last_error && (
+                            <Alert severity="warning">{desktopRuntimeStatus.last_error}</Alert>
+                        )}
+                        {runtimeReady?.last_error && <Alert severity="warning">{runtimeReady.last_error}</Alert>}
+                        {runtimeHealthError && <Alert severity="warning">{runtimeHealthError}</Alert>}
+                        <Paper
+                            variant="outlined"
+                            sx={{
+                                p: 0.8,
+                                borderRadius: 1.2,
+                                bgcolor: "rgba(255,255,255,0.74)",
+                                borderColor: "rgba(15,23,42,0.12)",
+                            }}
+                        >
+                            <Stack spacing={0.6}>
+                                <Stack direction="row" alignItems="center" justifyContent="space-between">
+                                    <Typography variant="caption" sx={{ fontWeight: 700 }}>
+                                        Runtime events
+                                    </Typography>
+                                    <Stack direction="row" spacing={0.6} alignItems="center">
+                                        {desktopRuntimeDiagLoading && (
+                                            <Typography variant="caption" color="text.secondary">
+                                                Updating...
+                                            </Typography>
+                                        )}
+                                        <Button
+                                            size="small"
+                                            variant="text"
+                                            disabled={desktopRuntimeDiagLoading || !desktopRuntimeAvailable}
+                                            onClick={() => void refreshDesktopRuntimeDiagnostics()}
+                                        >
+                                            Refresh events
+                                        </Button>
+                                    </Stack>
+                                </Stack>
+                                {Array.isArray(desktopRuntimeDiagnostics?.events) &&
+                                desktopRuntimeDiagnostics.events.length > 0 ? (
+                                    <Box sx={{ maxHeight: 180, overflowY: "auto", pr: 0.2 }}>
+                                        <Stack spacing={0.4}>
+                                            {desktopRuntimeDiagnostics.events
+                                                .slice()
+                                                .reverse()
+                                                .map((event, index) => {
+                                                    const eventLevel = String(event.level || "info").toLowerCase()
+                                                    const color =
+                                                        eventLevel === "error"
+                                                            ? "error.main"
+                                                            : eventLevel === "warn" || eventLevel === "warning"
+                                                              ? "warning.main"
+                                                              : "text.secondary"
+                                                    const key = `${String(event.ts_ms)}:${String(event.source || "")}:${index}`
+                                                    return (
+                                                        <Box
+                                                            key={key}
+                                                            sx={{
+                                                                px: 0.7,
+                                                                py: 0.45,
+                                                                borderRadius: 0.9,
+                                                                border: "1px solid",
+                                                                borderColor: "rgba(15,23,42,0.1)",
+                                                                bgcolor: "rgba(255,255,255,0.68)",
+                                                            }}
+                                                        >
+                                                            <Stack
+                                                                direction="row"
+                                                                spacing={0.7}
+                                                                alignItems="center"
+                                                                useFlexGap
+                                                                flexWrap="wrap"
+                                                            >
+                                                                <Typography
+                                                                    variant="caption"
+                                                                    sx={{ fontWeight: 700, color, textTransform: "uppercase" }}
+                                                                >
+                                                                    {eventLevel}
+                                                                </Typography>
+                                                                <Typography variant="caption" color="text.secondary">
+                                                                    {String(event.source || "runtime")}
+                                                                </Typography>
+                                                                <Typography variant="caption" color="text.secondary" sx={{ ml: "auto" }}>
+                                                                    {new Date(Number(event.ts_ms || Date.now())).toLocaleTimeString()}
+                                                                </Typography>
+                                                            </Stack>
+                                                            <Typography variant="caption">{String(event.message || "")}</Typography>
+                                                        </Box>
+                                                    )
+                                                })}
+                                        </Stack>
+                                    </Box>
+                                ) : (
+                                    <Typography variant="caption" color="text.secondary">
+                                        No runtime events recorded yet.
+                                    </Typography>
+                                )}
+                            </Stack>
+                        </Paper>
+                        <FormControl size="small" fullWidth>
+                            <InputLabel id="desktop-runtime-mode-label">Mode</InputLabel>
+                            <Select
+                                labelId="desktop-runtime-mode-label"
+                                label="Mode"
+                                value={desktopRuntimeMode}
+                                onChange={(e) =>
+                                    setDesktopRuntimeMode(
+                                        String(e.target.value || "local_fullstack") === "remote_slim"
+                                            ? "remote_slim"
+                                            : "local_fullstack"
+                                    )
+                                }
+                            >
+                                <MenuItem value="local_fullstack">Local Full-Stack</MenuItem>
+                                <MenuItem value="remote_slim">Remote Slim Client</MenuItem>
+                            </Select>
+                        </FormControl>
+                        <TextField
+                            size="small"
+                            fullWidth
+                            label="Runtime profile path (optional)"
+                            value={desktopRuntimeProfilePath}
+                            onChange={(e) => setDesktopRuntimeProfilePath(e.target.value)}
+                            placeholder="/absolute/path/runtime-profile.json"
+                        />
+                        <Stack direction="row" alignItems="center" spacing={1}>
+                            <Switch checked={desktopRuntimeWebDev} onChange={(_, v) => setDesktopRuntimeWebDev(v)} />
+                            <Typography variant="body2">Use web dev server (`next dev`)</Typography>
+                        </Stack>
+                        <Stack direction="row" spacing={0.8}>
+                            <Button
+                                variant="outlined"
+                                disabled={!desktopRuntimeAvailable || desktopRuntimeBusy}
+                                onClick={() => void refreshDesktopRuntimeStatus()}
+                            >
+                                {desktopRuntimeLoading ? "Refreshing..." : "Refresh Status"}
+                            </Button>
+                            <Button
+                                variant="outlined"
+                                disabled={!desktopRuntimeAvailable || desktopRuntimeBusy || desktopRuntimeDiagLoading}
+                                onClick={() => void refreshDesktopRuntimeDiagnostics()}
+                            >
+                                {desktopRuntimeDiagLoading ? "Refreshing Events..." : "Refresh Events"}
+                            </Button>
+                            <Button
+                                variant="outlined"
+                                disabled={desktopRuntimeBusy}
+                                onClick={() => void refreshRuntimeHealth()}
+                            >
+                                {runtimeHealthLoading ? "Checking Health..." : "Check Health"}
+                            </Button>
+                            <Button
+                                variant="contained"
+                                disabled={!desktopRuntimeAvailable || desktopRuntimeBusy}
+                                onClick={() => void startDesktopRuntime()}
+                            >
+                                Start Runtime
+                            </Button>
+                            <Button
+                                color="warning"
+                                variant="outlined"
+                                disabled={!desktopRuntimeAvailable || desktopRuntimeBusy}
+                                onClick={() => void stopDesktopRuntime()}
+                            >
+                                Stop Runtime
+                            </Button>
+                        </Stack>
+                    </Stack>
+                </DialogContent>
+            </Dialog>
 
             <Dialog open={projectsOpen} onClose={() => setProjectsOpen(false)} fullWidth maxWidth="xl">
                 <AppDialogTitle title="Projects" onClose={() => setProjectsOpen(false)} />

@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from ..db import get_db
+from ..repositories.factory import repository_factory
 from .ask_agent_clarification import as_text
 from ..services.tool_classes import normalize_class_key
 
@@ -104,8 +104,8 @@ async def resolve_user_role(project_id: str, user_hint: str) -> str:
         logger.info("ask_agent.role_resolve project=%s user=<empty> role=member reason=missing_user_hint", project_id)
         return "member"
 
-    db = get_db()
-    user = await db["users"].find_one({"email": email}, {"_id": 1, "isGlobalAdmin": 1})
+    repo = repository_factory().access_policy
+    user = await repo.find_user_by_email(email)
     if not user:
         logger.info(
             "ask_agent.role_resolve project=%s user=%s role=member reason=user_not_found",
@@ -121,11 +121,7 @@ async def resolve_user_role(project_id: str, user_hint: str) -> str:
         )
         return "admin"
 
-    membership = await db["memberships"].find_one(
-        {"userId": str(user.get("_id")), "projectId": project_id},
-        {"role": 1},
-    )
-    role = as_text((membership or {}).get("role")).lower()
+    role = as_text(await repo.find_membership_role(user_id=str(user.get("_id")), project_id=project_id)).lower()
     if role in {"admin", "member", "viewer"}:
         logger.info(
             "ask_agent.role_resolve project=%s user=%s role=%s reason=membership",

@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from ..db import get_db
 from datetime import datetime
-from bson import ObjectId
+from ..repositories.factory import repository_factory
 from ..rag.agent2 import LLMUpstreamError, answer_with_agent
 from ..rag.tool_runtime import ToolContext
 from ..services.llm_profiles import resolve_project_llm_config
@@ -113,11 +113,8 @@ class AskReq(BaseModel):
 
 
 async def _load_project_doc(project_id: str) -> dict[str, Any]:
-    db = get_db()
-    q = {"key": project_id}
-    if ObjectId.is_valid(project_id):
-        q = {"_id": ObjectId(project_id)}
-    return await db["projects"].find_one(q) or {}
+    row = await repository_factory().access_policy.find_project_doc(project_id)
+    return row or {}
 
 
 
@@ -467,18 +464,13 @@ async def ask_agent(req: AskReq):
         role=user_role,
         security_policy=defaults.get("security_policy") or {},
     )
-    approvals_query: dict[str, Any] = {"chatId": chat_id, "expiresAt": {"$gt": datetime.utcnow()}}
-    if global_mode:
-        approvals_query["$or"] = [
-            {"contextKey": context_key},
-            {"contextKey": {"$exists": False}},
-            {"contextKey": ""},
-            {"contextKey": None},
-        ]
-    approval_rows = await db["chat_tool_approvals"].find(
-        approvals_query,
-        {"toolName": 1, "userId": 1, "expiresAt": 1, "approved": 1},
-    ).to_list(length=400)
+    approval_rows = await repository_factory(db).access_policy.list_active_tool_approvals(
+        chat_id=chat_id,
+        now=datetime.utcnow(),
+        context_key=context_key if global_mode else None,
+        include_legacy_when_context_set=True,
+        limit=400,
+    )
     approved_tools = _active_approved_tools(approval_rows, user=req.user)
     if approved_tools:
         effective_tool_policy["approved_tools"] = approved_tools

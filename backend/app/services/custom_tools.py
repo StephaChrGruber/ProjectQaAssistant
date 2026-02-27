@@ -10,11 +10,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from bson import ObjectId
-from pymongo import ReturnDocument
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from ..db import get_db
 from ..models.base_mongo_models import CustomTool, CustomToolAudit, CustomToolVersion, LocalToolJob
+from ..repositories.factory import repository_factory
 from ..rag.tool_runtime import ToolContext, ToolRuntime, ToolSpec, build_default_tool_runtime
 from .tool_classes import VIRTUAL_CUSTOM_UNCATEGORIZED_KEY, normalize_class_key
 
@@ -815,23 +815,14 @@ async def claim_local_tool_job_for_user(
     project_id: str | None = None,
     claim_id: str | None = None,
 ) -> dict[str, Any] | None:
-    db = get_db()
+    repo = repository_factory().local_tool_jobs
     now = utc_now()
-    query: dict[str, Any] = {
-        "status": "queued",
-        "runtime": "local_typescript",
-        "userId": user_id,
-        "$or": [{"expiresAt": {"$exists": False}}, {"expiresAt": None}, {"expiresAt": {"$gt": now}}],
-    }
-    if project_id:
-        query["projectId"] = project_id
     claim_token = (claim_id or "").strip() or f"{user_id}@{int(now.timestamp())}"
-
-    row = await db["local_tool_jobs"].find_one_and_update(
-        query,
-        {"$set": {"status": "running", "claimedBy": claim_token, "updatedAt": now}},
-        sort=[("createdAt", 1)],
-        return_document=ReturnDocument.AFTER,
+    row = await repo.claim_next_local_job(
+        user_id=user_id,
+        now=now,
+        claim_token=claim_token,
+        project_id=project_id,
     )
     if not row:
         return None
@@ -846,14 +837,11 @@ async def complete_local_tool_job(
     result: Any,
     claim_id: str | None = None,
 ) -> dict[str, Any]:
-    db = get_db()
+    repo = repository_factory().local_tool_jobs
     now = utc_now()
     if not ObjectId.is_valid(job_id):
         raise CustomToolServiceError("Invalid local tool job id")
-    query: dict[str, Any] = {"_id": ObjectId(job_id), "userId": user_id}
-    if claim_id:
-        query["claimedBy"] = claim_id
-    row = await db["local_tool_jobs"].find_one(query)
+    row = await repo.get_local_job_for_user(job_id=job_id, user_id=user_id, claim_id=claim_id)
     if not row:
         raise CustomToolServiceError("Local tool job not found")
     if str(row.get("status") or "") not in {"running", "queued"}:
@@ -867,17 +855,10 @@ async def complete_local_tool_job(
     except Exception:
         safe_result = {"_truncated": True, "preview": _truncate_text(str(result), MAX_CUSTOM_TOOL_RESULT_CHARS)}
 
-    await db["local_tool_jobs"].update_one(
-        {"_id": row["_id"]},
-        {
-            "$set": {
-                "status": "completed",
-                "result": safe_result,
-                "updatedAt": now,
-                "completedAt": now,
-                "error": None,
-            }
-        },
+    await repo.mark_local_job_completed(
+        job_id=str(row["_id"]),
+        result=safe_result,
+        now=now,
     )
     return {"id": str(row["_id"]), "status": "completed"}
 
@@ -889,28 +870,19 @@ async def fail_local_tool_job(
     error: str,
     claim_id: str | None = None,
 ) -> dict[str, Any]:
-    db = get_db()
+    repo = repository_factory().local_tool_jobs
     now = utc_now()
     if not ObjectId.is_valid(job_id):
         raise CustomToolServiceError("Invalid local tool job id")
-    query: dict[str, Any] = {"_id": ObjectId(job_id), "userId": user_id}
-    if claim_id:
-        query["claimedBy"] = claim_id
-    row = await db["local_tool_jobs"].find_one(query)
+    row = await repo.get_local_job_for_user(job_id=job_id, user_id=user_id, claim_id=claim_id)
     if not row:
         raise CustomToolServiceError("Local tool job not found")
     if str(row.get("status") or "") not in {"running", "queued"}:
         raise CustomToolServiceError(f"Local tool job is not active (status={row.get('status')})")
 
-    await db["local_tool_jobs"].update_one(
-        {"_id": row["_id"]},
-        {
-            "$set": {
-                "status": "failed",
-                "error": _truncate_text(str(error or "local tool execution failed"), 2000),
-                "updatedAt": now,
-                "completedAt": now,
-            }
-        },
+    await repo.mark_local_job_failed(
+        job_id=str(row["_id"]),
+        error=_truncate_text(str(error or "local tool execution failed"), 2000),
+        now=now,
     )
     return {"id": str(row["_id"]), "status": "failed"}

@@ -4,11 +4,10 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from bson import ObjectId
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from ..db import get_db
+from ..repositories.factory import repository_factory
 from ..services.automations import (
     create_custom_automation_preset,
     create_automation,
@@ -101,12 +100,7 @@ async def _require_user_or_401(x_dev_user: str | None) -> str:
 
 
 async def _require_project_or_404(project_id: str) -> dict[str, Any]:
-    q: dict[str, Any] = {"_id": project_id}
-    if ObjectId.is_valid(project_id):
-        q = {"_id": ObjectId(project_id)}
-    row = await get_db()["projects"].find_one(q)
-    if not isinstance(row, dict):
-        row = await get_db()["projects"].find_one({"key": project_id})
+    row = await repository_factory().access_policy.find_project_doc(project_id)
     if not isinstance(row, dict):
         raise HTTPException(status_code=404, detail="Project not found")
     return row

@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
-from ..db import get_db  # however you access Mongo (Motor/PyMongo)
+from ..repositories.factory import repository_factory
 from ..repositories.projects_repository import (
     get_project as repo_get_project,
     list_projects as repo_list_projects,
@@ -174,8 +174,10 @@ async def list_tool_events(
     if ok is not None:
         q["ok"] = bool(ok)
 
-    cursor = get_db()["tool_events"].find(q).sort("created_at", -1).limit(safe_limit)
-    rows = await cursor.to_list(length=safe_limit)
+    rows = await repository_factory().project_telemetry.list_tool_events(
+        query=q,
+        limit=safe_limit,
+    )
     out: list[dict[str, Any]] = []
     for row in rows:
         item = dict(row)
@@ -243,7 +245,10 @@ async def summarize_tool_events(
         },
         {"$sort": {"calls": -1, "_id": 1}},
     ]
-    rows = await get_db()["tool_events"].aggregate(pipeline).to_list(length=500)
+    rows = await repository_factory().project_telemetry.aggregate_tool_events(
+        pipeline=pipeline,
+        limit=500,
+    )
     total_calls, total_errors, items = summarize_tool_event_rows(rows)
 
     return {
@@ -274,15 +279,20 @@ async def qa_metrics(
     if branch:
         tool_q["branch"] = branch
 
-    tool_rows = await get_db()["tool_events"].find(
-        tool_q,
-        {"_id": 0, "tool": 1, "ok": 1, "duration_ms": 1, "error_code": 1},
-    ).to_list(length=5000)
+    tool_rows = await repository_factory().project_telemetry.list_tool_events(
+        query=tool_q,
+        projection={"_id": 0, "tool": 1, "ok": 1, "duration_ms": 1, "error_code": 1},
+        limit=5000,
+    )
 
     chat_q: dict[str, Any] = {"project_id": project_id, "updated_at": {"$gte": since}}
     if branch:
         chat_q["branch"] = branch
-    chats = await get_db()["chats"].find(chat_q, {"_id": 0, "messages": 1}).to_list(length=5000)
+    chats = await repository_factory().project_telemetry.list_chats(
+        query=chat_q,
+        projection={"_id": 0, "messages": 1},
+        limit=5000,
+    )
     return build_qa_metrics_payload(
         project_id=project_id,
         hours=safe_hours,

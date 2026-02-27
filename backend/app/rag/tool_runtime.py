@@ -13,7 +13,7 @@ from typing import Any, Awaitable, Callable, Deque, Dict, Optional
 
 from pydantic import BaseModel, ValidationError
 
-from ..db import get_db
+from ..repositories.factory import repository_factory
 from ..models.tools import (
     CompareBranchesRequest,
     ChromaCountRequest,
@@ -414,20 +414,10 @@ class ToolRuntime:
             return dict(cached[1])
 
         project_id = str(ctx.project_id or "").strip()
-        db = get_db()
+        access_repo = repository_factory().access_policy
         project_doc: dict[str, Any] | None = None
         if project_id:
-            project_doc = await db["projects"].find_one({"_id": project_id})
-            if not project_doc:
-                try:
-                    from bson import ObjectId  # lazy import to keep dependency local
-
-                    if ObjectId.is_valid(project_id):
-                        project_doc = await db["projects"].find_one({"_id": ObjectId(project_id)})
-                except Exception:
-                    project_doc = None
-            if not project_doc:
-                project_doc = await db["projects"].find_one({"key": project_id})
+            project_doc = await access_repo.find_project_doc(project_id)
 
         repo_path = str((project_doc or {}).get("repo_path") or "").strip()
         browser_local = self._is_browser_local_repo(repo_path)
@@ -436,7 +426,7 @@ class ToolRuntime:
         has_chat = bool(str(ctx.chat_id or "").strip())
 
         connector_project_id = str((project_doc or {}).get("_id") or project_id).strip() or project_id
-        rows = await db["connectors"].find({"projectId": connector_project_id, "isEnabled": True}).to_list(length=200)
+        rows = await access_repo.list_enabled_connectors(project_id=connector_project_id, limit=200)
         by_type: dict[str, dict[str, Any]] = {}
         for row in rows:
             t = str(row.get("type") or "").strip()
